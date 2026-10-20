@@ -390,15 +390,21 @@ mod tests {
         events: Mutex<Vec<String>>,
     }
 
-    impl OperatorTrail for Recording {
-        async fn record(&self, build: impl FnOnce(Actor, ClientContext) -> AuditRecord + Send) {
-            let record = build(Actor::system(), ClientContext::default());
-            self.events
-                .lock()
-                .unwrap()
-                .push(record.event.as_str().to_string());
+    impl crate::admin::trail::ActionTrail for Recording {
+        async fn record_all(
+            &self,
+            build: impl FnOnce(Actor, ClientContext) -> Vec<AuditRecord> + Send,
+        ) {
+            let records = build(Actor::system(), ClientContext::default());
+            self.events.lock().unwrap().extend(
+                records
+                    .iter()
+                    .map(|record| record.event.as_str().to_string()),
+            );
         }
+    }
 
+    impl OperatorTrail for Recording {
         async fn notify(&self, _: &AdminUser, _: AdminCredentialChange, _: Option<String>) {}
     }
 

@@ -766,7 +766,9 @@ pub fn render_admin_session_line(session: &AdminSession, palette: Palette) -> St
 /// read the table and having read a page of it, and a script should not have to
 /// learn one shape for the API and another for the shell.
 ///
-/// The **only** listing shape the binary answers with. Three listings — `eab
+/// The **only** listing shape the binary answers for table rows — `profile
+/// list`, which lists configuration rather than rows, is the one bare array.
+/// Three listings — `eab
 /// list`, `admin user list`, `admin session list` — used to print a bare array
 /// instead, on the argument that an operator mints those rows by hand a few at
 /// a time and so has no page to report. That was true of the tables and false
@@ -774,12 +776,7 @@ pub fn render_admin_session_line(session: &AdminSession, palette: Palette) -> St
 /// another for `/api`; the bare-array renderer beside this one went with them.
 #[must_use]
 pub fn json_page(items: Vec<serde_json::Value>, total: i64, window: Window) -> serde_json::Value {
-    serde_json::json!({
-        "items": items,
-        "total": total,
-        "limit": window.limit,
-        "offset": window.offset,
-    })
+    acme_proxy_admin::admin::render_page_json(items, total, window.limit, window.offset)
 }
 
 /// The line under a paged listing.

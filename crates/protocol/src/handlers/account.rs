@@ -70,21 +70,13 @@ pub async fn post_new_account(
         // `post_key_change`'s conflict is: the response needs a header, and §6.7
         // pairs `userActionRequired` with the link naming what to agree to.
         Err(error @ Error::TermsNotAgreed) => {
-            return Ok((
-                StatusCode::FORBIDDEN,
-                [
-                    (header::CONTENT_TYPE, "application/problem+json".to_string()),
-                    (
-                        header::LINK,
-                        format!(
-                            "<{}>;rel=\"terms-of-service\"",
-                            profile.meta.terms_of_service
-                        ),
-                    ),
-                ],
-                Json(Problem::from(error).to_value()),
-            )
-                .into_response());
+            return Ok(Problem::from(error).into_response_with(
+                header::LINK,
+                format!(
+                    "<{}>;rel=\"terms-of-service\"",
+                    profile.meta.terms_of_service
+                ),
+            ));
         }
         Err(error) => return Err(error.into()),
     };
@@ -196,15 +188,7 @@ pub async fn post_key_change(
 /// Both must answer identically or a client's recovery would depend on which
 /// side of a race it fell.
 fn key_change_conflict(base: &str, holder: Uuid, problem: Problem) -> Response {
-    (
-        StatusCode::CONFLICT,
-        [
-            (header::CONTENT_TYPE, "application/problem+json".to_string()),
-            (header::LOCATION, format!("{base}/acct/{holder}")),
-        ],
-        Json(problem.to_value()),
-    )
-        .into_response()
+    problem.into_response_with(header::LOCATION, format!("{base}/acct/{holder}"))
 }
 
 /// Returns an account's order-list URL object via POST-as-GET.

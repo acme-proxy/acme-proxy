@@ -21,9 +21,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::admin::prompt::confirm;
+use crate::admin::trail::ActionTrail;
 use acme_proxy_core::audit::Actor;
 use acme_proxy_core::audit::ClientContext;
 use acme_proxy_jobs::auditor::Auditor;
+use acme_proxy_jobs::auditor::admin as audit_admin;
 use acme_proxy_signer::SignerError;
 use acme_proxy_signer::relay::RELAY_JOB_KIND;
 use acme_proxy_signer::relay::abandon_relayed_order;
@@ -175,6 +177,31 @@ pub struct OrderDetail {
     pub authorizations: Vec<(Authorization, Vec<Challenge>)>,
 }
 
+/// What every front end tells an operator about an order that has no
+/// certificate — to revoke, or to download. One wording per refusal, so the
+/// CLI, the API and the page cannot describe one fact three ways.
+#[must_use]
+pub fn order_not_issued_refusal(id: &str) -> String {
+    format!("order {id} has no issued certificate")
+}
+
+/// [`order_not_issued_refusal`], for a certificate already revoked.
+#[must_use]
+pub fn order_already_revoked_refusal(id: &str) -> String {
+    format!("order {id}'s certificate is already revoked")
+}
+
+/// [`order_not_issued_refusal`], for an order whose profile this process does
+/// not serve: revocation is per-profile, so it needs the endpoint that signed
+/// the certificate.
+#[must_use]
+pub fn order_profile_unmounted_refusal(id: &str, profile: &str) -> String {
+    format!(
+        "order {id} belongs to profile `{profile}`, which this configuration does not mount — \
+         revoking it needs the endpoint that signed it"
+    )
+}
+
 /// Outcome of [`revoke_order`].
 #[derive(Debug)]
 pub enum RevokeOutcome {
@@ -197,7 +224,7 @@ pub enum RevokeError {
     Signer(SignerError),
     #[error("internal error: {0}")]
     Internal(String),
-    #[error("unsupported revocation reason code {0}")]
+    #[error("unsupported revocation reason code {0} (RFC 5280 §5.3.1)")]
     BadReason(u32),
     /// The queued revocation was retired without revoking: its backend kept
     /// failing, or an operator cancelled it.
@@ -224,14 +251,18 @@ impl From<SignerError> for RevokeError {
 // happened. The generic also makes the wrapper non-object-safe for no benefit
 // on that path. The CLI calls the wrapper; everything else calls the bare form.
 
-/// Hard-deletes an account unless it holds a live certificate. Carries how
-/// many orders cascaded with it.
-pub async fn delete_account(id: &str, database: Arc<Database>) -> Result<Deletion, sqlx::Error> {
-    let Some(cascaded) = account_cascade(id, database.clone()).await? else {
+/// Hard-deletes an account unless it holds a live certificate, recording
+/// `account_deleted` through `trail`. Carries how many orders cascaded with it.
+pub async fn delete_account(
+    id: &str,
+    database: Arc<Database>,
+    trail: &impl ActionTrail,
+) -> Result<Deletion, sqlx::Error> {
+    let Some(account) = Account::find_any_by_id(id, &database).await? else {
         return Ok(Deletion::NotFound);
     };
-    let outcome = Account::delete(id, &database).await?;
-    Ok(Deletion::from_guarded(outcome, cascaded))
+    let cascaded = Order::count_by_account(account.id, &database).await? as u64;
+    finish_account_delete(id, &account, cascaded, &database, trail).await
 }
 
 /// Looks up the account, shows what will cascade, confirms, then hard-deletes it.
@@ -245,6 +276,7 @@ pub async fn confirm_delete_account(
     assume_yes: bool,
     reader: &mut impl BufRead,
     database: Arc<Database>,
+    trail: &impl ActionTrail,
 ) -> Result<DeleteOutcome, sqlx::Error> {
     let Some(account) = Account::find_any_by_id(id, &database).await? else {
         return Ok(DeleteOutcome::NotFound);
@@ -253,7 +285,7 @@ pub async fn confirm_delete_account(
     if live > 0 {
         return Ok(DeleteOutcome::LiveCertificates(live));
     }
-    let order_count = Order::count_by_account(account.id, &database).await?;
+    let order_count = Order::count_by_account(account.id, &database).await? as u64;
     let prompt = format!(
         "Delete account {id} (status: {}, {order_count} order(s) will cascade)?",
         account.status
@@ -261,18 +293,48 @@ pub async fn confirm_delete_account(
     if !confirm(&prompt, assume_yes, reader) {
         return Ok(DeleteOutcome::Cancelled);
     }
-    let outcome = Account::delete(id, &database).await?;
-    Ok(Deletion::from_guarded(outcome, order_count as u64).into())
+    Ok(
+        finish_account_delete(id, &account, order_count, &database, trail)
+            .await?
+            .into(),
+    )
 }
 
-/// Hard-deletes an order unless it holds a live certificate. Carries how many
-/// authorizations cascaded with it.
-pub async fn delete_order(id: &str, database: Arc<Database>) -> Result<Deletion, sqlx::Error> {
-    let Some(cascaded) = order_cascade(id, database.clone()).await? else {
+/// The delete both account forms end in, and its row.
+///
+/// `account` was read **before** the delete: the row names its profile and id,
+/// and is gone once the delete returns. `cascaded` likewise — counted
+/// afterwards it counts the orders the `ON DELETE CASCADE` already removed,
+/// which is zero every time.
+async fn finish_account_delete(
+    id: &str,
+    account: &Account,
+    cascaded: u64,
+    database: &Database,
+    trail: &impl ActionTrail,
+) -> Result<Deletion, sqlx::Error> {
+    let deletion = Deletion::from_guarded(Account::delete(id, database).await?, cascaded);
+    if matches!(deletion, Deletion::Deleted(_)) {
+        trail
+            .record(|actor, client| audit_admin::account_deleted(actor, client, account, cascaded))
+            .await;
+    }
+    Ok(deletion)
+}
+
+/// Hard-deletes an order unless it holds a live certificate, recording
+/// `order_deleted` through `trail`. Carries how many authorizations cascaded
+/// with it.
+pub async fn delete_order(
+    id: &str,
+    database: Arc<Database>,
+    trail: &impl ActionTrail,
+) -> Result<Deletion, sqlx::Error> {
+    let Some(order) = Order::find_by_id(id, &database).await? else {
         return Ok(Deletion::NotFound);
     };
-    let outcome = Order::delete(id, &database).await?;
-    Ok(Deletion::from_guarded(outcome, cascaded))
+    let cascaded = Authorization::count_by_order(order.id, &database).await? as u64;
+    finish_order_delete(id, &order, cascaded, &database, trail).await
 }
 
 /// Same shape as [`confirm_delete_account`], for an order.
@@ -281,6 +343,7 @@ pub async fn confirm_delete_order(
     assume_yes: bool,
     reader: &mut impl BufRead,
     database: Arc<Database>,
+    trail: &impl ActionTrail,
 ) -> Result<DeleteOutcome, sqlx::Error> {
     let Some(order) = Order::find_by_id(id, &database).await? else {
         return Ok(DeleteOutcome::NotFound);
@@ -289,7 +352,7 @@ pub async fn confirm_delete_order(
     if live > 0 {
         return Ok(DeleteOutcome::LiveCertificates(live));
     }
-    let authz_count = Authorization::count_by_order(order.id, &database).await?;
+    let authz_count = Authorization::count_by_order(order.id, &database).await? as u64;
     let prompt = format!(
         "Delete order {id} (status: {}, {authz_count} authorization(s) will cascade)?",
         order.status
@@ -297,8 +360,28 @@ pub async fn confirm_delete_order(
     if !confirm(&prompt, assume_yes, reader) {
         return Ok(DeleteOutcome::Cancelled);
     }
-    let outcome = Order::delete(id, &database).await?;
-    Ok(Deletion::from_guarded(outcome, authz_count as u64).into())
+    Ok(
+        finish_order_delete(id, &order, authz_count, &database, trail)
+            .await?
+            .into(),
+    )
+}
+
+/// [`finish_account_delete`], for an order.
+async fn finish_order_delete(
+    id: &str,
+    order: &Order,
+    cascaded: u64,
+    database: &Database,
+    trail: &impl ActionTrail,
+) -> Result<Deletion, sqlx::Error> {
+    let deletion = Deletion::from_guarded(Order::delete(id, database).await?, cascaded);
+    if matches!(deletion, Deletion::Deleted(_)) {
+        trail
+            .record(|actor, client| audit_admin::order_deleted(actor, client, order, cascaded))
+            .await;
+    }
+    Ok(deletion)
 }
 
 /// Outcome of [`confirm_delete_eab`]: [`EabDeletion`] plus `Cancelled`.
@@ -330,14 +413,22 @@ impl From<EabDeletion> for EabDeleteOutcome {
     }
 }
 
-/// Deletes an EAB credential, doing `accounts` to the accounts it bound. The
-/// web admin's form; the refusal and the transaction live in [`Eab::delete`].
+/// Deletes an EAB credential, doing `accounts` to the accounts it bound, and
+/// records one row per account it changed and one for the credential. The web
+/// admin's form; the refusal and the transaction live in [`Eab::delete`].
 pub async fn delete_eab(
     kid: &str,
     accounts: BoundAccounts,
     database: Arc<Database>,
+    trail: &impl ActionTrail,
 ) -> Result<EabDeletion, sqlx::Error> {
-    Eab::delete(kid, accounts, &database).await
+    let deletion = Eab::delete(kid, accounts, &database).await?;
+    if let EabDeletion::Deleted(deleted) = &deletion {
+        trail
+            .record_all(|actor, client| audit_admin::eab_deleted_records(actor, client, deleted))
+            .await;
+    }
+    Ok(deletion)
 }
 
 /// [`delete_eab`], asking first and naming what happens to the accounts.
@@ -351,6 +442,7 @@ pub async fn confirm_delete_eab(
     assume_yes: bool,
     reader: &mut impl BufRead,
     database: Arc<Database>,
+    trail: &impl ActionTrail,
 ) -> Result<EabDeleteOutcome, sqlx::Error> {
     let Some(eab) = Eab::find_any_by_kid(kid, &database).await? else {
         return Ok(EabDeleteOutcome::NotFound);
@@ -381,7 +473,56 @@ pub async fn confirm_delete_eab(
     if !confirm(&prompt, assume_yes, reader) {
         return Ok(EabDeleteOutcome::Cancelled);
     }
-    Ok(Eab::delete(kid, accounts, &database).await?.into())
+    Ok(delete_eab(kid, accounts, database, trail).await?.into())
+}
+
+/// Mints an EAB credential and records `eab_created`. Whether `profile` is
+/// mounted is the caller's to check first, with [`unmounted_profile_refusal`]:
+/// only a front end knows what this process mounts.
+pub async fn create_eab(
+    label: Option<String>,
+    profile: Option<String>,
+    database: Arc<Database>,
+    trail: &impl ActionTrail,
+) -> Result<Eab, sqlx::Error> {
+    let eab = Eab::create(label, profile, &database).await?;
+    trail
+        .record(|actor, client| {
+            audit_admin::eab_created(
+                actor,
+                client,
+                &eab.kid.to_string(),
+                eab.profile.as_deref(),
+                eab.label.as_deref(),
+            )
+        })
+        .await;
+    Ok(eab)
+}
+
+/// Revokes an EAB credential, keeping its row. `Ok(false)` when there is no
+/// such credential.
+///
+/// Idempotent, and only the revoke that changed something records
+/// `eab_revoked` — the `RevokeOutcome::AlreadyRevoked` rule on the certificate
+/// side.
+pub async fn revoke_eab(
+    kid: &str,
+    database: Arc<Database>,
+    trail: &impl ActionTrail,
+) -> Result<bool, sqlx::Error> {
+    let subject = Eab::find_any_by_kid(kid, &database).await?;
+    if !Eab::revoke(kid, &database).await? {
+        return Ok(false);
+    }
+    if let Some(eab) = subject.filter(|eab| eab.status == "active") {
+        trail
+            .record(|actor, client| {
+                audit_admin::eab_revoked(actor, client, kid, eab.profile.as_deref())
+            })
+            .await;
+    }
+    Ok(true)
 }
 
 /// Runs [`Nonce::cleanup`], returning how many were removed.
@@ -403,27 +544,6 @@ pub async fn confirm_cleanup_nonces(
     Ok(Some(cleanup_nonces(ttl, database).await?))
 }
 
-/// How many orders an account delete would cascade, or `None` if there is no
-/// such account. Shared so the prompt and the bare delete agree on the count.
-async fn account_cascade(id: &str, database: Arc<Database>) -> Result<Option<u64>, sqlx::Error> {
-    let Some(account) = Account::find_any_by_id(id, &database).await? else {
-        return Ok(None);
-    };
-    Ok(Some(
-        Order::count_by_account(account.id, &database).await? as u64,
-    ))
-}
-
-/// The [`account_cascade`] counterpart for an order's authorizations.
-async fn order_cascade(id: &str, database: Arc<Database>) -> Result<Option<u64>, sqlx::Error> {
-    let Some(order) = Order::find_by_id(id, &database).await? else {
-        return Ok(None);
-    };
-    Ok(Some(
-        Authorization::count_by_order(order.id, &database).await? as u64,
-    ))
-}
-
 /// Why [`update_account_contact`] did not write.
 #[derive(Debug, thiserror::Error)]
 pub enum ContactError {
@@ -441,6 +561,7 @@ pub async fn update_account_contact(
     id: &str,
     contact: Vec<String>,
     database: Arc<Database>,
+    trail: &impl ActionTrail,
 ) -> Result<Option<Account>, ContactError> {
     use acme_proxy_protocol::acme::account::ContactUpdateError;
     use acme_proxy_protocol::acme::account::update_contact;
@@ -451,14 +572,16 @@ pub async fn update_account_contact(
     update_contact(&mut account, contact, &database)
         .await
         .map_err(|error| match error {
-            ContactUpdateError::Refused(problem) => ContactError::Invalid(
-                problem.to_value()["detail"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string(),
-            ),
+            ContactUpdateError::Refused(problem) => {
+                ContactError::Invalid(problem.detail().to_string())
+            }
             ContactUpdateError::Database(error) => ContactError::Database(error),
         })?;
+    trail
+        .record(|actor, client| {
+            audit_admin::account_contact_updated(actor, client, &account, &account.contact)
+        })
+        .await;
     Ok(Some(account))
 }
 
@@ -473,6 +596,7 @@ pub async fn deactivate_account(
     database: Arc<Database>,
     notifier: impl Fn(&str) -> Option<Arc<acme_proxy_jobs::notify::NotifyDispatcher>>,
     client_ip: Option<String>,
+    trail: &impl ActionTrail,
 ) -> Result<Option<Account>, sqlx::Error> {
     let Some(mut account) = Account::find_any_by_id(id, &database).await? else {
         return Ok(None);
@@ -485,6 +609,9 @@ pub async fn deactivate_account(
         client_ip,
     )
     .await?;
+    trail
+        .record(|actor, client| audit_admin::account_deactivated(actor, client, &account))
+        .await;
     Ok(Some(account))
 }
 
@@ -533,11 +660,46 @@ pub async fn revoke_order(
 }
 
 /// One page of audit rows, plus the unpaged total the same filters match.
+/// Why [`list_audit`] did not search.
+#[derive(Debug, thiserror::Error)]
+pub enum AuditListError {
+    /// A filter outside its closed vocabulary, with the reason.
+    #[error("{0}")]
+    Invalid(String),
+    #[error("database error: {0}")]
+    Database(#[from] sqlx::Error),
+}
+
+/// A page of the audit trail, refusing an `event` or `outcome` this build does
+/// not know.
+///
+/// Refused here, for every surface, rather than passed through to SQL, where an
+/// unknown value is not an error but an empty result — and "no rows" for a
+/// typo'd filter is the single most misleading answer an audit tool can give.
 pub async fn list_audit(
     query: &AuditQuery,
     database: Arc<Database>,
-) -> Result<(Vec<AuditEntry>, i64), sqlx::Error> {
-    AuditEntry::search(query, &database).await
+) -> Result<(Vec<AuditEntry>, i64), AuditListError> {
+    if let Some(event) = query.event.as_deref()
+        && acme_proxy_core::audit::AuditEvent::parse(event).is_none()
+    {
+        let known: Vec<&str> = acme_proxy_core::audit::ALL_AUDIT_EVENTS
+            .iter()
+            .map(|event| event.as_str())
+            .collect();
+        return Err(AuditListError::Invalid(format!(
+            "unknown audit event `{event}`; known events are {}",
+            known.join(", ")
+        )));
+    }
+    if let Some(outcome) = query.outcome.as_deref()
+        && !matches!(outcome, "success" | "failure")
+    {
+        return Err(AuditListError::Invalid(format!(
+            "unknown audit outcome `{outcome}`; expected `success` or `failure`"
+        )));
+    }
+    Ok(AuditEntry::search(query, &database).await?)
 }
 
 /// One audit row by id.
@@ -644,23 +806,22 @@ pub struct UpstreamOrderDetail {
     pub job: Option<Job>,
 }
 
-/// The `jobs.kind` values whose handler re-enqueues itself on a cadence
-/// (`Reschedule`). Cancelling one stops that sweep until the server restarts,
-/// which the CLI/UI warns about — a retired periodic job does not come back.
-const PERIODIC_JOB_KINDS: &[&str] = &[
-    acme_proxy_jobs::jobs::sweep::RETENTION_JOB_KIND,
-    acme_proxy_jobs::jobs::sweep::NONCE_SWEEP_KIND,
-    acme_proxy_jobs::jobs::sweep::AUDIT_SWEEP_KIND,
-    acme_proxy_jobs::jobs::sweep::ADMIN_SESSION_SWEEP_KIND,
-    acme_proxy_jobs::jobs::sweep::ORDER_SWEEP_KIND,
+/// The `jobs.kind` values outside the table sweeps whose handler re-enqueues
+/// itself on a cadence (`Reschedule`). The table sweeps are
+/// [`acme_proxy_jobs::jobs::sweep::SWEEP_KINDS`], listed where they are defined
+/// so a new one cannot be missed here.
+const OTHER_PERIODIC_JOB_KINDS: &[&str] = &[
     acme_proxy_signer::local_ca::sweep::CRL_SWEEP_KIND,
     acme_proxy_jobs::notify::expiry::EXPIRY_JOB_KIND,
 ];
 
 /// Whether cancelling a job of this kind silently stops a periodic sweep.
+/// Cancelling one stops it until the server restarts, which the CLI warns
+/// about — a retired periodic job does not come back.
 #[must_use]
 pub fn is_periodic_job_kind(kind: &str) -> bool {
-    PERIODIC_JOB_KINDS.contains(&kind)
+    acme_proxy_jobs::jobs::sweep::SWEEP_KINDS.contains(&kind)
+        || OTHER_PERIODIC_JOB_KINDS.contains(&kind)
 }
 
 /// Loads a job by id, attaching its `upstream_orders` row when it is a relay
@@ -718,9 +879,10 @@ pub enum CancelJobOutcome {
     NotCancellable(String),
     /// Cancelled. The job row is the one the guard returned.
     Cancelled(Box<Job>),
-    /// Cancelled, and because it was an in-flight relay issuance the local
-    /// order was marked `invalid` and the upstream mapping abandoned so
-    /// recovery will not resurrect it.
+    /// Cancelled, and because it was an in-flight issuance the local order was
+    /// marked `invalid` — for a relay, with the upstream mapping abandoned so
+    /// recovery will not resurrect it; for a `signer_issue`, with no mapping to
+    /// abandon.
     CancelledAndOrderAbandoned {
         job: Box<Job>,
         order_id: String,
@@ -977,6 +1139,7 @@ pub async fn run_job_now(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::admin::trail::testing::Recorded;
     use acme_proxy_core::audit::AuditEvent;
     use acme_proxy_core::audit::AuditRecord;
     use acme_proxy_core::identifier::Identifier;
@@ -1242,7 +1405,7 @@ mod tests {
     async fn delete_account_not_found() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         let mut reader: &[u8] = &[];
-        let outcome = confirm_delete_account("nope", true, &mut reader, db)
+        let outcome = confirm_delete_account("nope", true, &mut reader, db, &Recorded::default())
             .await
             .unwrap();
         assert_eq!(outcome, DeleteOutcome::NotFound);
@@ -1254,10 +1417,15 @@ mod tests {
         let acct = account_id(&db).await;
 
         let mut reader = b"n\n".as_slice();
-        let outcome =
-            confirm_delete_account(acct.to_string().as_str(), false, &mut reader, db.clone())
-                .await
-                .unwrap();
+        let outcome = confirm_delete_account(
+            acct.to_string().as_str(),
+            false,
+            &mut reader,
+            db.clone(),
+            &Recorded::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(outcome, DeleteOutcome::Cancelled);
         assert!(
             Account::find_by_id("default", acct.to_string().as_str(), &db)
@@ -1284,10 +1452,15 @@ mod tests {
         .unwrap();
 
         let mut reader: &[u8] = &[];
-        let outcome =
-            confirm_delete_account(acct.to_string().as_str(), true, &mut reader, db.clone())
-                .await
-                .unwrap();
+        let outcome = confirm_delete_account(
+            acct.to_string().as_str(),
+            true,
+            &mut reader,
+            db.clone(),
+            &Recorded::default(),
+        )
+        .await
+        .unwrap();
         assert!(matches!(outcome, DeleteOutcome::Deleted(_)));
         assert!(
             Account::find_by_id("default", acct.to_string().as_str(), &db)
@@ -1307,7 +1480,7 @@ mod tests {
     async fn delete_order_not_found() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         let mut reader: &[u8] = &[];
-        let outcome = confirm_delete_order("nope", true, &mut reader, db)
+        let outcome = confirm_delete_order("nope", true, &mut reader, db, &Recorded::default())
             .await
             .unwrap();
         assert_eq!(outcome, DeleteOutcome::NotFound);
@@ -1330,15 +1503,21 @@ mod tests {
         .unwrap();
 
         let mut reader = b"no\n".as_slice();
+        let trail = Recorded::default();
         let outcome = confirm_delete_order(
             order.id.to_string().as_str(),
             false,
             &mut reader,
             db.clone(),
+            &trail,
         )
         .await
         .unwrap();
         assert_eq!(outcome, DeleteOutcome::Cancelled);
+        assert!(
+            trail.events().is_empty(),
+            "a declined delete records nothing"
+        );
         assert!(
             Order::find_by_id(order.id.to_string().as_str(), &db)
                 .await
@@ -1372,10 +1551,15 @@ mod tests {
         .unwrap();
 
         let mut reader: &[u8] = &[];
-        let outcome =
-            confirm_delete_order(order.id.to_string().as_str(), true, &mut reader, db.clone())
-                .await
-                .unwrap();
+        let outcome = confirm_delete_order(
+            order.id.to_string().as_str(),
+            true,
+            &mut reader,
+            db.clone(),
+            &Recorded::default(),
+        )
+        .await
+        .unwrap();
         assert!(matches!(outcome, DeleteOutcome::Deleted(_)));
         assert!(
             Order::find_by_id(order.id.to_string().as_str(), &db)
@@ -1398,7 +1582,9 @@ mod tests {
     async fn bare_delete_account_reports_not_found_for_an_unknown_id() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         assert_eq!(
-            delete_account("nope", db).await.unwrap(),
+            delete_account("nope", db, &Recorded::default())
+                .await
+                .unwrap(),
             Deletion::NotFound
         );
     }
@@ -1422,7 +1608,7 @@ mod tests {
         }
 
         assert_eq!(
-            delete_account(acct.to_string().as_str(), db.clone())
+            delete_account(acct.to_string().as_str(), db.clone(), &Recorded::default())
                 .await
                 .unwrap(),
             Deletion::Deleted(Deleted { cascaded: 2 })
@@ -1438,7 +1624,12 @@ mod tests {
     #[tokio::test]
     async fn bare_delete_order_reports_not_found_for_an_unknown_id() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
-        assert_eq!(delete_order("nope", db).await.unwrap(), Deletion::NotFound);
+        assert_eq!(
+            delete_order("nope", db, &Recorded::default())
+                .await
+                .unwrap(),
+            Deletion::NotFound
+        );
     }
 
     #[tokio::test]
@@ -1465,12 +1656,16 @@ mod tests {
         .await
         .unwrap();
 
+        // The row is the operation's own, so no front end can delete an order
+        // and leave the trail silent — what `order delete` on the CLI once did.
+        let trail = Recorded::default();
         assert_eq!(
-            delete_order(order.id.to_string().as_str(), db.clone())
+            delete_order(order.id.to_string().as_str(), db.clone(), &trail)
                 .await
                 .unwrap(),
             Deletion::Deleted(Deleted { cascaded: 1 })
         );
+        assert_eq!(trail.events(), ["order_deleted"]);
         assert!(
             Order::find_by_id(order.id.to_string().as_str(), &db)
                 .await
@@ -1491,26 +1686,48 @@ mod tests {
 
         let mut reader: &[u8] = &[];
         assert_eq!(
-            confirm_delete_account(&acct, false, &mut reader, db.clone())
+            confirm_delete_account(&acct, false, &mut reader, db.clone(), &Recorded::default())
                 .await
                 .unwrap(),
             DeleteOutcome::LiveCertificates(1)
         );
         assert_eq!(
-            confirm_delete_order(&order, false, &mut reader, db.clone())
+            confirm_delete_order(&order, false, &mut reader, db.clone(), &Recorded::default())
                 .await
                 .unwrap(),
             DeleteOutcome::LiveCertificates(1)
         );
         assert_eq!(
-            delete_account(&acct, db.clone()).await.unwrap(),
+            delete_account(&acct, db.clone(), &Recorded::default())
+                .await
+                .unwrap(),
             Deletion::LiveCertificates(1)
         );
         assert_eq!(
-            delete_order(&order, db.clone()).await.unwrap(),
+            delete_order(&order, db.clone(), &Recorded::default())
+                .await
+                .unwrap(),
             Deletion::LiveCertificates(1)
         );
         assert!(Order::find_by_id(&order, &db).await.unwrap().is_some());
+    }
+
+    /// Every table sweep, the hourly http-01 token sweep among them, gets the
+    /// "will not run again until restart" warning, and a one-shot job does not.
+    #[test]
+    fn every_self_rescheduling_kind_is_periodic() {
+        for kind in acme_proxy_jobs::jobs::sweep::SWEEP_KINDS {
+            assert!(is_periodic_job_kind(kind), "{kind}");
+        }
+        assert!(is_periodic_job_kind(
+            acme_proxy_jobs::jobs::sweep::HTTP01_TOKEN_SWEEP_KIND
+        ));
+        assert!(is_periodic_job_kind(
+            acme_proxy_signer::local_ca::sweep::CRL_SWEEP_KIND
+        ));
+        assert!(!is_periodic_job_kind(
+            acme_proxy_protocol::acme::issue::SIGNER_ISSUE_KIND
+        ));
     }
 
     #[test]
@@ -1525,6 +1742,23 @@ mod tests {
     }
 
     /// A credential with one bound account holding a live certificate.
+    /// Only the revoke that changed something records `eab_revoked`; a repeat
+    /// is idempotent and silent, and an unknown kid is `false`.
+    #[tokio::test]
+    async fn revoking_an_eab_records_once_and_creating_one_records_it() {
+        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let trail = Recorded::default();
+        let eab = create_eab(Some("label".to_string()), None, db.clone(), &trail)
+            .await
+            .unwrap();
+        let kid = eab.kid.to_string();
+
+        assert!(revoke_eab(&kid, db.clone(), &trail).await.unwrap());
+        assert!(revoke_eab(&kid, db.clone(), &trail).await.unwrap());
+        assert!(!revoke_eab("no-such-kid", db, &trail).await.unwrap());
+        assert_eq!(trail.events(), ["eab_created", "eab_revoked"]);
+    }
+
     async fn eab_with_live_account(db: &Arc<Database>) -> (Eab, uuid::Uuid) {
         let eab = Eab::create(None, None, db).await.unwrap();
         let (mut account, _) =
@@ -1541,9 +1775,16 @@ mod tests {
         let db = db().await;
         let mut reader: &[u8] = &[];
         assert!(matches!(
-            confirm_delete_eab("nope", BoundAccounts::Keep, true, &mut reader, db.clone())
-                .await
-                .unwrap(),
+            confirm_delete_eab(
+                "nope",
+                BoundAccounts::Keep,
+                true,
+                &mut reader,
+                db.clone(),
+                &Recorded::default()
+            )
+            .await
+            .unwrap(),
             EabDeleteOutcome::NotFound
         ));
 
@@ -1551,9 +1792,16 @@ mod tests {
         let kid = eab.kid.to_string();
         let mut declined: &[u8] = b"n\n";
         assert!(matches!(
-            confirm_delete_eab(&kid, BoundAccounts::Keep, false, &mut declined, db.clone())
-                .await
-                .unwrap(),
+            confirm_delete_eab(
+                &kid,
+                BoundAccounts::Keep,
+                false,
+                &mut declined,
+                db.clone(),
+                &Recorded::default()
+            )
+            .await
+            .unwrap(),
             EabDeleteOutcome::Cancelled
         ));
         assert!(Eab::find_any_by_kid(&kid, &db).await.unwrap().is_some());
@@ -1561,9 +1809,16 @@ mod tests {
         // Refused before the prompt, as the account and order deletes are.
         let mut reader: &[u8] = &[];
         assert!(matches!(
-            confirm_delete_eab(&kid, BoundAccounts::Delete, false, &mut reader, db.clone())
-                .await
-                .unwrap(),
+            confirm_delete_eab(
+                &kid,
+                BoundAccounts::Delete,
+                false,
+                &mut reader,
+                db.clone(),
+                &Recorded::default()
+            )
+            .await
+            .unwrap(),
             EabDeleteOutcome::LiveCertificates {
                 accounts: 1,
                 certificates: 1
@@ -1586,6 +1841,7 @@ mod tests {
             true,
             &mut reader,
             db.clone(),
+            &Recorded::default(),
         )
         .await
         .unwrap() else {
@@ -1594,10 +1850,15 @@ mod tests {
         assert_eq!(deleted.deactivated.len(), 1);
         assert_eq!(Order::find_by_account(account, &db).await.unwrap().len(), 1);
         assert!(
-            delete_eab(&eab.kid.to_string(), BoundAccounts::Keep, db.clone())
-                .await
-                .map(|deletion| matches!(deletion, EabDeletion::NotFound))
-                .unwrap()
+            delete_eab(
+                &eab.kid.to_string(),
+                BoundAccounts::Keep,
+                db.clone(),
+                &Recorded::default()
+            )
+            .await
+            .map(|deletion| matches!(deletion, EabDeletion::NotFound))
+            .unwrap()
         );
     }
 
@@ -1889,7 +2150,7 @@ mod tests {
     async fn update_account_contact_not_found() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         assert!(
-            update_account_contact("nope", vec![], db)
+            update_account_contact("nope", vec![], db, &Recorded::default())
                 .await
                 .unwrap()
                 .is_none()
@@ -1902,11 +2163,15 @@ mod tests {
         let acct = account_id(&db).await;
 
         let contact = vec!["mailto:a@example.com".to_string()];
-        let updated =
-            update_account_contact(acct.to_string().as_str(), contact.clone(), db.clone())
-                .await
-                .unwrap()
-                .unwrap();
+        let updated = update_account_contact(
+            acct.to_string().as_str(),
+            contact.clone(),
+            db.clone(),
+            &Recorded::default(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         assert_eq!(updated.contact, contact);
 
         let reloaded = Account::find_by_id("default", acct.to_string().as_str(), &db)
@@ -1920,7 +2185,7 @@ mod tests {
     async fn deactivate_account_not_found() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         assert!(
-            deactivate_account("nope", db, |_| None, None)
+            deactivate_account("nope", db, |_| None, None, &Recorded::default())
                 .await
                 .unwrap()
                 .is_none()
@@ -1947,6 +2212,7 @@ mod tests {
             db.clone(),
             |profile| (profile == "default").then(|| dispatcher.clone()),
             Some("203.0.113.7".to_string()),
+            &Recorded::default(),
         )
         .await
         .unwrap()

@@ -19,7 +19,6 @@ use crate::webadmin::pages::error::PageError;
 use crate::webadmin::pages::{ListFilters, chrome, page_value, pager, respond};
 use acme_proxy_core::audit::ALL_AUDIT_EVENTS;
 use acme_proxy_store::audit::AuditEntry;
-use acme_proxy_store::audit::AuditQuery;
 
 /// `GET /ui/audit?profile=&accountId=&orderId=&certSerial=&event=&outcome=&limit=&offset=`
 pub async fn list_audit(
@@ -38,21 +37,9 @@ pub async fn list_audit(
         .with("orderId", params.order_id.as_deref())
         .with("certSerial", params.cert_serial.as_deref());
 
-    let (entries, total) = admin::list_audit(
-        &AuditQuery {
-            profile: params.profile.clone(),
-            account_id: params.account_id.clone(),
-            order_id: params.order_id.clone(),
-            cert_serial: params.cert_serial.clone(),
-            event: params.event.clone(),
-            outcome: params.outcome.clone(),
-            since: None,
-            limit: page.limit,
-            offset: page.offset,
-        },
-        state.database.clone(),
-    )
-    .await?;
+    let (entries, total) = admin::list_audit(&params.query(page), state.database.clone())
+        .await
+        .map_err(AdminError::from)?;
 
     let items: Vec<Value> = entries.iter().map(AuditEntry::to_json).collect();
     let mut context = chrome(&session, "audit", "Audit");

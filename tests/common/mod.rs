@@ -370,6 +370,8 @@ pub async fn test_job_queue() -> JobQueue {
 pub struct NotifyHarness {
     pub dispatcher: Arc<NotifyDispatcher>,
     pub recorder: Arc<RecordingNotifyBackend>,
+    /// The queue `dispatcher` writes to, which `settled` waits on.
+    queue: JobQueue,
     shutdown: tokio::sync::watch::Sender<bool>,
 }
 
@@ -437,11 +439,12 @@ impl NotifyHarness {
             .unwrap();
 
         let (shutdown, receiver) = tokio::sync::watch::channel(false);
-        acme_proxy_jobs::jobs::spawn_runner(queue, Arc::new(registry), &config, receiver);
+        acme_proxy_jobs::jobs::spawn_runner(queue.clone(), Arc::new(registry), &config, receiver);
 
         Self {
             dispatcher,
             recorder,
+            queue,
             shutdown,
         }
     }
@@ -469,9 +472,29 @@ impl NotifyHarness {
     /// Everything recorded once the queue has gone quiet — for the assertions
     /// that a *further* event was **not** dispatched, where waiting for a count
     /// that will never arrive is not an option.
+    ///
+    /// Waits for the queue to hold no live delivery rather than for a fixed
+    /// span: a dispatch is a row written before the request answers, so an
+    /// empty queue means every event the action queued has been delivered —
+    /// where a sleep that happened to be too short on a slow runner let a
+    /// "nothing more was sent" assertion pass without proving anything.
     pub async fn settled(&self) -> Vec<NotifyEvent> {
-        tokio::time::sleep(Duration::from_millis(150)).await;
-        self.recorder.events()
+        for _ in 0..400 {
+            let live = acme_proxy_store::job::Job::count_live(
+                acme_proxy_jobs::notify::NOTIFY_JOB_KIND,
+                self.queue.database(),
+            )
+            .await
+            .unwrap();
+            if live == 0 {
+                return self.recorder.events();
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!(
+            "the notification queue never drained; delivered so far: {:?}",
+            self.recorder.events()
+        );
     }
 }
 
@@ -1245,6 +1268,138 @@ pub struct AdminSessionHandle {
 
 /// The password `test_admin_app_logged_in` creates its operator with.
 pub const ADMIN_PASSWORD: &str = "a-long-enough-password";
+
+/// Seeds `count` accounts, each with one order and a contact address, and
+/// returns their ids — the admin suites' shared fixture.
+///
+/// Every account is created from a real address with a reverse name, since that
+/// is what the panel and the API render — a `ClientContext::default()` would
+/// leave the traceability columns `NULL` and every assertion about them
+/// vacuous.
+pub async fn seed(database: &Arc<Database>, count: u8) -> Vec<String> {
+    use acme_proxy_core::identifier::Identifier;
+    use acme_proxy_store::account::Account;
+    use acme_proxy_store::order::Order;
+
+    let mut ids = Vec::new();
+    for index in 0..count {
+        let (account, _) = Account::find_or_create(
+            PROFILE,
+            &[1u8, index],
+            vec![format!("mailto:user{index}@example.com")],
+            &ClientContext {
+                ip: Some(format!("203.0.113.{index}")),
+                ptr: Some(format!("client{index}.example.net")),
+                ..ClientContext::default()
+            },
+            database,
+        )
+        .await
+        .unwrap();
+        Order::create(
+            PROFILE,
+            account.id,
+            vec![Identifier::dns(format!("host{index}.example.com"))],
+            2_000_000_000,
+            None,
+            None,
+            database,
+        )
+        .await
+        .unwrap();
+        ids.push(account.id.to_string());
+    }
+    ids
+}
+
+/// Issues a real certificate against the in-memory CA and returns the order id
+/// with the PEM chain it was finalized with.
+///
+/// The whole `Order::create` → `signer.issue` → `Order::finalize` sequence,
+/// because an order carrying a chain is not something `seed` can produce: the
+/// column is only ever written by finalize.
+pub async fn issue_into_an_order(
+    database: &std::sync::Arc<acme_proxy_store::db::Database>,
+    signer: &std::sync::Arc<dyn acme_proxy_signer::SignerBackend>,
+    name: &str,
+) -> (String, String) {
+    use acme_proxy_core::identifier::Identifier;
+    use acme_proxy_signer::RequestedValidity;
+    use acme_proxy_store::account::Account;
+    use acme_proxy_store::order::Order;
+
+    let (account, _) = Account::find_or_create(
+        PROFILE,
+        &[9u8, 9],
+        vec![],
+        &ClientContext::default(),
+        database,
+    )
+    .await
+    .unwrap();
+    let identifier = Identifier::dns(name);
+    let mut order = Order::create(
+        PROFILE,
+        account.id,
+        vec![identifier.clone()],
+        2_000_000_000,
+        None,
+        None,
+        database,
+    )
+    .await
+    .unwrap();
+
+    let csr_der = {
+        use base64::prelude::*;
+        BASE64_URL_SAFE_NO_PAD.decode(make_csr(name)).unwrap()
+    };
+    let issued = signer
+        .issue(
+            &order.id.to_string(),
+            &csr_der,
+            &[identifier],
+            RequestedValidity::default(),
+        )
+        .await
+        .expect("the in-memory CA must issue");
+    let chain = match issued {
+        acme_proxy_signer::IssueOutcome::Issued(chain) => chain,
+        other => panic!("expected an inline issuance, got {other:?}"),
+    };
+    let leaf_der = first_certificate(&chain);
+    let (serial, spki) = acme_proxy_core::cert::cert_serial_and_spki(&leaf_der).unwrap();
+    // The leaf's own `notAfter`, exactly as `post_finalize` stamps it — the
+    // helper is only useful to the extent it produces the row production does,
+    // and the card now renders this column.
+    let cert_not_after = acme_proxy_core::cert::cert_validity(&leaf_der)
+        .ok()
+        .map(|(_, not_after)| not_after);
+    order
+        .finalize(chain.clone(), serial, spki, cert_not_after, database)
+        .await
+        .unwrap();
+
+    (order.id.to_string(), chain)
+}
+
+/// One more operator, with [`ADMIN_PASSWORD`], no contact and the default
+/// tier — the extra principal most admin tests need and every one of them used
+/// to spell out in nine lines.
+pub async fn create_operator(
+    username: &str,
+    database: &Arc<Database>,
+) -> acme_proxy_store::admin_user::AdminUser {
+    acme_proxy_admin::admin::users::create_user(
+        username,
+        ADMIN_PASSWORD,
+        &acme_proxy_admin::admin::password::PasswordContext::empty(),
+        None,
+        database.clone(),
+    )
+    .await
+    .unwrap()
+}
 
 /// Builds the admin router, creates one operator, signs in, and hands back the
 /// credentials the rest of a test needs.
@@ -2875,10 +3030,10 @@ impl TestSigner for RsaSigner {
 /// A scratch directory that removes itself on drop, so a failing assertion
 /// cannot leave files behind.
 ///
-/// The library has its own copy under `crates/signer/src/testutil.rs`; an integration test
-/// cannot see a `#[cfg(test)]` item of the crate it links against, and making
-/// that one a real `pub mod` would ship test scaffolding to every consumer.
-/// Two copies, deliberately — down from seven.
+/// `acme_proxy_core::testutil::TempDir` (behind `test-util`) is the plain
+/// directory; this one also names the database a multi-process suite shares —
+/// a SQLite file, or a fresh PostgreSQL schema under `TEST_POSTGRES_URL` — which
+/// is why it is not that one.
 pub struct TempDir {
     path: std::path::PathBuf,
     database_url: String,

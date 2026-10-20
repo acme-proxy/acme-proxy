@@ -492,11 +492,9 @@ pub async fn get_mfa(
     auth: Authenticated,
 ) -> Result<Json<serde_json::Value>, AdminError> {
     let remaining = mfa::recovery_codes_remaining(auth.user.id, state.database).await?;
-    Ok(Json(json!({
-        "totpEnabled": auth.user.has_totp(),
-        "enrolmentPending": auth.user.has_pending_totp(),
-        "recoveryCodesRemaining": remaining,
-    })))
+    Ok(Json(crate::admin::render_totp_status_json(
+        &auth.user, remaining,
+    )))
 }
 
 /// `POST /api/mfa/totp` — begin an enrolment.

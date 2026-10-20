@@ -50,15 +50,7 @@ use serde_json::json;
 #[tokio::test]
 async fn login_sets_a_hardened_cookie_and_returns_a_csrf_token() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database,
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
 
     let response = admin_request(
         &app,
@@ -97,24 +89,8 @@ async fn login_sets_a_hardened_cookie_and_returns_a_csrf_token() {
 #[tokio::test]
 async fn every_login_failure_is_indistinguishable_to_the_client() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
-    acme_proxy_admin::admin::users::create_user(
-        "bob",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
+    create_operator("bob", &database).await;
     acme_proxy_admin::admin::users::set_status(
         "bob",
         acme_proxy_store::admin_user::AdminStatus::Disabled,
@@ -160,15 +136,7 @@ async fn login_is_rate_limited_before_the_password_hash_runs() {
     let mut config = admin_config();
     config.admin.login_max_attempts = 2;
     let (app, database) = test_admin_app(config).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database,
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
 
     let attempt = |password: &'static str| {
         let app = app.clone();
@@ -207,15 +175,7 @@ async fn login_is_rate_limited_before_the_password_hash_runs() {
 #[tokio::test]
 async fn a_login_stores_a_capped_user_agent() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
 
     let request = Request::post("/api/session")
         .header(header::CONTENT_TYPE, "application/json")
@@ -244,15 +204,7 @@ async fn a_parallel_burst_of_logins_gets_no_more_guesses_than_the_limit() {
     let mut config = admin_config();
     config.admin.login_max_attempts = 3;
     let (app, database) = test_admin_app(config).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database,
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
 
     let mut burst = tokio::task::JoinSet::new();
     for _ in 0..12 {
@@ -574,15 +526,7 @@ async fn signing_out_everywhere_ends_every_session_and_is_audited() {
 #[tokio::test]
 async fn a_factorless_login_is_completely_unchanged() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database,
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
 
     let response = admin_request(
         &app,
@@ -619,15 +563,7 @@ async fn a_factorless_login_is_completely_unchanged() {
 #[tokio::test]
 async fn a_factor_bearing_login_stops_half_way_and_says_so() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
     enrol_totp(database, "alice").await;
 
     let (cookie, csrf) = admin_login_pending(&app, "alice", ADMIN_PASSWORD).await;
@@ -671,15 +607,7 @@ async fn a_factor_bearing_login_stops_half_way_and_says_so() {
 #[tokio::test]
 async fn a_valid_code_promotes_the_session_onto_a_brand_new_token() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
     let secret = enrol_totp(database.clone(), "alice").await;
     sqlx::query("UPDATE admin_users SET totp_last_step = NULL WHERE username = 'alice';")
         .execute(database.raw_pool())
@@ -743,15 +671,7 @@ async fn a_valid_code_promotes_the_session_onto_a_brand_new_token() {
 #[tokio::test]
 async fn a_code_cannot_be_spent_twice() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
     let secret = enrol_totp(database.clone(), "alice").await;
 
     sqlx::query("UPDATE admin_users SET totp_last_step = NULL WHERE username = 'alice';")
@@ -796,15 +716,7 @@ async fn a_code_cannot_be_spent_twice() {
 #[tokio::test]
 async fn a_wrong_code_is_indistinguishable_from_a_wrong_password() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
     enrol_totp(database, "alice").await;
 
     let (cookie, csrf) = admin_login_pending(&app, "alice", ADMIN_PASSWORD).await;
@@ -849,15 +761,7 @@ async fn the_code_step_shares_the_login_limiter() {
     let mut config = admin_config();
     config.admin.login_max_attempts = 3;
     let (app, database) = test_admin_app(config).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
     let secret = enrol_totp(database, "alice").await;
 
     let (cookie, csrf) = admin_login_pending(&app, "alice", ADMIN_PASSWORD).await;
@@ -922,15 +826,7 @@ async fn the_code_step_is_bounded_per_session_and_not_only_per_address() {
     let mut config = admin_config();
     config.admin.login_max_attempts = 3;
     let (app, database) = test_admin_app(config).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
     let secret = enrol_totp(database.clone(), "alice").await;
 
     let (cookie, csrf) = admin_login_pending(&app, "alice", ADMIN_PASSWORD).await;
@@ -986,15 +882,7 @@ async fn the_password_step_does_not_clear_the_limiter_while_a_factor_is_outstand
     let mut config = admin_config();
     config.admin.login_max_attempts = 3;
     let (app, database) = test_admin_app(config).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
     enrol_totp(database, "alice").await;
 
     let (cookie, csrf) = admin_login_pending(&app, "alice", ADMIN_PASSWORD).await;
@@ -1040,15 +928,7 @@ async fn the_password_step_does_not_clear_the_limiter_while_a_factor_is_outstand
 #[tokio::test]
 async fn last_login_is_stamped_at_promotion_not_at_the_password() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
     let secret = enrol_totp(database.clone(), "alice").await;
     sqlx::query("UPDATE admin_users SET totp_last_step = NULL WHERE username = 'alice';")
         .execute(database.raw_pool())
@@ -1087,15 +967,7 @@ async fn last_login_is_stamped_at_promotion_not_at_the_password() {
 #[tokio::test]
 async fn a_recovery_code_finishes_a_login_and_is_then_spent() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
     enrol_totp(database.clone(), "alice").await;
 
     let user = acme_proxy_store::admin_user::AdminUser::find_by_username("alice", &database)
@@ -1244,15 +1116,7 @@ async fn enrolment_shows_the_secret_once_and_the_codes_once() {
 #[tokio::test]
 async fn a_step_up_password_is_rate_limited_and_shares_the_sign_in_budget() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
     let secret = enrol_totp(database.clone(), "alice").await;
     let session = admin_login_mfa(&app, database, "alice", ADMIN_PASSWORD, &secret).await;
 
@@ -1308,15 +1172,7 @@ async fn a_step_up_password_is_rate_limited_and_shares_the_sign_in_budget() {
 #[tokio::test]
 async fn recovery_codes_can_be_reissued_and_supersede_the_previous_set() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
 
     // No factor: there is nothing for the codes to recover access to.
     let session = admin_login(&app, "alice", ADMIN_PASSWORD).await;
@@ -1383,15 +1239,7 @@ async fn require_mfa_makes_a_factorless_operator_enrol_before_the_session_works(
     let mut config = admin_config();
     config.admin.require_mfa = true;
     let (app, database) = test_admin_app(config).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database,
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
 
     let (cookie, csrf) = admin_login_pending(&app, "alice", ADMIN_PASSWORD).await;
     let pending = AdminSessionHandle { cookie, csrf };
@@ -1457,15 +1305,7 @@ async fn require_mfa_makes_a_factorless_operator_enrol_before_the_session_works(
 #[tokio::test]
 async fn a_session_that_owes_a_code_cannot_enrol_its_way_past_it() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
     enrol_totp(database, "alice").await;
 
     let (cookie, csrf) = admin_login_pending(&app, "alice", ADMIN_PASSWORD).await;
@@ -1499,15 +1339,7 @@ async fn disabling_the_factor_is_refused_while_require_mfa_is_on() {
     let mut config = admin_config();
     config.admin.require_mfa = true;
     let (app, database) = test_admin_app(config).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
     let secret = enrol_totp(database.clone(), "alice").await;
     let session = admin_login_mfa(&app, database, "alice", ADMIN_PASSWORD, &secret).await;
 
@@ -1526,15 +1358,7 @@ async fn disabling_the_factor_is_refused_while_require_mfa_is_on() {
 #[tokio::test]
 async fn disabling_the_factor_clears_the_codes_and_the_other_sessions() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
     let secret = enrol_totp(database.clone(), "alice").await;
 
     let other = admin_login_mfa(&app, database.clone(), "alice", ADMIN_PASSWORD, &secret).await;
@@ -1617,15 +1441,7 @@ const NEW_PASSWORD: &str = "a-different-long-password";
 #[tokio::test]
 async fn password_change_updates_the_hash_keeps_the_session_and_revokes_every_other() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
 
     // Neither session has a second factor -- the case `check_step_up` would
     // have skipped entirely.
@@ -1789,15 +1605,7 @@ fn mfa_step_endpoints() -> Vec<(Method, &'static str)> {
 #[tokio::test]
 async fn the_mfa_step_endpoints_need_a_pending_session_and_the_origin_gate() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
     enrol_totp(database, "alice").await;
 
     for (method, path) in mfa_step_endpoints() {
@@ -2119,15 +1927,7 @@ async fn role_gates_every_mutating_endpoint() {
         ("olga", Some(AdminRole::Operator)),
         ("vera", Some(AdminRole::Viewer)),
     ] {
-        acme_proxy_admin::admin::users::create_user(
-            name,
-            ADMIN_PASSWORD,
-            &PasswordContext::empty(),
-            None,
-            database.clone(),
-        )
-        .await
-        .unwrap();
+        create_operator(name, &database).await;
         if let Some(role) = role {
             acme_proxy_admin::admin::users::set_role(name, role, database.clone())
                 .await
@@ -2279,46 +2079,6 @@ async fn logout_is_reachable_by_every_role() {
 // ---------------------------------------------------------------------------
 // Resources
 // ---------------------------------------------------------------------------
-
-/// Seeds `count` accounts, each with one order, and returns their ids.
-///
-/// Each is created from a real address with a reverse name, so the traceability
-/// members the admin renderer adds have something to carry.
-async fn seed(database: &std::sync::Arc<acme_proxy_store::db::Database>, count: u8) -> Vec<String> {
-    use acme_proxy_core::identifier::Identifier;
-    use acme_proxy_store::account::Account;
-    use acme_proxy_store::order::Order;
-
-    let mut ids = Vec::new();
-    for index in 0..count {
-        let (account, _) = Account::find_or_create(
-            PROFILE,
-            &[1u8, index],
-            vec![format!("mailto:user{index}@example.com")],
-            &ClientContext {
-                ip: Some(format!("203.0.113.{index}")),
-                ptr: Some(format!("client{index}.example.net")),
-                ..ClientContext::default()
-            },
-            database,
-        )
-        .await
-        .unwrap();
-        Order::create(
-            PROFILE,
-            account.id,
-            vec![Identifier::dns(format!("host{index}.example.com"))],
-            2_000_000_000,
-            None,
-            None,
-            database,
-        )
-        .await
-        .unwrap();
-        ids.push(account.id.to_string());
-    }
-    ids
-}
 
 #[tokio::test]
 async fn accounts_list_pages_and_reports_the_total() {
@@ -3516,89 +3276,30 @@ async fn the_admin_listener_serves_no_acme() {
 /// other revoke test cannot reach, and the one that actually touches the CA.
 #[tokio::test]
 async fn revoking_an_issued_order_succeeds_once_and_then_conflicts() {
-    use acme_proxy_core::identifier::Identifier;
-    use acme_proxy_signer::RequestedValidity;
-    use acme_proxy_store::account::Account;
-    use acme_proxy_store::order::Order;
-
     let mut config = admin_config();
     config.admin.enabled = true;
     let (app, database, signer) = test_admin_app_with_signer(config).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
     let session = admin_login(&app, "alice", ADMIN_PASSWORD).await;
 
     // An order, issued through the very backend the handler will revoke
     // against.
-    let (account, _) = Account::find_or_create(
-        PROFILE,
-        &[4u8, 2],
-        vec![],
-        &ClientContext::default(),
-        &database,
-    )
-    .await
-    .unwrap();
-    let identifier = Identifier::dns("revoke-me.example.com");
-    let mut order = Order::create(
-        PROFILE,
-        account.id,
-        vec![identifier.clone()],
-        2_000_000_000,
-        None,
-        None,
-        &database,
-    )
-    .await
-    .unwrap();
-
-    let csr_der = {
-        let csr = make_csr("revoke-me.example.com");
-        use base64::prelude::*;
-        BASE64_URL_SAFE_NO_PAD.decode(csr).unwrap()
-    };
-    let issued = signer
-        .issue(
-            &order.id.to_string(),
-            &csr_der,
-            &[identifier],
-            RequestedValidity::default(),
-        )
-        .await
-        .expect("the in-memory CA must issue");
-    let chain = match issued {
-        acme_proxy_signer::IssueOutcome::Issued(chain) => chain,
-        other => panic!("expected an inline issuance, got {other:?}"),
-    };
-    // The leaf's DER out of the PEM chain: `cert_serial_and_spki` parses one
-    // certificate, not a chain.
-    let (serial, spki) =
+    let (order_id, chain) = issue_into_an_order(&database, &signer, "revoke-me.example.com").await;
+    let (expected_serial, _) =
         acme_proxy_core::cert::cert_serial_and_spki(&first_certificate(&chain)).unwrap();
-    let expected_serial = serial.clone();
-    order
-        .finalize(chain, serial, spki, None, &database)
-        .await
-        .unwrap();
 
     // First revocation succeeds and returns the order.
     let response = admin_request(
         &app,
         Method::POST,
-        &format!("/api/orders/{}/revoke", order.id),
+        &format!("/api/orders/{order_id}/revoke"),
         Some(&session),
         Some(json!({ "reason": 1 })),
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     let body = json_body(response).await;
-    assert_eq!(body["id"], order.id.to_string());
+    assert_eq!(body["id"], order_id);
     // `render_order_json` surfaces the admin-only revocation columns that
     // `Order::to_json` deliberately omits.
     assert_eq!(body["revocationReason"], 1);
@@ -3621,7 +3322,7 @@ async fn revoking_an_issued_order_succeeds_once_and_then_conflicts() {
     let repeat = admin_request(
         &app,
         Method::POST,
-        &format!("/api/orders/{}/revoke", order.id),
+        &format!("/api/orders/{order_id}/revoke"),
         Some(&session),
         None,
     )
@@ -3642,15 +3343,7 @@ async fn revoking_an_issued_order_succeeds_once_and_then_conflicts() {
 #[tokio::test]
 async fn changing_a_live_factor_requires_the_password_again() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
     let secret = enrol_totp(database.clone(), "alice").await;
     let session = admin_login_mfa(&app, database.clone(), "alice", ADMIN_PASSWORD, &secret).await;
 
@@ -3723,15 +3416,7 @@ async fn changing_a_live_factor_requires_the_password_again() {
 #[tokio::test]
 async fn a_first_enrolment_asks_for_no_password() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
     let session = admin_login(&app, "alice", ADMIN_PASSWORD).await;
 
     let begun = admin_request(
@@ -3845,15 +3530,7 @@ async fn an_oversized_admin_request_body_is_refused() {
     let mut config = admin_config();
     config.admin.max_body_bytes = 1024;
     let (app, database) = test_admin_app(config).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database,
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
     let session = admin_login(&app, "alice", ADMIN_PASSWORD).await;
 
     let oversized = json!({ "contact": ["mailto:a@b.test"], "padding": "x".repeat(4096) });
@@ -3963,6 +3640,21 @@ async fn the_audit_api_lists_pages_and_refuses_every_way_of_writing_to_it() {
     assert_eq!(paged["total"], 4);
     assert_eq!(paged["items"].as_array().unwrap().len(), 2);
     assert_eq!(paged["limit"], 2);
+
+    // A filter outside its closed vocabulary is refused by name, not answered
+    // with an empty page that reads like "nothing happened".
+    for (path, named) in [
+        (
+            "/api/audit?event=certificate_renewed",
+            "certificate_renewed",
+        ),
+        ("/api/audit?outcome=maybe", "maybe"),
+    ] {
+        let response = admin_request(&app, Method::GET, path, Some(&session), None).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
+        let body = json_body(response).await;
+        assert!(body.to_string().contains(named), "{path}: {body}");
+    }
 
     // One row by id, and an unknown one.
     let id = body["items"][0]["id"].as_i64().unwrap();
@@ -4831,15 +4523,7 @@ async fn revoking_the_current_own_session_signs_it_out() {
 #[tokio::test]
 async fn own_sessions_route_cannot_reach_another_operators_session() {
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
-    acme_proxy_admin::admin::users::create_user(
-        "bob",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
+    create_operator("bob", &database).await;
     let bob = admin_login(&app, "bob", ADMIN_PASSWORD).await;
 
     let bob_sessions = json_body(
@@ -4880,15 +4564,7 @@ async fn app_with_bob() -> (
     common::AdminSessionHandle,
 ) {
     let (app, database, alice) = test_admin_app_logged_in(admin_config()).await;
-    acme_proxy_admin::admin::users::create_user(
-        "bob",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
+    create_operator("bob", &database).await;
     let bob = admin_login(&app, "bob", ADMIN_PASSWORD).await;
     (app, database, alice, bob)
 }
@@ -4936,16 +4612,22 @@ async fn every_mutation_writes_one_audit_row_naming_the_operator_and_the_address
     let (relay_job, _) = seed_relay_job(&database).await;
     // A third operator, so the session revoked below is not one the
     // disable/enable cases have already dropped.
-    acme_proxy_admin::admin::users::create_user(
-        "carol",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
+    create_operator("carol", &database).await;
+    let _carol = admin_login(&app, "carol", ADMIN_PASSWORD).await;
+    // A factor for the reset below to remove: a reset with nothing to remove
+    // writes nothing and is refused. Half-enrolled, because a confirmed
+    // enrolment ends bob's sessions and the disable case below counts one.
+    let mut bob_user = acme_proxy_store::admin_user::AdminUser::find_by_username("bob", &database)
+        .await
+        .unwrap()
+        .unwrap();
+    acme_proxy_admin::admin::mfa::begin_totp_enrolment(
+        &mut bob_user,
+        "http://localhost:3001",
         database.clone(),
     )
     .await
     .unwrap();
-    let _carol = admin_login(&app, "carol", ADMIN_PASSWORD).await;
     let carol_session = json_body(
         admin_request(
             &app,
@@ -5200,6 +4882,18 @@ async fn resetting_an_operators_totp_clears_it_and_their_sessions() {
         json_body(admin_request(&app, Method::GET, "/api/operators/bob", Some(&alice), None).await)
             .await;
     assert_eq!(bob_detail_after["totpEnabled"], false);
+
+    // A second reset has nothing left to remove: refused, as the CLI refuses
+    // it, rather than recorded and announced to bob as though it did something.
+    let again = admin_request(
+        &app,
+        Method::POST,
+        "/api/operators/bob/totp/reset",
+        Some(&alice),
+        Some(json!({ "password": ADMIN_PASSWORD })),
+    )
+    .await;
+    assert_eq!(again.status(), StatusCode::CONFLICT);
     assert_eq!(
         admin_request(&app, Method::GET, "/api/session", Some(&bob), None)
             .await
@@ -5621,15 +5315,7 @@ async fn a_first_sign_in_and_a_contactless_operator_are_silent() {
 
     // A brand-new operator with no contact address, signing in for the first
     // time from an address nobody has used.
-    acme_proxy_admin::admin::users::create_user(
-        "quiet",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
+    create_operator("quiet", &database).await;
     let response = admin_request_from(
         &app,
         Method::POST,
@@ -5709,15 +5395,7 @@ async fn a_refused_second_factor_notifies_the_operator() {
 async fn resetting_a_colleagues_factor_notifies_them_as_not_self() {
     let (app, database, alice, notify) =
         test_admin_app_logged_in_with_security_notify(admin_config()).await;
-    acme_proxy_admin::admin::users::create_user(
-        "bob",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
+    create_operator("bob", &database).await;
     acme_proxy_admin::admin::users::set_contact_email(
         "bob",
         Some("bob@example.com"),

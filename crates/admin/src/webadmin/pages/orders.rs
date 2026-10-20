@@ -125,9 +125,9 @@ pub async fn download_chain(
     // has no chain, and handing back zero bytes named `.pem` would look like a
     // broken certificate rather than an absent one.
     let filename = format!("{}.pem", order.id);
-    let pem = order.certificate.ok_or_else(|| {
-        PageError::not_found(format!("order {id} has no certificate to download"))
-    })?;
+    let pem = order
+        .certificate
+        .ok_or_else(|| PageError::not_found(crate::admin::order_not_issued_refusal(&id)))?;
 
     Ok((
         [

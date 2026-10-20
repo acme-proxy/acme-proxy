@@ -18,6 +18,8 @@
 //!   single-use recovery codes, and where those two meet the database.
 //! - [`prompt`] — confirmation, over an injectable reader so it is testable.
 //! - [`subject`] — the one "not found" sentence per kind of row.
+//! - [`trail`] — where one surface's audit rows go; every operation that owes a
+//!   row writes it through one, so no front end can leave the trail silent.
 //!
 //! **Destructive operations come in pairs**: a bare form, and a `confirm_*`
 //! wrapper taking `assume_yes` and a reader. Those two arguments are a
@@ -34,6 +36,7 @@ pub mod recovery;
 pub mod render;
 pub mod subject;
 pub mod totp;
+pub mod trail;
 pub mod users;
 
 pub use ops::*;

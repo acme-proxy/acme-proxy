@@ -140,9 +140,14 @@ call too; a handler keeps only what is HTTP.
   `crates/admin/src/webadmin/static/README.md`.
 - `handlers/params.rs`: a blank query value is absent, and `#[serde(default)]`
   must accompany `deserialize_with`.
-- An operator changed by another — status, role, contact, TOTP reset — goes
-  through `admin::changes` with the surface's `OperatorTrail`; a front end keeps
-  only its output and its log line.
+- An operator changed by another — status, role, contact, password, TOTP
+  reset, recovery codes, a revoked session — goes through `admin::changes` with
+  the surface's `OperatorTrail`; a front end keeps only its output and its log
+  line.
+- **An operation that owes an audit row writes it itself**, through the
+  `admin::trail::ActionTrail` its caller passes (`CliActions`,
+  `Caller::trail`). A front end never records one beside the call — that is
+  how `order delete` on the CLI once left the trail silent.
 - **An external operator (`auth_provider` set) is never linked by name** and
   has no password: re-prove one with `handlers::mfa::reprove`, never
   `verify_current_password` alone. Their role is set only by
@@ -151,9 +156,10 @@ call too; a handler keeps only what is HTTP.
 - `ldap3` is always given our `ClientConfig` (`set_config`): its fallback
   installs a process-wide crypto provider.
 - **No `#[instrument]` in `webadmin/` or `jobs/runner.rs`.**
-- CLI command bodies return `CliError` and never print or exit; only
-  `src/main.rs` does. `Palette::plain()` is the identity, `--json` never sees a
-  palette, and colour wraps a field **after** it is padded.
+- CLI command bodies return `CliError` and never print an error or exit; only
+  `src/main.rs` does (their output is `println!`). `Palette::plain()` is the
+  identity, `--json` never sees a palette, and colour wraps a field **after**
+  it is padded.
 - The logging stack composes its filter with `and_then`, never `with_filter`,
   and puts the format layer inside (`crates/server/src/logging.rs`).
 

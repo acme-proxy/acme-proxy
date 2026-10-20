@@ -462,8 +462,8 @@ fn worth_telling(entries: &[ExpiringEntry], total: i64) -> bool {
 fn leaf_not_after(chain: &str) -> i64 {
     acme_proxy_core::cert::leaf_der_from_chain(chain)
         .ok()
-        .and_then(|der| acme_proxy_core::cert::cert_validity(&der).ok())
-        .map_or(UNPARSABLE_NOT_AFTER, |(_, not_after)| not_after)
+        .and_then(|der| acme_proxy_core::cert::not_after(&der))
+        .unwrap_or(UNPARSABLE_NOT_AFTER)
 }
 
 #[async_trait]

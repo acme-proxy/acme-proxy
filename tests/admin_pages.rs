@@ -58,15 +58,7 @@ async fn the_sign_in_page_renders_without_a_session_and_carries_no_htmx() {
 #[tokio::test]
 async fn a_form_login_sets_the_same_hardened_cookie_and_redirects_to_the_panel() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database,
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
 
     let response = admin_form_request(
         &app,
@@ -94,15 +86,7 @@ async fn a_form_login_sets_the_same_hardened_cookie_and_redirects_to_the_panel()
 #[tokio::test]
 async fn a_failed_form_login_re_renders_the_page_with_its_real_status() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database,
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
 
     let response = admin_form_request(
         &app,
@@ -130,15 +114,7 @@ async fn the_sign_in_page_is_rate_limited_like_the_api() {
     let mut config = admin_config();
     config.admin.login_max_attempts = 2;
     let (app, database) = test_admin_app(config).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database,
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
 
     for _ in 0..2 {
         admin_form_request(
@@ -171,15 +147,7 @@ async fn the_sign_in_page_is_rate_limited_like_the_api() {
 #[tokio::test]
 async fn the_challenge_page_renders_for_a_pending_session_and_carries_no_htmx() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
     enrol_totp(database, "alice").await;
 
     let response = admin_form_request(
@@ -220,15 +188,7 @@ async fn the_challenge_page_renders_for_a_pending_session_and_carries_no_htmx() 
 #[tokio::test]
 async fn a_form_second_step_completes_the_sign_in_and_rotates_the_cookie() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
     let secret = enrol_totp(database.clone(), "alice").await;
     sqlx::query("UPDATE admin_users SET totp_last_step = NULL WHERE username = 'alice';")
         .execute(database.raw_pool())
@@ -302,15 +262,7 @@ async fn a_form_second_step_completes_the_sign_in_and_rotates_the_cookie() {
 #[tokio::test]
 async fn a_half_authenticated_cookie_reaches_no_page() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
     enrol_totp(database, "alice").await;
 
     let started = admin_form_request(
@@ -425,15 +377,7 @@ async fn require_mfa_turns_the_challenge_page_into_an_enrolment_page() {
     let mut config = admin_config();
     config.admin.require_mfa = true;
     let (app, database) = test_admin_app(config).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database,
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
 
     let started = admin_form_request(
         &app,
@@ -661,15 +605,7 @@ async fn the_account_page_reports_its_refusals_as_banners() {
     let mut config = admin_config();
     config.admin.require_mfa = true;
     let (app, database) = test_admin_app(config).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
     let secret = enrol_totp(database.clone(), "alice").await;
     let session = admin_login_mfa(&app, database, "alice", ADMIN_PASSWORD, &secret).await;
 
@@ -704,15 +640,7 @@ async fn the_account_page_reports_its_refusals_as_banners() {
 #[tokio::test]
 async fn a_rate_limited_step_up_is_a_banner_at_its_own_status() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
     let secret = enrol_totp(database.clone(), "alice").await;
     let session = admin_login_mfa(&app, database, "alice", ADMIN_PASSWORD, &secret).await;
 
@@ -767,15 +695,7 @@ async fn a_rate_limited_step_up_is_a_banner_at_its_own_status() {
 #[tokio::test]
 async fn the_password_card_changes_the_password_keeps_the_session_and_revokes_every_other() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
 
     let other = admin_login(&app, "alice", ADMIN_PASSWORD).await;
     let session = admin_login(&app, "alice", ADMIN_PASSWORD).await;
@@ -1108,15 +1028,7 @@ async fn every_mutating_page_endpoint_refuses_a_missing_csrf_token() {
 #[tokio::test]
 async fn every_mutating_page_endpoint_refuses_another_sessions_csrf_token() {
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
-    acme_proxy_admin::admin::users::create_user(
-        "bob",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database,
-    )
-    .await
-    .unwrap();
+    create_operator("bob", &database).await;
     let other = admin_login(&app, "bob", ADMIN_PASSWORD).await;
 
     for (method, path, _tier) in mutating_page_endpoints() {
@@ -1163,15 +1075,7 @@ async fn role_gates_every_mutating_page_endpoint() {
         ("olga", Some(AdminRole::Operator)),
         ("vera", Some(AdminRole::Viewer)),
     ] {
-        acme_proxy_admin::admin::users::create_user(
-            name,
-            ADMIN_PASSWORD,
-            &PasswordContext::empty(),
-            None,
-            database.clone(),
-        )
-        .await
-        .unwrap();
+        create_operator(name, &database).await;
         if let Some(role) = role {
             acme_proxy_admin::admin::users::set_role(name, role, database.clone())
                 .await
@@ -1536,47 +1440,6 @@ async fn the_layout_carries_the_csrf_token_every_write_depends_on() {
 // ---------------------------------------------------------------------------
 // Resources
 // ---------------------------------------------------------------------------
-
-/// Seeds `count` accounts, each with one order, and returns their ids.
-///
-/// Every account is created from a real address with a reverse name, since that
-/// is what the pages render — a `ClientContext::default()` would leave the
-/// traceability columns `NULL` and every assertion about them vacuous.
-async fn seed(database: &std::sync::Arc<acme_proxy_store::db::Database>, count: u8) -> Vec<String> {
-    use acme_proxy_core::identifier::Identifier;
-    use acme_proxy_store::account::Account;
-    use acme_proxy_store::order::Order;
-
-    let mut ids = Vec::new();
-    for index in 0..count {
-        let (account, _) = Account::find_or_create(
-            PROFILE,
-            &[1u8, index],
-            vec![],
-            &ClientContext {
-                ip: Some(format!("203.0.113.{index}")),
-                ptr: Some(format!("client{index}.example.net")),
-                ..ClientContext::default()
-            },
-            database,
-        )
-        .await
-        .unwrap();
-        Order::create(
-            PROFILE,
-            account.id,
-            vec![Identifier::dns(format!("host{index}.example.com"))],
-            2_000_000_000,
-            None,
-            None,
-            database,
-        )
-        .await
-        .unwrap();
-        ids.push(account.id.to_string());
-    }
-    ids
-}
 
 #[tokio::test]
 async fn the_overview_counts_every_resource() {
@@ -2066,15 +1929,7 @@ async fn revoking_an_issued_order_shows_a_banner_and_then_a_conflict() {
     use acme_proxy_store::order::Order;
 
     let (app, database, signer) = test_admin_app_with_signer(admin_config()).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
     let session = admin_login(&app, "alice", ADMIN_PASSWORD).await;
 
     let (account, _) = Account::find_or_create(
@@ -2165,77 +2020,6 @@ async fn revoking_an_issued_order_shows_a_banner_and_then_a_conflict() {
     assert!(body.contains("order-card"));
 }
 
-/// Issues a real certificate against the in-memory CA and returns the order id
-/// with the PEM chain it was finalized with.
-///
-/// The whole `Order::create` → `signer.issue` → `Order::finalize` sequence,
-/// because an order carrying a chain is not something `seed` can produce: the
-/// column is only ever written by finalize.
-async fn issue_into_an_order(
-    database: &std::sync::Arc<acme_proxy_store::db::Database>,
-    signer: &std::sync::Arc<dyn acme_proxy_signer::SignerBackend>,
-    name: &str,
-) -> (String, String) {
-    use acme_proxy_core::identifier::Identifier;
-    use acme_proxy_signer::RequestedValidity;
-    use acme_proxy_store::account::Account;
-    use acme_proxy_store::order::Order;
-
-    let (account, _) = Account::find_or_create(
-        PROFILE,
-        &[9u8, 9],
-        vec![],
-        &ClientContext::default(),
-        database,
-    )
-    .await
-    .unwrap();
-    let identifier = Identifier::dns(name);
-    let mut order = Order::create(
-        PROFILE,
-        account.id,
-        vec![identifier.clone()],
-        2_000_000_000,
-        None,
-        None,
-        database,
-    )
-    .await
-    .unwrap();
-
-    let csr_der = {
-        use base64::prelude::*;
-        BASE64_URL_SAFE_NO_PAD.decode(make_csr(name)).unwrap()
-    };
-    let issued = signer
-        .issue(
-            &order.id.to_string(),
-            &csr_der,
-            &[identifier],
-            RequestedValidity::default(),
-        )
-        .await
-        .expect("the in-memory CA must issue");
-    let chain = match issued {
-        acme_proxy_signer::IssueOutcome::Issued(chain) => chain,
-        other => panic!("expected an inline issuance, got {other:?}"),
-    };
-    let leaf_der = first_certificate(&chain);
-    let (serial, spki) = acme_proxy_core::cert::cert_serial_and_spki(&leaf_der).unwrap();
-    // The leaf's own `notAfter`, exactly as `post_finalize` stamps it — the
-    // helper is only useful to the extent it produces the row production does,
-    // and the card now renders this column.
-    let cert_not_after = acme_proxy_core::cert::cert_validity(&leaf_der)
-        .ok()
-        .map(|(_, not_after)| not_after);
-    order
-        .finalize(chain.clone(), serial, spki, cert_not_after, database)
-        .await
-        .unwrap();
-
-    (order.id.to_string(), chain)
-}
-
 /// The card shows the certificate itself, not the ACME URL.
 ///
 /// That URL is reachable only by signed POST-as-GET, so a browser handed it
@@ -2244,15 +2028,7 @@ async fn issue_into_an_order(
 #[tokio::test]
 async fn an_issued_order_card_shows_the_chain_and_offers_it_for_download() {
     let (app, database, signer) = test_admin_app_with_signer(admin_config()).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
     let session = admin_login(&app, "alice", ADMIN_PASSWORD).await;
 
     let (order_id, chain) = issue_into_an_order(&database, &signer, "chain.example.com").await;
@@ -2565,15 +2341,7 @@ async fn a_page_limit_over_the_ceiling_is_clamped_rather_than_refused() {
     let mut config = admin_config();
     config.admin.page_size_max = 2;
     let (app, database) = test_admin_app(config).await;
-    acme_proxy_admin::admin::users::create_user(
-        "alice",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
+    create_operator("alice", &database).await;
     let session = admin_login(&app, "alice", ADMIN_PASSWORD).await;
     seed(&database, 5).await;
 
@@ -3575,6 +3343,20 @@ async fn the_expiring_page_annotates_rows_escapes_them_and_offers_nothing_to_wri
     }
 }
 
+/// The page refuses an audit filter it does not know, as the API and the CLI
+/// do: an empty table for a typo'd `event` reads like "nothing happened".
+#[tokio::test]
+async fn an_unknown_audit_filter_is_refused_not_answered_empty() {
+    let (app, _database, session) = test_admin_app_logged_in(admin_config()).await;
+    for path in [
+        "/ui/audit?event=certificate_renewed",
+        "/ui/audit?outcome=maybe",
+    ] {
+        let response = admin_page(&app, path, Some(&session), false).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
+    }
+}
+
 /// The same rule as `admin_api::a_blank_filter_is_absent_on_every_list`, on the
 /// front end that actually produces the shape.
 ///
@@ -3843,15 +3625,7 @@ async fn revoking_the_current_session_from_the_account_page_signs_out() {
 
 async fn app_with_bob() -> (axum::Router, AdminSessionHandle, AdminSessionHandle) {
     let (app, database, alice) = test_admin_app_logged_in(admin_config()).await;
-    acme_proxy_admin::admin::users::create_user(
-        "bob",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
+    create_operator("bob", &database).await;
     let bob = admin_login(&app, "bob", ADMIN_PASSWORD).await;
     (app, alice, bob)
 }
@@ -3875,15 +3649,7 @@ async fn the_operators_page_lists_every_operator_and_badges_the_callers_own_row(
 #[tokio::test]
 async fn the_operators_pages_show_role_contact_and_recent_addresses() {
     let (app, database, alice) = test_admin_app_logged_in(admin_config()).await;
-    acme_proxy_admin::admin::users::create_user(
-        "bob",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
+    create_operator("bob", &database).await;
     acme_proxy_admin::admin::users::set_role(
         "bob",
         acme_proxy_store::admin_user::AdminRole::Viewer,
@@ -4109,15 +3875,7 @@ async fn the_operator_detail_page_redirects_the_caller_to_their_own_account_page
 #[tokio::test]
 async fn the_operator_detail_page_manages_another_operator_end_to_end() {
     let (app, database, alice_seed) = test_admin_app_logged_in(admin_config()).await;
-    acme_proxy_admin::admin::users::create_user(
-        "bob",
-        ADMIN_PASSWORD,
-        &PasswordContext::empty(),
-        None,
-        database.clone(),
-    )
-    .await
-    .unwrap();
+    create_operator("bob", &database).await;
     let _bob_seed = admin_login(&app, "bob", ADMIN_PASSWORD).await;
     // Give bob a second live session so the revoke case has something to leave
     // behind.

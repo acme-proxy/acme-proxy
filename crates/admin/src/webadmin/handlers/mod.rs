@@ -88,4 +88,37 @@ impl<'a> Caller<'a> {
     pub(crate) fn username(&self) -> &str {
         &self.auth.user.username
     }
+
+    /// Where an operation's audit rows go when this caller performs it:
+    /// attributed to the operator, from the request's address, through the
+    /// process's auditor.
+    pub(crate) fn trail<'s>(&'s self, state: &'s crate::webadmin::AdminState) -> CallerTrail<'s> {
+        CallerTrail {
+            state,
+            request: self.request,
+            username: self.username(),
+        }
+    }
+}
+
+/// [`Caller::trail`].
+pub(crate) struct CallerTrail<'a> {
+    state: &'a crate::webadmin::AdminState,
+    request: &'a RequestContext,
+    username: &'a str,
+}
+
+impl crate::admin::trail::ActionTrail for CallerTrail<'_> {
+    async fn record_all(
+        &self,
+        build: impl FnOnce(
+            acme_proxy_core::audit::Actor,
+            acme_proxy_core::audit::ClientContext,
+        ) -> Vec<acme_proxy_core::audit::AuditRecord>
+        + Send,
+    ) {
+        self.state
+            .record_admin_actions(self.request, self.username, build)
+            .await;
+    }
 }

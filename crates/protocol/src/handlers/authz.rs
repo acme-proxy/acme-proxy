@@ -243,15 +243,15 @@ async fn trigger_validation(
         // §6.6's answer, with the header §6.6 recommends: the limit is on work
         // in flight, so waiting is exactly what clears it. The challenge is
         // untouched and still `pending`, so the retry is a plain re-trigger.
-        let mut response = Problem::rate_limited(
-            "Too many validations are already running for this account; retry shortly",
-        )
-        .into_response();
-        response.headers_mut().insert(
-            header::RETRY_AFTER,
-            HeaderValue::from_static(super::POLL_RETRY_AFTER),
-        );
-        return Ok(Some(response));
+        return Ok(Some(
+            Problem::rate_limited(
+                "Too many validations are already running for this account; retry shortly",
+            )
+            .into_response_with(
+                header::RETRY_AFTER,
+                HeaderValue::from_static(super::POLL_RETRY_AFTER),
+            ),
+        ));
     }
     Ok(None)
 }

@@ -19,7 +19,6 @@ use crate::webadmin::handlers::Caller;
 use crate::webadmin::handlers::paging::{PageParams, page_envelope};
 use crate::webadmin::handlers::params::empty_is_absent;
 use crate::webadmin::session::{Authenticated, AuthenticatedWrite};
-use acme_proxy_jobs::auditor::admin as audit_admin;
 use acme_proxy_store::account::Account;
 use acme_proxy_store::order::Order;
 use acme_proxy_store::order::OrderQuery;
@@ -197,15 +196,11 @@ pub(crate) async fn apply_update_account_contact(
         return Err(AdminError::bad_request(rejection.detail));
     }
 
-    let account = admin::update_account_contact(id, contact, state.database.clone())
-        .await
-        .map_err(contact_error)?
-        .ok_or_else(|| not_found(id))?;
-    state
-        .record_admin_action(caller.request, caller.username(), |actor, client| {
-            audit_admin::account_contact_updated(actor, client, &account, &account.contact)
-        })
-        .await;
+    let account =
+        admin::update_account_contact(id, contact, state.database.clone(), &caller.trail(state))
+            .await
+            .map_err(contact_error)?
+            .ok_or_else(|| not_found(id))?;
     tracing::info!(event = "admin_account_contact_updated",
                    outcome = "success",
                    surface = caller.surface,
@@ -229,14 +224,10 @@ pub(crate) async fn apply_deactivate_account(
             .request
             .ip
             .map(|ip| acme_proxy_core::client::canonical(ip).to_string()),
+        &caller.trail(state),
     )
     .await?
     .ok_or_else(|| not_found(id))?;
-    state
-        .record_admin_action(caller.request, caller.username(), |actor, client| {
-            audit_admin::account_deactivated(actor, client, &account)
-        })
-        .await;
     tracing::info!(event = "admin_account_deactivated",
                    outcome = "success",
                    surface = caller.surface,
@@ -252,27 +243,17 @@ pub(crate) async fn apply_delete_account(
     caller: &Caller<'_>,
     id: &str,
 ) -> Result<u64, AdminError> {
-    // Captured before the delete so the audit row can name the account's own
-    // profile and id; `delete_account` returns only the cascade count.
-    let subject = Account::find_any_by_id(id, &state.database).await?;
-    let deleted = match admin::delete_account(id, state.database.clone()).await? {
-        admin::Deletion::NotFound => return Err(not_found(id)),
-        admin::Deletion::LiveCertificates(live) => {
-            return Err(AdminError::conflict(
-                "live_certificates",
-                admin::live_certificates_refusal(&format!("account {id}"), live),
-            ));
-        }
-        admin::Deletion::Deleted(deleted) => deleted,
-    };
-
-    if let Some(account) = subject {
-        state
-            .record_admin_action(caller.request, caller.username(), |actor, client| {
-                audit_admin::account_deleted(actor, client, &account, deleted.cascaded)
-            })
-            .await;
-    }
+    let deleted =
+        match admin::delete_account(id, state.database.clone(), &caller.trail(state)).await? {
+            admin::Deletion::NotFound => return Err(not_found(id)),
+            admin::Deletion::LiveCertificates(live) => {
+                return Err(AdminError::conflict(
+                    "live_certificates",
+                    admin::live_certificates_refusal(&format!("account {id}"), live),
+                ));
+            }
+            admin::Deletion::Deleted(deleted) => deleted,
+        };
     tracing::info!(event = "admin_account_deleted",
                    outcome = "success",
                    surface = caller.surface,

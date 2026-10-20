@@ -152,7 +152,8 @@ impl OrderQuery {
         // `status` arrives as an `OrderStatus` and `profile` as a `String`, so
         // each contributes its own `&str` and the pair stays one type. The bind
         // is still a parameter, never interpolated SQL. The returned separator
-        // is what the predicates below open with — see `crate::query`.
+        // is what the predicates below open with, each through
+        // `next_predicate` — see `crate::query`.
         let mut separator = crate::query::push_equalities(
             builder,
             crate::query::WHERE,
@@ -172,9 +173,8 @@ impl OrderQuery {
         // `search_binds_hostile_filters_as_values` asserts, and `profile` above
         // is still bound raw, so the injection vector it exists for is intact.
         if let Some(account_id) = self.account_id.as_deref() {
-            builder.push(separator).push("account_id = ");
+            crate::query::next_predicate(builder, &mut separator).push("account_id = ");
             builder.push_bind(super::id::parse(account_id));
-            separator = " AND ";
         }
 
         // `identifiers` is a JSON array of `{type, value}` objects, so a name
@@ -192,12 +192,11 @@ impl OrderQuery {
         if let Some(identifier) = self.identifier.as_deref() {
             let source = builder.dialect().json_array_source("orders.identifiers");
             let member = builder.dialect().json_member("value");
-            builder.push(separator).push(format!(
+            crate::query::next_predicate(builder, &mut separator).push(format!(
                 "EXISTS (SELECT 1 FROM {source} WHERE lower({member}) = "
             ));
             builder.push_bind(identifier.to_lowercase());
             builder.push(")");
-            separator = " AND ";
         }
 
         // Substring match, for a half-remembered name. `instr`/`strpos`, not
@@ -207,12 +206,11 @@ impl OrderQuery {
             let source = builder.dialect().json_array_source("orders.identifiers");
             let member = builder.dialect().json_member("value");
             let position = builder.dialect().substring_position();
-            builder.push(separator).push(format!(
+            crate::query::next_predicate(builder, &mut separator).push(format!(
                 "EXISTS (SELECT 1 FROM {source} WHERE {position}(lower({member}), "
             ));
             builder.push_bind(fragment.to_lowercase());
             builder.push(") > 0)");
-            separator = " AND ";
         }
 
         // The issued leaf's serial. Raw passthrough, exact, bound — the
@@ -220,15 +218,9 @@ impl OrderQuery {
         // `idx_orders_cert_serial (profile, cert_serial)` when a profile is
         // named beside it.
         if let Some(cert_serial) = self.cert_serial.as_deref() {
-            builder.push(separator).push("cert_serial = ");
+            crate::query::next_predicate(builder, &mut separator).push("cert_serial = ");
             builder.push_bind(cert_serial.to_string());
-            separator = " AND ";
         }
-
-        // Correct today because nothing follows, and assigned anyway: every
-        // other predicate above advances the separator, and a new one appended
-        // below a clause that did not would open with ` WHERE ` a second time.
-        let _ = separator;
     }
 }
 

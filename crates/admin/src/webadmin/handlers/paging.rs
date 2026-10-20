@@ -6,7 +6,7 @@
 //! CLI's `--json` answers too.
 
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use acme_proxy_core::config::Config;
 
@@ -67,17 +67,13 @@ impl PageParams {
 /// control needs and what a bare array cannot express.
 #[must_use]
 pub fn page_envelope(items: Vec<Value>, total: i64, page: Page) -> Value {
-    json!({
-        "items": items,
-        "total": total,
-        "limit": page.limit,
-        "offset": page.offset,
-    })
+    crate::admin::render_page_json(items, total, page.limit, page.offset)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn config_with_max(max: i64) -> Config {
         let mut config = Config::default();

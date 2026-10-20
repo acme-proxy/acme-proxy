@@ -190,7 +190,15 @@ fn job_registry_for(
     // two profiles over different `[signer]` sections are two backends that
     // `build_backends` deliberately does not collapse. So each backend hands
     // over *state* and one handler is built over all of it.
-    let mut job_registry = acme_proxy_jobs::jobs::JobRegistry::new();
+    // Collected first and registered in one place below, so a registration
+    // that fails is logged the one way it always was.
+    let mut handlers: Vec<Arc<dyn acme_proxy_jobs::jobs::JobHandler>> = Vec::new();
+    // One auditor for the three handlers that write audit rows, counted into
+    // this process's metrics.
+    let auditor = Arc::new(
+        acme_proxy_jobs::auditor::Auditor::offline(database.clone())
+            .with_metrics(assembly.metrics.clone()),
+    );
     // The CRLs are collected once per distinct backend, since two profiles
     // sharing one CA share one CRL and refreshing it twice a day would be
     // pointless work. The identity is kept as a `usize` rather than the
@@ -225,73 +233,47 @@ fn job_registry_for(
     // Beside it, the handler that signs revocations the CLI recorded without
     // the key.
     if !refreshers.is_empty() {
-        job_registry
-            .register(Arc::new(
-                acme_proxy_signer::local_ca::sweep::CrlRegenerateJob::new(refreshers.clone()),
-            ))
-            .inspect_err(|error| {
-                error!(event = "job_registry_init_failed", outcome = "failure", error = %error);
-            })?;
-        job_registry
-            .register(Arc::new(
-                acme_proxy_signer::local_ca::sweep::CrlSweepJob::new(refreshers),
-            ))
-            .inspect_err(|error| {
-                error!(event = "job_registry_init_failed", outcome = "failure", error = %error);
-            })?;
+        handlers.push(Arc::new(
+            acme_proxy_signer::local_ca::sweep::CrlRegenerateJob::new(refreshers.clone()),
+        ));
+        handlers.push(Arc::new(
+            acme_proxy_signer::local_ca::sweep::CrlSweepJob::new(refreshers),
+        ));
     }
     // Relayed issuance, over every relay profile at once. Registered only when
     // some profile relays, for `CrlSweepJob`'s reason: a deployment with none
     // has no row of this kind to claim.
     if !relays.is_empty() {
-        job_registry
-            .register(Arc::new(acme_proxy_signer::relay::flow::RelayJob::new(
-                database.clone(),
-                relays,
-            )))
-            .inspect_err(|error| {
-                error!(event = "job_registry_init_failed", outcome = "failure", error = %error);
-            })?;
+        handlers.push(Arc::new(acme_proxy_signer::relay::flow::RelayJob::new(
+            database.clone(),
+            relays,
+        )));
     }
     // Revocations the host CLI queued for a backend it does not build (`relay`,
     // `custom`). Registered unconditionally, `NotifyJob`'s reason below: a row
     // queued before a configuration change must still find a handler, and one
     // naming a profile this generation does not mount is retried rather than
     // lost.
-    job_registry
-        .register(Arc::new(
-            acme_proxy_protocol::acme::revoke::SignerRevokeJob::new(
-                database.clone(),
-                Arc::new(
-                    acme_proxy_jobs::auditor::Auditor::offline(database.clone())
-                        .with_metrics(assembly.metrics.clone()),
-                ),
-                backends.clone(),
-                assembly.notifiers.clone(),
-            ),
-        ))
-        .inspect_err(|error| {
-            error!(event = "job_registry_init_failed", outcome = "failure", error = %error);
-        })?;
+    handlers.push(Arc::new(
+        acme_proxy_protocol::acme::revoke::SignerRevokeJob::new(
+            database.clone(),
+            auditor.clone(),
+            backends.clone(),
+            assembly.notifiers.clone(),
+        ),
+    ));
     // Issuance. `finalize` claims the order and queues the signing, so the
     // process answering ACME holds no backend. Registered unconditionally for
     // `SignerRevokeJob`'s reason above, over this generation's backends — none
     // at all in a process without the worker role, which never claims a row.
-    job_registry
-        .register(Arc::new(
-            acme_proxy_protocol::acme::issue::SignerIssueJob::new(
-                database.clone(),
-                Arc::new(
-                    acme_proxy_jobs::auditor::Auditor::offline(database.clone())
-                        .with_metrics(assembly.metrics.clone()),
-                ),
-                backends.clone(),
-                assembly.notifiers.clone(),
-            ),
-        ))
-        .inspect_err(|error| {
-            error!(event = "job_registry_init_failed", outcome = "failure", error = %error);
-        })?;
+    handlers.push(Arc::new(
+        acme_proxy_protocol::acme::issue::SignerIssueJob::new(
+            database.clone(),
+            auditor.clone(),
+            backends.clone(),
+            assembly.notifiers.clone(),
+        ),
+    ));
     // Challenge validation. `POST /chall/{id}` claims the challenge and queues
     // the outbound check, so the probe of a client-chosen host no longer holds
     // an admission permit for the length of `challenge.timeout_ms`. Registered
@@ -299,23 +281,16 @@ fn job_registry_for(
     // before a configuration change must still find a handler — and holding the
     // profiles rather than one profile, since the registry refuses a second
     // handler for one kind.
-    job_registry
-        .register(Arc::new(
-            acme_proxy_protocol::acme::validate::ChallengeValidateJob::new(
-                database.clone(),
-                Arc::new(
-                    acme_proxy_jobs::auditor::Auditor::offline(database.clone())
-                        .with_metrics(assembly.metrics.clone()),
-                ),
-                profiles
-                    .iter()
-                    .map(|profile| (profile.name.clone(), profile.clone()))
-                    .collect(),
-            ),
-        ))
-        .inspect_err(|error| {
-            error!(event = "job_registry_init_failed", outcome = "failure", error = %error);
-        })?;
+    handlers.push(Arc::new(
+        acme_proxy_protocol::acme::validate::ChallengeValidateJob::new(
+            database.clone(),
+            auditor.clone(),
+            profiles
+                .iter()
+                .map(|profile| (profile.name.clone(), profile.clone()))
+                .collect(),
+        ),
+    ));
 
     // Notification delivery. The same shape as the two above and the reason it
     // is: one handler for every profile, holding the whole
@@ -328,13 +303,9 @@ fn job_registry_for(
     // It takes the *handle*, not this generation's map: the handler is
     // registered per generation but must read whichever map is current, and a
     // row queued by a reloaded router names a slot id only the new one has.
-    job_registry
-        .register(Arc::new(acme_proxy_jobs::notify::NotifyJob::new(
-            assembly.notifiers.clone(),
-        )))
-        .inspect_err(|error| {
-            error!(event = "job_registry_init_failed", outcome = "failure", error = %error);
-        })?;
+    handlers.push(Arc::new(acme_proxy_jobs::notify::NotifyJob::new(
+        assembly.notifiers.clone(),
+    )));
 
     // The expiry digest, registered only when some profile asked for one
     // (`notify.expiry.lead_days`), the way `CrlSweepJob` is registered only
@@ -348,11 +319,7 @@ fn job_registry_for(
         database.clone(),
         assembly.jobs.clone(),
     ) {
-        job_registry
-            .register(Arc::new(digest))
-            .inspect_err(|error| {
-                error!(event = "job_registry_init_failed", outcome = "failure", error = %error);
-            })?;
+        handlers.push(Arc::new(digest));
     }
 
     // The periodic table sweeps. Each is one self-rescheduling row rather than
@@ -411,12 +378,17 @@ fn job_registry_for(
             Duration::from_secs(config.admin.login_window_seconds),
         ));
     }
-    for sweep in sweeps {
-        job_registry
-            .register(Arc::new(sweep))
-            .inspect_err(|error| {
-                error!(event = "job_registry_init_failed", outcome = "failure", error = %error);
-            })?;
+    handlers.extend(
+        sweeps
+            .into_iter()
+            .map(|sweep| Arc::new(sweep) as Arc<dyn acme_proxy_jobs::jobs::JobHandler>),
+    );
+
+    let mut job_registry = acme_proxy_jobs::jobs::JobRegistry::new();
+    for handler in handlers {
+        job_registry.register(handler).inspect_err(|error| {
+            error!(event = "job_registry_init_failed", outcome = "failure", error = %error);
+        })?;
     }
     Ok(job_registry)
 }

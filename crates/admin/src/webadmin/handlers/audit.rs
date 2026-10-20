@@ -16,7 +16,7 @@ use serde_json::Value;
 use crate::admin;
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
-use crate::webadmin::handlers::paging::{PageParams, page_envelope};
+use crate::webadmin::handlers::paging::{Page, PageParams, page_envelope};
 use crate::webadmin::handlers::params::{empty_is_absent, empty_is_absent_serial};
 use crate::webadmin::session::Authenticated;
 use acme_proxy_store::audit::AuditEntry;
@@ -46,6 +46,37 @@ pub struct AuditListParams {
     pub offset: Option<i64>,
 }
 
+impl AuditListParams {
+    /// The query both `/api/audit` and `/ui/audit` run, one builder so a filter
+    /// cannot reach one surface and not the other.
+    pub fn query(&self, page: Page) -> AuditQuery {
+        AuditQuery {
+            profile: self.profile.clone(),
+            account_id: self.account_id.clone(),
+            order_id: self.order_id.clone(),
+            cert_serial: self.cert_serial.clone(),
+            event: self.event.clone(),
+            outcome: self.outcome.clone(),
+            // No `since` on this surface: a browser filters by picking a page,
+            // and a date parser is a second definition of "how far back" the
+            // CLI already has. Add one when a page control needs it, not before.
+            since: None,
+            limit: page.limit,
+            offset: page.offset,
+        }
+    }
+}
+
+/// Renders [`admin::AuditListError`] for both web surfaces.
+impl From<admin::AuditListError> for AdminError {
+    fn from(error: admin::AuditListError) -> Self {
+        match error {
+            admin::AuditListError::Invalid(detail) => AdminError::bad_request(detail),
+            admin::AuditListError::Database(error) => AdminError::from(error),
+        }
+    }
+}
+
 /// `GET /api/audit?profile=&accountId=&orderId=&certSerial=&event=&outcome=&limit=&offset=`
 pub async fn list_audit(
     State(state): State<AdminState>,
@@ -53,20 +84,7 @@ pub async fn list_audit(
     _auth: Authenticated,
 ) -> Result<Json<Value>, AdminError> {
     let page = PageParams::from(params.limit, params.offset).resolve(&state.config);
-    let query = AuditQuery {
-        profile: params.profile,
-        account_id: params.account_id,
-        order_id: params.order_id,
-        cert_serial: params.cert_serial,
-        event: params.event,
-        outcome: params.outcome,
-        // No `since` on this surface: a browser filters by picking a page, and
-        // a date parser is a second definition of "how far back" the CLI
-        // already has. Add one when a page control needs it, not before.
-        since: None,
-        limit: page.limit,
-        offset: page.offset,
-    };
+    let query = params.query(page);
     let (entries, total) = admin::list_audit(&query, state.database.clone()).await?;
     let items = entries.iter().map(AuditEntry::to_json).collect();
     Ok(Json(page_envelope(items, total, page)))
