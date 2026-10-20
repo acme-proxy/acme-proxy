@@ -448,16 +448,7 @@ async fn an_upstream_order_missing_its_next_url_fails_the_order() {
             .await
             .unwrap();
 
-        await_status(
-            db.clone(),
-            order.id.to_string().as_str(),
-            OrderStatus::Invalid,
-        )
-        .await;
-        let mapping = UpstreamOrder::find_by_order_id(order.id.to_string().as_str(), &db)
-            .await
-            .unwrap()
-            .unwrap();
+        let (_, mapping) = await_abandoned(db.clone(), order.id.to_string().as_str()).await;
         let reason = mapping.error.unwrap_or_default();
         assert!(reason.contains(missing), "{missing}: {reason}");
     }
@@ -494,18 +485,8 @@ async fn a_failing_upstream_marks_the_order_invalid() {
         .await
         .unwrap();
 
-    let settled = await_status(
-        db.clone(),
-        order.id.to_string().as_str(),
-        OrderStatus::Invalid,
-    )
-    .await;
+    let (settled, mapping) = await_abandoned(db.clone(), order.id.to_string().as_str()).await;
     assert!(settled.error.is_some(), "the client must be told why");
-
-    let mapping = UpstreamOrder::find_by_order_id(order.id.to_string().as_str(), &db)
-        .await
-        .unwrap()
-        .unwrap();
     assert_eq!(mapping.status, "invalid");
     assert!(
         mapping.error.unwrap().contains("invalid"),
@@ -659,16 +640,7 @@ async fn a_stalled_upstream_times_out_and_invalidates_the_order() {
         .await
         .unwrap();
 
-    await_status(
-        db.clone(),
-        order.id.to_string().as_str(),
-        OrderStatus::Invalid,
-    )
-    .await;
-    let mapping = UpstreamOrder::find_by_order_id(order.id.to_string().as_str(), &db)
-        .await
-        .unwrap()
-        .unwrap();
+    let (_, mapping) = await_abandoned(db.clone(), order.id.to_string().as_str()).await;
     let error = mapping.error.unwrap();
     assert!(
         error.contains("timed out"),
