@@ -479,24 +479,20 @@ async fn relay(
     csr_der: &[u8],
     order_url: &str,
 ) -> Result<String, RelayFailure> {
-    match &inner.strategy {
-        ChallengeStrategy::Dns01(updater) => {
-            let view = poll_until(inner, order_url, &["pending", "ready", "valid"]).await?;
-            if view.status == "pending" {
-                answer_dns01(inner, updater.as_ref(), &view.authorizations).await?;
+    // Only a `pending` order has authorizations left to answer; one the
+    // upstream already moved on (a retry after a lost lease) goes straight to
+    // the finalize below.
+    let view = poll_until(inner, order_url, &["pending", "ready", "valid"]).await?;
+    if view.status == "pending" {
+        let authzs = &view.authorizations;
+        match &inner.strategy {
+            ChallengeStrategy::Dns01(updater) => {
+                answer_dns01(inner, updater.as_ref(), authzs).await?;
             }
-        }
-        ChallengeStrategy::Http01(tokens) => {
-            let view = poll_until(inner, order_url, &["pending", "ready", "valid"]).await?;
-            if view.status == "pending" {
-                answer_http01(inner, tokens.clone(), &view.authorizations).await?;
+            ChallengeStrategy::Http01(tokens) => {
+                answer_http01(inner, tokens.clone(), authzs).await?;
             }
-        }
-        ChallengeStrategy::Bypass => {
-            let view = poll_until(inner, order_url, &["pending", "ready", "valid"]).await?;
-            if view.status == "pending" {
-                answer_bypass(inner, &view.authorizations).await?;
-            }
+            ChallengeStrategy::Bypass => answer_bypass(inner, authzs).await?,
         }
     }
 

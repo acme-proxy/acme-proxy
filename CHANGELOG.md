@@ -137,6 +137,36 @@ migrated configuration before restarting.
 
 ### Fixed
 
+- **A job whose handler budget exceeds `jobs.lease_seconds` is no longer run
+  twice.** The claim held the row for `jobs.lease_seconds` while the attempt
+  ran under the handler's own, longer budget — a relayed issuance's
+  `signer.relay.poll_timeout_secs`, or a challenge validation's timeout — so
+  the row could expire mid-attempt and a second runner reclaim it. The runner
+  now stretches the lease to the budget before the attempt starts.
+- **On PostgreSQL, an order no longer sticks at `pending` when two of its
+  authorizations validate at once.** Each verdict's transaction read the set
+  without the other's uncommitted write, so neither promoted the order to
+  `ready`. The verdict now locks the order row before that read. The same race
+  let concurrent triggers overshoot `challenge.max_in_flight_per_account`;
+  the claim now locks the account row before counting. SQLite was not
+  affected.
+- **A challenge trigger claims the challenge and queues its validation in one
+  transaction.** They were two writes, so a crash between them left the
+  challenge `processing` with nothing coming for it until the next restart;
+  `challenge_validation_enqueue_failed` is gone, and a failure logs
+  `challenge_claim_failed` with nothing written.
+- **An http-01 response whose body fails mid-read is a connection error**,
+  retried like one, rather than a final "more than N bytes" refusal.
+- **A TTL too large for a signed 64-bit integer no longer wraps negative.**
+  `nonce cleanup` (whose `ttl_seconds` the admin API takes in a request body)
+  and the admin session sweep would have deleted every row, and an oversized
+  session TTL would have created sessions already expired. An oversized
+  `order.validity_seconds` saturates the same way.
+- **`signer.local_ca.leaf_validity_days` above 36 525 (a century) is refused
+  at startup**, rather than panicking in the first signing job.
+- **An issuance failure is recorded in the audit trail only for an order it
+  actually retired.** A redelivered job, or one cancelled after its order was
+  already decided, wrote a second `certificate_issue_failed` row.
 - **Cancelling the hourly http-01 token sweep warns that it will not run again
   until a restart**, as cancelling every other sweep does, and the jobs page
   offers its kind in the filter. Both lists now come from the sweeps' own.

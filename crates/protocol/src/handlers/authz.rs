@@ -184,16 +184,8 @@ pub async fn post_challenge(
 
     // An empty payload only reads the owned challenge; it never starts work.
     if payload.is_some()
-        && let Some(early) = trigger_validation(
-            &orders,
-            &jobs,
-            &mut challenge,
-            &authz,
-            &order,
-            &id,
-            client_ip,
-        )
-        .await?
+        && let Some(early) =
+            trigger_validation(&orders, &jobs, &mut challenge, &authz, &order, client_ip).await?
     {
         return Ok(early);
     }
@@ -236,56 +228,30 @@ async fn trigger_validation(
     challenge: &mut Challenge,
     authz: &Authorization,
     order: &Order,
-    id: &str,
     client_ip: Option<IpAddr>,
 ) -> Result<Option<Response>, Problem> {
-    // Claimed, then queued — never awaited. The check reaches an address the
+    // Claimed and queued — never awaited. The check reaches an address the
     // client named, so awaiting it here held an admission permit for the length
     // of `challenge.timeout_ms`. The challenge now answers `processing`, which
     // §7.1.6 defines for exactly this ("transitions to the `processing` state
     // when the client responds to the challenge") and §8.2 pairs with the
     // `Retry-After` below.
-    let claim = orders.claim_challenge(challenge, authz, order).await?;
+    let claim = orders
+        .claim_challenge(challenge, authz, order, jobs, client_ip)
+        .await?;
     if claim == ValidationClaim::Limited {
         // §6.6's answer, with the header §6.6 recommends: the limit is on work
         // in flight, so waiting is exactly what clears it. The challenge is
         // untouched and still `pending`, so the retry is a plain re-trigger.
-        let mut response = Problem::rate_limited(
-            "Too many validations are already running for this account; retry shortly",
-        )
-        .into_response();
-        response.headers_mut().insert(
-            header::RETRY_AFTER,
-            HeaderValue::from_static(super::POLL_RETRY_AFTER),
-        );
-        return Ok(Some(response));
-    }
-    if claim == ValidationClaim::Claimed {
-        let queued = jobs
-            .enqueue(crate::acme::validate::challenge_validate_spec(
-                id,
-                client_ip,
-                authz.expires,
-            ))
-            .await;
-
-        // The claim is on the row and the work is not queued, so nothing is
-        // coming for it: give the claim back rather than leave the client
-        // polling a `processing` challenge until its authorization expires.
-        // `Ok(false)` needs no release — a live job already holds this
-        // challenge's identity, which is the same fact the claim asserts.
-        if let Err(error) = queued {
-            error!(
-                event = "challenge_validation_enqueue_failed",
-                outcome = "failure",
-                challenge_id = %id,
-                error = %error
-            );
-            let _ = challenge.release_validation_claim(orders.database).await;
-            return Err(Problem::server_internal(
-                "Challenge validation could not be queued",
-            ));
-        }
+        return Ok(Some(
+            Problem::rate_limited(
+                "Too many validations are already running for this account; retry shortly",
+            )
+            .into_response_with(
+                header::RETRY_AFTER,
+                HeaderValue::from_static(super::POLL_RETRY_AFTER),
+            ),
+        ));
     }
     Ok(None)
 }

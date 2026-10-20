@@ -211,6 +211,17 @@ pub fn parse_ari_cert_id(cert_id: &str) -> anyhow::Result<AriCertId> {
     })
 }
 
+/// A certificate's `notAfter` as epoch seconds, or `None` when it will not
+/// parse.
+///
+/// For the callers to whom an expiry is housekeeping — the expiry digest, CRL
+/// pruning — rather than a reason to refuse: a certificate whose validity will
+/// not parse is still issued, and still revocable.
+#[must_use]
+pub fn not_after(der: &[u8]) -> Option<i64> {
+    cert_validity(der).ok().map(|(_, not_after)| not_after)
+}
+
 /// Extracts the validity period (notBefore, notAfter) from a DER-encoded certificate
 /// as UNIX timestamps (seconds since epoch).
 pub fn cert_validity(der: &[u8]) -> Result<(i64, i64), nom::Err<x509_parser::error::X509Error>> {
@@ -353,6 +364,8 @@ mod tests {
         // Just verify they are reasonable unix timestamps
         assert!(not_before > 0);
         assert!(not_after > not_before);
+        assert_eq!(super::not_after(&der), Some(not_after));
+        assert_eq!(super::not_after(&[0xde, 0xad]), None);
     }
 }
 

@@ -570,3 +570,35 @@ async fn a_kid_signed_by_another_key_is_refused() {
     let orders = common::acme::post_as_get(&app, &owner, &owner_url, &orders_url).await;
     assert_eq!(orders["orders"], json!([]), "{orders}");
 }
+
+/// A `kid` is this server's account URL, so one under any other prefix — a
+/// different host, or another profile's path — names no account here and is
+/// refused as `malformed` before any lookup, rather than having its trailing
+/// id looked up as if it were ours.
+#[tokio::test]
+async fn a_kid_outside_this_profile_s_account_prefix_is_malformed() {
+    let app = test_app().await;
+    let signer = EcSigner::new();
+    let account_url = common::acme::register(&app, &signer).await;
+    let id = account_url.rsplit('/').next().unwrap();
+    let new_order = "http://localhost:3000/profile/default/newOrder";
+
+    for kid in [
+        format!("https://elsewhere.example/profile/default/acct/{id}"),
+        format!("http://localhost:3000/profile/other/acct/{id}"),
+    ] {
+        let nonce = fetch_nonce(&app).await;
+        let body = signer.sign_kid(
+            &kid,
+            new_order,
+            &nonce,
+            &json!({ "identifiers": [{ "type": "dns", "value": "example.com" }] }),
+        );
+        let res = common::acme::post(&app, &p("/newOrder"), body).await;
+        let problem = assert_malformed(res).await;
+        assert!(
+            problem["detail"].as_str().unwrap().contains("kid"),
+            "{kid}: {problem}"
+        );
+    }
+}

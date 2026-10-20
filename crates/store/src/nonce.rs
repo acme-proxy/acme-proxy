@@ -85,6 +85,18 @@ pub fn now_secs() -> i64 {
         .as_secs() as i64
 }
 
+/// `duration` in whole seconds as an `i64`, saturating at `i64::MAX`.
+///
+/// What every TTL and cutoff in this crate goes through before it meets a
+/// timestamp. `as_secs() as i64` wraps a value past `i64::MAX` to a *negative*
+/// one, which turns a cutoff into a moment in the future: a cleanup that should
+/// have removed nothing removes every row, and a session is born expired. The
+/// values are operator configuration and, for `nonce cleanup`, a request body.
+#[must_use]
+pub fn secs_i64(duration: Duration) -> i64 {
+    i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
+}
+
 impl Nonce {
     /// A fresh nonce, stamped now. Not stored until [`save`](Self::save).
     #[must_use]
@@ -125,7 +137,7 @@ impl Nonce {
     ) -> Result<bool, sqlx::Error> {
         // Saturating subtraction avoids the panic `SystemTime - Duration` raises
         // when `ttl` reaches back past the epoch.
-        let cutoff = now_secs().saturating_sub(ttl.as_secs() as i64);
+        let cutoff = now_secs().saturating_sub(secs_i64(ttl));
 
         let result = crate::sql::query("DELETE FROM nonces WHERE value = ? AND created_at > ?;")
             .bind(nonce)
@@ -176,7 +188,7 @@ impl Nonce {
     /// Deletes every nonce older than `ttl`, returning how many went. The
     /// `nonce_sweep` job and `acme-proxy nonce cleanup` both land here.
     pub async fn cleanup(database: &Database, ttl: Duration) -> Result<u64, sqlx::Error> {
-        let cutoff = now_secs().saturating_sub(ttl.as_secs() as i64);
+        let cutoff = now_secs().saturating_sub(secs_i64(ttl));
 
         let result = crate::sql::query("DELETE FROM nonces WHERE created_at <= ?;")
             .bind(cutoff)
@@ -309,6 +321,19 @@ mod tests {
         // Only the fresh nonce survives, and it is still usable.
         assert_eq!(nonce_count(&database).await, 1);
         assert!(Nonce::verify(&fresh_value, &database, TTL).await.unwrap());
+    }
+
+    /// A TTL past `i64::MAX` seconds must saturate, not wrap negative: a wrapped
+    /// cutoff lands in the future and the cleanup removes every nonce.
+    #[tokio::test]
+    async fn a_ttl_too_large_for_i64_removes_nothing() {
+        let database = Arc::new(Database::connect_for_test().await.unwrap());
+        Nonce::new().save(&database).await.unwrap();
+
+        assert_eq!(Nonce::cleanup(&database, Duration::MAX).await.unwrap(), 0);
+        assert_eq!(nonce_count(&database).await, 1);
+        assert_eq!(secs_i64(Duration::MAX), i64::MAX);
+        assert_eq!(secs_i64(Duration::from_secs(7)), 7);
     }
 
     /// RFC 8555 §6.5.1: the `Replay-Nonce` value "MUST be an octet string

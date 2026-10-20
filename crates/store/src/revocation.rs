@@ -25,6 +25,27 @@ pub struct Revocation {
 }
 
 impl Revocation {
+    /// The revocation of `cert_der`, its `not_after` read from the certificate
+    /// on a best-effort basis: an expiry this server cannot read only means the
+    /// entry is never pruned, and refusing to revoke over a field wanted for
+    /// housekeeping would be the worse outcome.
+    #[must_use]
+    pub fn of(
+        issuer: impl Into<String>,
+        serial: impl Into<String>,
+        revoked_at: i64,
+        reason: Option<u32>,
+        cert_der: &[u8],
+    ) -> Self {
+        Self {
+            issuer: issuer.into(),
+            serial: serial.into(),
+            revoked_at,
+            reason,
+            not_after: acme_proxy_core::cert::not_after(cert_der),
+        }
+    }
+
     /// Records the revocation unless this serial is already revoked under this
     /// issuer, answering whether a row was written.
     ///

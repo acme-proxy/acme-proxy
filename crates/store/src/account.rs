@@ -308,13 +308,16 @@ impl Account {
             return Ok((account, false));
         }
 
+        // One clock read: two could straddle a second, and the comment below
+        // promises the pair are equal.
+        let now = now_secs();
         let account = Account {
             id: crate::id::mint(),
             profile: profile.to_string(),
             pubkey: pubkey.to_vec(),
             contact,
             status: "valid".to_string(),
-            created_at: now_secs(),
+            created_at: now,
             eab_kid: registration.eab_kid,
             terms_of_service_agreed: registration.terms_agreed.then_some(true),
             created_ip: client.ip.clone(),
@@ -324,7 +327,7 @@ impl Account {
             // request means "never used since registration" reads as a
             // `last_seen_at` equal to `created_at`, not as a missing field a
             // renderer has to special-case.
-            last_seen_at: Some(now_secs()),
+            last_seen_at: Some(now),
             last_seen_ip: client.ip.clone(),
             last_seen_ptr: client.ptr.clone(),
         };

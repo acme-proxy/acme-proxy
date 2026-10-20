@@ -43,8 +43,6 @@ use base64::prelude::*;
 use tracing::{error, info, warn};
 
 use acme_proxy_core::audit::Actor;
-use acme_proxy_core::audit::AuditEvent;
-use acme_proxy_core::audit::AuditRecord;
 use acme_proxy_core::audit::ClientContext;
 use acme_proxy_core::error::Problem;
 use acme_proxy_jobs::auditor::Auditor;
@@ -58,7 +56,7 @@ use acme_proxy_signer::SignerError;
 use acme_proxy_signer::issuance::IssuanceError;
 use acme_proxy_signer::issuance::announce_issuance;
 use acme_proxy_signer::issuance::record_issuance;
-use acme_proxy_signer::issuance::record_issue_failure;
+use acme_proxy_signer::issuance::{fail_order, record_issue_failure};
 use acme_proxy_store::account::Account;
 use acme_proxy_store::authz::Authorization;
 use acme_proxy_store::db::Database;
@@ -133,6 +131,38 @@ impl SignerIssueJob {
     fn signer(&self, profile: &str) -> Option<&Arc<dyn SignerBackend>> {
         super::mounted(&self.signers, profile)
     }
+
+    /// A verdict on the order — its authority withdrawn, its CSR refused —
+    /// recorded once through [`fail_order`]. A failed write is retried, which
+    /// the guarded write and the row after it make safe.
+    async fn refuse(
+        &self,
+        order: &mut Order,
+        problem: &Problem,
+        reason: &str,
+        detail: &str,
+        client: ClientContext,
+    ) -> JobOutcome {
+        let actor = Actor::acme(order.account_id);
+        match fail_order(
+            order,
+            problem,
+            reason,
+            detail,
+            actor,
+            client,
+            &self.audit,
+            &self.database,
+        )
+        .await
+        {
+            Ok(_) => JobOutcome::Done,
+            Err(error) => {
+                error!(event = "order_mark_invalid_failed", outcome = "failure", order_id = %order.id, error = %error);
+                JobOutcome::Retry(format!("recording the refusal failed: {error}"))
+            }
+        }
+    }
 }
 
 /// Why `order` may no longer be issued, if it may not: its account or one of
@@ -203,25 +233,15 @@ impl JobHandler for SignerIssueJob {
             Ok(None) => {}
             Ok(Some(detail)) => {
                 warn!(event = "order_finalize_authority_withdrawn", outcome = "failure", order_id = %order_id, detail = %detail);
-                let problem = Problem::unauthorized(detail);
-                if let Err(error) = order.mark_invalid(problem.to_value(), &self.database).await {
-                    error!(event = "order_mark_invalid_failed", outcome = "failure", order_id = %order_id, error = %error);
-                    return JobOutcome::Retry(format!("recording the refusal failed: {error}"));
-                }
-                self.audit
-                    .record(
-                        AuditRecord::new(
-                            AuditEvent::CertificateIssueFailed,
-                            &order.profile,
-                            Actor::acme(order.account_id),
-                        )
-                        .with_order(order.id, order.account_id, &order.identifiers)
-                        .with_client(payload_client(job))
-                        .with_reason("unauthorized")
-                        .with_detail(detail),
+                return self
+                    .refuse(
+                        &mut order,
+                        &Problem::unauthorized(detail),
+                        "unauthorized",
+                        detail,
+                        payload_client(job),
                     )
                     .await;
-                return JobOutcome::Done;
             }
             Err(error) => {
                 return JobOutcome::Retry(format!("reading the order's authority failed: {error}"));
@@ -319,25 +339,14 @@ impl JobHandler for SignerIssueJob {
             // write does not audit the refusal twice.
             Err(SignerError::BadCsr) => {
                 warn!(event = "order_finalize_bad_csr", outcome = "failure", order_id = %order_id);
-                let problem = Problem::bad_csr("CSR invalid or does not match order");
-                if let Err(error) = order.mark_invalid(problem.to_value(), &self.database).await {
-                    error!(event = "order_mark_invalid_failed", outcome = "failure", order_id = %order_id, error = %error);
-                    return JobOutcome::Retry(format!("recording the refusal failed: {error}"));
-                }
-                self.audit
-                    .record(
-                        AuditRecord::new(
-                            AuditEvent::CertificateIssueFailed,
-                            &order.profile,
-                            Actor::acme(order.account_id),
-                        )
-                        .with_order(order.id, order.account_id, &order.identifiers)
-                        .with_client(client)
-                        .with_reason("badCSR")
-                        .with_detail("the signer backend rejected the CSR"),
-                    )
-                    .await;
-                JobOutcome::Done
+                self.refuse(
+                    &mut order,
+                    &Problem::bad_csr("CSR invalid or does not match order"),
+                    "badCSR",
+                    "the signer backend rejected the CSR",
+                    client,
+                )
+                .await
             }
             // Nothing decided anything about this CSR — a token, a script or
             // an upstream that did not answer — so ask again, and let `abandon`

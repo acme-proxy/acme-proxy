@@ -260,6 +260,35 @@ impl Job {
         Ok(job)
     }
 
+    /// Moves a held lease's expiry to `lease_until`. `Ok(false)` means the lease
+    /// was lost.
+    ///
+    /// The claim is written before the runner knows which handler will answer,
+    /// so it carries `jobs.lease_seconds`; a handler whose own budget is longer
+    /// has its lease stretched here, before the attempt starts. Without it the
+    /// row would expire mid-attempt and `reclaim_expired` would hand it to a
+    /// second runner while the first was still working it.
+    pub async fn extend_lease(
+        id: Uuid,
+        runner_id: &str,
+        lease_until: i64,
+        database: &Database,
+    ) -> Result<bool, sqlx::Error> {
+        let extended = crate::sql::query(
+            "UPDATE jobs SET lease_until = ?, updated_at = ? \
+             WHERE id = ? AND status = 'running' AND lease_owner = ?;",
+        )
+        .bind(lease_until)
+        .bind(now_secs())
+        .bind(id)
+        .bind(runner_id)
+        .execute(database)
+        .await?
+        .rows_affected()
+            == 1;
+        Ok(extended)
+    }
+
     /// Marks a claimed job finished. `Ok(false)` means the lease was lost.
     pub async fn complete(
         id: Uuid,
@@ -936,6 +965,44 @@ mod tests {
         assert_eq!(
             after.last_error.as_deref(),
             Some("the order no longer exists")
+        );
+    }
+
+    #[tokio::test]
+    async fn only_the_lease_owner_can_extend_a_running_lease() {
+        let database = db().await;
+        assert!(enqueue(job_id("job-a"), "a", now_secs(), &database).await);
+        let job = Job::claim_next(
+            "runner-a",
+            &["test"],
+            now_secs() + 10,
+            now_secs(),
+            &database,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        let later = now_secs() + 900;
+        assert!(
+            !Job::extend_lease(job.id, "runner-b", later, &database)
+                .await
+                .unwrap()
+        );
+        assert!(
+            Job::extend_lease(job.id, "runner-a", later, &database)
+                .await
+                .unwrap()
+        );
+        let held = Job::find_by_id(job.id, &database).await.unwrap().unwrap();
+        assert_eq!(held.lease_until, Some(later));
+
+        // A settled row has no lease left to extend.
+        assert!(Job::complete(job.id, "runner-a", &database).await.unwrap());
+        assert!(
+            !Job::extend_lease(job.id, "runner-a", later, &database)
+                .await
+                .unwrap()
         );
     }
 

@@ -78,26 +78,20 @@ impl AuditQuery {
     /// [`crate::order::OrderQuery::push_predicates`] gives: a filter
     /// applied to only one of them reports a total the rows contradict.
     fn push_predicates(&self, builder: &mut crate::sql::Builder) {
-        let mut separator = " WHERE ";
-        for (column, value) in [
-            ("profile = ", self.profile.as_ref()),
-            ("account_id = ", self.account_id.as_ref()),
-            ("order_id = ", self.order_id.as_ref()),
-            ("cert_serial = ", self.cert_serial.as_ref()),
-            ("event = ", self.event.as_ref()),
-            ("outcome = ", self.outcome.as_ref()),
-        ] {
-            if let Some(value) = value {
-                builder
-                    .push(separator)
-                    .push(column)
-                    .push_bind(value.clone());
-                separator = " AND ";
-            }
-        }
+        let mut separator = crate::query::push_equalities(
+            builder,
+            crate::query::WHERE,
+            &[
+                ("profile = ", self.profile.as_deref()),
+                ("account_id = ", self.account_id.as_deref()),
+                ("order_id = ", self.order_id.as_deref()),
+                ("cert_serial = ", self.cert_serial.as_deref()),
+                ("event = ", self.event.as_deref()),
+                ("outcome = ", self.outcome.as_deref()),
+            ],
+        );
         if let Some(since) = self.since {
-            builder
-                .push(separator)
+            crate::query::next_predicate(builder, &mut separator)
                 .push("created_at >= ")
                 .push_bind(since);
         }

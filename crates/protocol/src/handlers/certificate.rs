@@ -141,14 +141,11 @@ pub async fn post_revoke_cert(
         Ok(_) => Ok(StatusCode::OK.into_response()),
         // Still queued when the wait ran out: nothing failed, so the client
         // is told when to ask again — and asking again waits on the same job.
-        Err(error @ crate::acme::revoke::RevokeError::Pending { .. }) => {
-            let mut response = Problem::from(error).into_response();
-            response.headers_mut().insert(
+        Err(error @ crate::acme::revoke::RevokeError::Pending { .. }) => Ok(Problem::from(error)
+            .into_response_with(
                 header::RETRY_AFTER,
                 axum::http::HeaderValue::from_static(REVOCATION_RETRY_AFTER),
-            );
-            Ok(response)
-        }
+            )),
         Err(error) => Err(error.into()),
     }
 }

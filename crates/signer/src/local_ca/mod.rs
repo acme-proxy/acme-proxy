@@ -103,6 +103,10 @@ const CA_VALIDITY_DAYS: i64 = 3653;
 /// clock skew between this server and a verifier.
 const CLOCK_SKEW_ALLOWANCE: Duration = Duration::hours(1);
 
+/// The longest `leaf_validity_days` a CA accepts: a century, far past any
+/// sane leaf and far short of the year 9999 `OffsetDateTime` stops at.
+const MAX_LEAF_VALIDITY_DAYS: u64 = 36_525;
+
 /// The leaf validity window to sign, given this CA's policy and what the order
 /// asked for (RFC 8555 §7.4's `notBefore`/`notAfter`).
 ///
@@ -125,6 +129,8 @@ fn clamp_leaf_validity(
     requested: RequestedValidity,
 ) -> (OffsetDateTime, OffsetDateTime) {
     let default_start = now - CLOCK_SKEW_ALLOWANCE;
+    // Bounded by `MAX_LEAF_VALIDITY_DAYS` in `assemble`, so neither the cast
+    // nor the addition can overflow.
     let default_end = now + Duration::days(leaf_validity_days as i64);
 
     if requested.is_empty() {
@@ -349,6 +355,14 @@ impl LocalCa {
         paths: Option<CrlPaths>,
         database: Arc<Database>,
     ) -> anyhow::Result<Self> {
+        // Refused here, at startup, rather than met at the first issuance:
+        // `clamp_leaf_validity` adds this many days to the clock, and a value
+        // past what `OffsetDateTime` can hold panics there, inside a signing job.
+        anyhow::ensure!(
+            leaf_validity_days <= MAX_LEAF_VALIDITY_DAYS,
+            "local_ca leaf_validity_days = {leaf_validity_days} is beyond the \
+             {MAX_LEAF_VALIDITY_DAYS}-day ceiling"
+        );
         // The key, not a path or a profile, is what the revocation state is
         // stored under — see `cert::issuer_id`.
         let info = Arc::new(LocalCaInfo::new(ca_pem.clone(), database.clone())?);
@@ -600,21 +614,16 @@ impl SignerBackend for LocalCa {
         let (serial_hex, _) = cert_serial_and_spki(cert_der)
             .map_err(|error| SignerError::Internal(format!("unparsable certificate: {error}")))?;
 
-        let revocation = Revocation {
-            issuer: self.crl.issuer_id().to_string(),
-            serial: serial_hex.clone(),
-            revoked_at: OffsetDateTime::now_utc().unix_timestamp(),
+        // `not_after` is best-effort (see `Revocation::of`): `cert_serial_and_spki`
+        // above already parsed this DER, so a failure there is close to
+        // impossible, and it would only mean the entry is never pruned.
+        let revocation = Revocation::of(
+            self.crl.issuer_id(),
+            serial_hex.clone(),
+            OffsetDateTime::now_utc().unix_timestamp(),
             reason,
-            // Best-effort, and deliberately not a `?`: `cert_serial_and_spki`
-            // above already parsed this DER, so a failure here is close to
-            // impossible — but refusing to revoke a certificate over a validity
-            // field we only want for housekeeping would be the worse outcome,
-            // the same call `reason_from_u32` makes for an unrecognized reason
-            // code. `None` simply means this entry is never pruned.
-            not_after: acme_proxy_core::cert::cert_validity(cert_der)
-                .ok()
-                .map(|(_, not_after)| not_after),
-        };
+            cert_der,
+        );
 
         if self.crl.revoke(revocation).await? {
             info!(event = "local_ca_certificate_revoked", outcome = "success", cert_serial = ?serial_hex);
@@ -696,6 +705,20 @@ mod tests {
     /// other instance needs to see.
     async fn memory_db() -> Arc<Database> {
         Arc::new(Database::connect_in_memory().await.unwrap())
+    }
+
+    /// A validity the clock arithmetic cannot hold is a startup error, never a
+    /// panic inside the first signing job.
+    #[tokio::test]
+    async fn a_leaf_validity_past_the_ceiling_is_refused_at_construction() {
+        let error = LocalCa::generate_in_memory("ecdsa-p256", u64::MAX, memory_db().await)
+            .err()
+            .expect("u64::MAX days must be refused");
+        assert!(error.to_string().contains("leaf_validity_days"), "{error}");
+        assert!(
+            LocalCa::generate_in_memory("ecdsa-p256", MAX_LEAF_VALIDITY_DAYS, memory_db().await)
+                .is_ok()
+        );
     }
 
     #[tokio::test]

@@ -351,9 +351,9 @@ async fn drain_ready(
             Err(tokio::sync::TryAcquireError::Closed) => return false,
         };
 
-        // The lease is the *longest* any registered handler may take, because
-        // which handler will answer is not known until the row comes back. It is
-        // narrowed to the handler's own budget the moment it is.
+        // The claim carries the default budget, because which handler will
+        // answer is not known until the row comes back. It is stretched to the
+        // handler's own budget the moment it is, below.
         let lease = config.lease + LEASE_SLACK;
         let now = now_secs();
         let claimed = Job::claim_next(
@@ -382,9 +382,26 @@ async fn drain_ready(
             continue;
         };
 
+        let budget = handler.lease(&job).unwrap_or(config.lease);
+        // A budget past the claimed lease would let the row expire mid-attempt
+        // and be reclaimed by another runner while this one still works it.
+        if budget > config.lease {
+            let lease_until = now_secs().saturating_add(seconds(budget + LEASE_SLACK));
+            match Job::extend_lease(job.id, runner_id, lease_until, &database).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    warn!(event = "job_lease_lost", outcome = "advisory", job_id = %job.id, job_kind = %job.kind);
+                    continue;
+                }
+                Err(error) => {
+                    error!(event = "job_lease_extend_failed", outcome = "failure", job_id = %job.id, job_kind = %job.kind, error = %error);
+                    continue;
+                }
+            }
+        }
+
         let queue = queue.clone();
         let runner_id = runner_id.to_string();
-        let budget = handler.lease(&job).unwrap_or(config.lease);
         let retry = (config.retry_base, config.retry_max);
         tokio::spawn(async move {
             run_one(job, handler, &queue, &runner_id, budget, retry).await;
@@ -1047,6 +1064,38 @@ mod tests {
                 .unwrap()
                 .is_none(),
             "the retry after the panic succeeds"
+        );
+    }
+
+    /// A handler budget longer than `jobs.lease_seconds` must reach the row
+    /// before the attempt starts, or the row expires mid-attempt and another
+    /// runner reclaims it while this one still works it.
+    #[tokio::test]
+    async fn a_budget_past_the_default_lease_stretches_the_row_s_lease() {
+        let config = fast();
+        let queue = queue_with(&config).await;
+        let budget = Duration::from_secs(config.lease_seconds * 3);
+        let handler =
+            Scripted::with_budget("test", vec![Script::Sleep(Duration::from_secs(30))], budget);
+        queue.enqueue(JobSpec::now("test", "k")).await.unwrap();
+
+        let mut registry = JobRegistry::new();
+        registry.register(handler.clone()).unwrap();
+        let registry = Arc::new(registry);
+        let runner = RunnerConfig::from(&config);
+        let mut permits = Permits::new(runner.max_concurrent);
+        let before = now_secs();
+        drain_ready(&queue, &registry, &runner, &mut permits, "runner-test").await;
+
+        let job = Job::find_live("test", "k", queue.database())
+            .await
+            .unwrap()
+            .expect("the attempt is running");
+        assert_eq!(job.status, "running");
+        let lease_until = job.lease_until.expect("a running row holds a lease");
+        assert!(
+            lease_until >= before + seconds(budget),
+            "lease_until {lease_until} must cover the {budget:?} budget from {before}"
         );
     }
 
