@@ -292,21 +292,28 @@ fn build_check(
         )?),
         "reverse_dns" => Arc::new(reverse_dns::ClientHasValidReverseDns::from_settings(
             name,
-            &reverse_dns::Settings {
-                require_forward_confirm: config.require_forward_confirm.unwrap_or(true),
-                allow: config.allow.clone(),
-                deny: config.deny.clone(),
-                allow_regex: config.allow_regex.clone(),
-                deny_regex: config.deny_regex.clone(),
-                timeout_ms: config.timeout_ms.unwrap_or(2000),
+            &{
+                // An unset key takes the check's own default, read from it
+                // rather than spelled a second time here.
+                let defaults = reverse_dns::Settings::default();
+                reverse_dns::Settings {
+                    require_forward_confirm: config
+                        .require_forward_confirm
+                        .unwrap_or(defaults.require_forward_confirm),
+                    allow: config.allow.clone(),
+                    deny: config.deny.clone(),
+                    allow_regex: config.allow_regex.clone(),
+                    deny_regex: config.deny_regex.clone(),
+                    timeout_ms: config.timeout_ms.unwrap_or(defaults.timeout_ms),
+                }
             },
             dns,
         )?),
-        "identifiers" => Arc::new(identifiers::IdentifierList::from_settings(
-            name,
-            &identifiers::Settings {
+        "identifiers" => Arc::new(identifiers::IdentifierList::from_settings(name, &{
+            let defaults = identifiers::Settings::default();
+            identifiers::Settings {
                 allowed_types: if config.allowed_types.is_empty() {
-                    super::default_identifier_types()
+                    defaults.allowed_types
                 } else {
                     config.allowed_types.clone()
                 },
@@ -314,9 +321,9 @@ fn build_check(
                 deny: config.deny.clone(),
                 allow_regex: config.allow_regex.clone(),
                 deny_regex: config.deny_regex.clone(),
-                allow_wildcards: config.allow_wildcards.unwrap_or(false),
-            },
-        )?),
+                allow_wildcards: config.allow_wildcards.unwrap_or(defaults.allow_wildcards),
+            }
+        })?),
         "eab" => Arc::new(eab::EabList::from_settings(
             name,
             &eab::Settings {
@@ -325,7 +332,9 @@ fn build_check(
                 allow_regex: config.allow_regex.clone(),
                 deny_regex: config.deny_regex.clone(),
                 kids: config.kids.clone(),
-                require_active: config.require_active.unwrap_or(false),
+                require_active: config
+                    .require_active
+                    .unwrap_or(eab::Settings::default().require_active),
             },
         )?),
         "ipam" => {
@@ -338,15 +347,15 @@ fn build_check(
             })?;
             Arc::new(ipam::IpamFilter::new(Arc::clone(registry)))
         }
-        "custom" => Arc::new(custom::CustomScriptFilter::from_settings(
-            name,
-            &custom::Settings {
+        "custom" => Arc::new(custom::CustomScriptFilter::from_settings(name, &{
+            let defaults = custom::Settings::default();
+            custom::Settings {
                 script_path: config.script_path.clone(),
-                timeout_ms: config.timeout_ms.unwrap_or(5000),
-                pass_stdin: config.pass_stdin.unwrap_or(true),
+                timeout_ms: config.timeout_ms.unwrap_or(defaults.timeout_ms),
+                pass_stdin: config.pass_stdin.unwrap_or(defaults.pass_stdin),
                 args: config.args.clone(),
-            },
-        )?),
+            }
+        })?),
         other => unreachable!("type_spec accepted an unhandled type: {other}"),
     };
 

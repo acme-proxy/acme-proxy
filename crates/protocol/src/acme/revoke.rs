@@ -615,17 +615,9 @@ impl Revocations<'_> {
         reason: Option<u32>,
     ) -> Result<(), RevokeError> {
         let revoked_at = acme_proxy_store::nonce::now_secs();
-        let row = acme_proxy_store::revocation::Revocation {
-            issuer: issuer.to_string(),
-            serial: serial_hex.to_string(),
-            revoked_at,
-            reason,
-            // Best-effort, as on the signer's own path: an expiry this server
-            // cannot read only means the entry is never pruned.
-            not_after: acme_proxy_core::cert::cert_validity(cert_der)
-                .ok()
-                .map(|(_, not_after)| not_after),
-        };
+        let row = acme_proxy_store::revocation::Revocation::of(
+            issuer, serial_hex, revoked_at, reason, cert_der,
+        );
         let written = async {
             // Immediate: this reads the CA's stored CRL and then writes on the
             // strength of it, while the worker — another process, in a split

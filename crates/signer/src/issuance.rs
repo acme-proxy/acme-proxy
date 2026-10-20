@@ -48,9 +48,7 @@ pub async fn record_issuance(
     // from is a failed issuance, while the expiry is housekeeping for the
     // expiry digest. A leaf whose validity will not parse is still an issued
     // certificate, and the digest's own sweep will try again later.
-    let cert_not_after = acme_proxy_core::cert::cert_validity(&leaf_der)
-        .ok()
-        .map(|(_, not_after)| not_after);
+    let cert_not_after = acme_proxy_core::cert::not_after(&leaf_der);
 
     order
         .finalize(
@@ -121,19 +119,67 @@ pub async fn announce_issuance(
     }
 }
 
-/// Retires an order whose issuance failed for good: the order `invalid` with
-/// `problem` as the document its client reads, then one
-/// `certificate_issue_failed` row naming `detail`.
+/// The `certificate_issue_failed` row for `order`: who asked, from where, the
+/// RFC 8555 problem type it failed with (`reason`) and what the operator should
+/// read (`detail`).
+///
+/// The one builder for that row. `finalize`'s refusals record it with no order
+/// change behind it, and [`fail_order`] with one.
+pub fn issue_failed_record(
+    order: &Order,
+    actor: acme_proxy_core::audit::Actor,
+    client: acme_proxy_core::audit::ClientContext,
+    reason: &str,
+    detail: &str,
+) -> acme_proxy_core::audit::AuditRecord {
+    acme_proxy_core::audit::AuditRecord::new(
+        acme_proxy_core::audit::AuditEvent::CertificateIssueFailed,
+        &order.profile,
+        actor,
+    )
+    .with_order(order.id, order.account_id, &order.identifiers)
+    .with_client(client)
+    .with_reason(reason)
+    .with_detail(detail)
+}
+
+/// Retires an order whose issuance failed: the order `invalid` with `problem`
+/// as the document its client reads, then one `certificate_issue_failed` row
+/// naming `reason` and `detail`. Answers whether the order took it.
 ///
 /// The row only when the write happened. A guarded write that finds the order
 /// already decided by someone else — a redelivered job whose first attempt got
 /// there, an operator who cancelled it — leaves it be, and recording a failure
 /// for it would put an issuance failure in the trail of an order that did not
-/// fail here.
+/// fail here. Written before the row, so a retry after a failed write does not
+/// record the failure twice.
 ///
 /// The client's document and the trail's detail are separate on purpose: what
 /// went wrong upstream or in a signer is for the operator, and the client is
-/// told only that issuance failed.
+/// told only what RFC 8555 says it may be.
+#[allow(clippy::too_many_arguments)]
+pub async fn fail_order(
+    order: &mut Order,
+    problem: &Problem,
+    reason: &str,
+    detail: &str,
+    actor: acme_proxy_core::audit::Actor,
+    client: acme_proxy_core::audit::ClientContext,
+    audit: &Auditor,
+    database: &Database,
+) -> Result<bool, sqlx::Error> {
+    if !order.mark_invalid(problem.to_value(), database).await? {
+        return Ok(false);
+    }
+    audit
+        .record(issue_failed_record(order, actor, client, reason, detail))
+        .await;
+    Ok(true)
+}
+
+/// [`fail_order`] for an issuance that failed on the server's side — a signer
+/// or an upstream that never answered — which the client sees as
+/// `serverInternal`.
 pub async fn record_issue_failure(
     order: &mut Order,
     problem: &Problem,
@@ -143,22 +189,17 @@ pub async fn record_issue_failure(
     audit: &Auditor,
     database: &Database,
 ) -> Result<(), sqlx::Error> {
-    if !order.mark_invalid(problem.to_value(), database).await? {
-        return Ok(());
-    }
-    audit
-        .record(
-            acme_proxy_core::audit::AuditRecord::new(
-                acme_proxy_core::audit::AuditEvent::CertificateIssueFailed,
-                &order.profile,
-                actor,
-            )
-            .with_order(order.id, order.account_id, &order.identifiers)
-            .with_client(client)
-            .with_reason("serverInternal")
-            .with_detail(detail),
-        )
-        .await;
+    fail_order(
+        order,
+        problem,
+        "serverInternal",
+        detail,
+        actor,
+        client,
+        audit,
+        database,
+    )
+    .await?;
     Ok(())
 }
 

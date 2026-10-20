@@ -614,21 +614,16 @@ impl SignerBackend for LocalCa {
         let (serial_hex, _) = cert_serial_and_spki(cert_der)
             .map_err(|error| SignerError::Internal(format!("unparsable certificate: {error}")))?;
 
-        let revocation = Revocation {
-            issuer: self.crl.issuer_id().to_string(),
-            serial: serial_hex.clone(),
-            revoked_at: OffsetDateTime::now_utc().unix_timestamp(),
+        // `not_after` is best-effort (see `Revocation::of`): `cert_serial_and_spki`
+        // above already parsed this DER, so a failure there is close to
+        // impossible, and it would only mean the entry is never pruned.
+        let revocation = Revocation::of(
+            self.crl.issuer_id(),
+            serial_hex.clone(),
+            OffsetDateTime::now_utc().unix_timestamp(),
             reason,
-            // Best-effort, and deliberately not a `?`: `cert_serial_and_spki`
-            // above already parsed this DER, so a failure here is close to
-            // impossible — but refusing to revoke a certificate over a validity
-            // field we only want for housekeeping would be the worse outcome,
-            // the same call `reason_from_u32` makes for an unrecognized reason
-            // code. `None` simply means this entry is never pruned.
-            not_after: acme_proxy_core::cert::cert_validity(cert_der)
-                .ok()
-                .map(|(_, not_after)| not_after),
-        };
+            cert_der,
+        );
 
         if self.crl.revoke(revocation).await? {
             info!(event = "local_ca_certificate_revoked", outcome = "success", cert_serial = ?serial_hex);
