@@ -106,9 +106,11 @@ impl AccountService<'_> {
     /// endpoint, or creates one. [`NewAccount`] says which, and carries the
     /// binding this request verified when it created the account.
     ///
-    /// `onlyReturnExisting` (§7.3.1) looks up and never creates. A refusal to
-    /// agree to configured terms is [`Error::TermsNotAgreed`], since the
-    /// response it owes carries a `Link` a problem document cannot.
+    /// A key that already holds an account gets it back before any condition
+    /// for creating one is checked (§7.3.1); `onlyReturnExisting` looks up and
+    /// never creates. A refusal to agree to configured terms is
+    /// [`Error::TermsNotAgreed`], since the response it owes carries a `Link` a
+    /// problem document cannot.
     pub async fn new_account(
         &self,
         payload: NewAccountPayload,
@@ -119,27 +121,35 @@ impl AccountService<'_> {
     ) -> Result<NewAccount, Error> {
         let (database, profile, audit) = (self.database, self.profile, self.audit);
 
-        if payload.only_return_existing {
-            let account = Account::find_by_pubkey(&profile.name, pubkey, database)
-                .await
-                .map_err(|error| {
-                    // Distinct from `acme::access`'s `account_lookup_failed`: same
-                    // query, but this one is `newAccount`'s §7.3.1 lookup, not the
-                    // one that resolves the signer of an order-side request.
-                    error!(event = "account_only_return_existing_lookup_failed", outcome = "failure", error = %error);
-                    Problem::server_internal("Account lookup failed")
-                })?
-                .ok_or_else(|| {
-                    info!(event = "account_only_return_existing_miss", outcome = "failure");
-                    Problem::account_does_not_exist("No account for this key")
-                })?;
-
-            refuse_deactivated(&account, true)?;
+        // RFC 8555 §7.3.1: a key that already holds an account gets it back with
+        // a 200, and "any fields in the request object MUST be ignored". The
+        // conditions below — contact format, the terms (§7.3.3), the binding
+        // (§7.3.4) — are for creating an account, so they are asked only when
+        // none exists yet; `onlyReturnExisting` never gets that far.
+        let existing = Account::find_by_pubkey(&profile.name, pubkey, database)
+            .await
+            .map_err(|error| {
+                // Distinct from `acme::access`'s `account_lookup_failed`: same
+                // query, but this one is `newAccount`'s §7.3.1 lookup, not the
+                // one that resolves the signer of an order-side request.
+                error!(event = "account_key_lookup_failed", outcome = "failure", error = %error);
+                Problem::server_internal("Account lookup failed")
+            })?;
+        if let Some(account) = existing {
+            refuse_deactivated(&account, payload.only_return_existing)?;
+            info!(event = "account_found", outcome = "success", account_id = %account.id, status = %StatusCode::OK);
             return Ok(NewAccount {
                 account,
                 created: false,
                 external_account_binding: None,
             });
+        }
+        if payload.only_return_existing {
+            info!(
+                event = "account_only_return_existing_miss",
+                outcome = "failure"
+            );
+            return Err(Problem::account_does_not_exist("No account for this key").into());
         }
 
         // Checked before the EAB, so a client with a typo'd address hears about
@@ -173,11 +183,11 @@ impl AccountService<'_> {
             (None, None)
         };
 
-        // Resolved before the write, and only on this path: `onlyReturnExisting`
-        // returned above without ever creating anything, and `find_or_create`
-        // stamps these columns on the creating branch alone — so a PTR lookup for a
-        // request that turns out to find an existing account is wasted, but a
-        // lookup after the INSERT would need a second UPDATE to record it.
+        // Resolved before the write, and only on this path: a known key returned
+        // above without creating anything, and `find_or_register` stamps these
+        // columns on the creating branch alone — so a PTR lookup is wasted only
+        // when a concurrent request registers the same key first, but a lookup
+        // after the INSERT would need a second UPDATE to record it.
         let client = audit.client(request).await;
         // The credential that authorized this registration and the agreement to
         // the terms are columns of the insert, not writes that follow it: an
@@ -204,8 +214,10 @@ impl AccountService<'_> {
             Problem::server_internal("Account persistence failed")
         })?;
 
-        // Only on the found branch: an account this request just created is never
-        // deactivated, and asking would be reading a column we wrote a line ago.
+        // `created` is false only when a concurrent request registered this key
+        // between the lookup above and the insert; that account is answered as
+        // the lookup would have answered it. An account this request just
+        // created is never deactivated, so it is not asked.
         if !created {
             refuse_deactivated(&account, false)?;
         }
@@ -229,7 +241,9 @@ impl AccountService<'_> {
             StatusCode::OK
         };
         // Two names, because §7.3's find-or-create makes them two different
-        // events: one registered a key, the other recognised one. An operator
+        // events: one registered a key, the other recognised one (here, only
+        // the loser of a registration race; the lookup above logs the rest
+        // under the same name). An operator
         // counting registrations must not have to filter a field out of the
         // count.
         if created {

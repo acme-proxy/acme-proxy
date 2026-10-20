@@ -208,7 +208,8 @@ async fn a_deactivated_account_cannot_finalize_a_ready_order() {
 /// its own `contact` array back, either by asking `onlyReturnExisting` or by
 /// simply re-registering. Read-only and limited to the key's own holder, but a
 /// hole in a boundary that is otherwise uniform — and it let a key whose account
-/// had been shut down confirm the account still existed.
+/// had been shut down confirm the account still existed. Both payloads now meet
+/// the same check, on the lookup by key that runs before anything else.
 #[tokio::test]
 async fn a_deactivated_key_is_refused_by_new_account() {
     for only_return_existing in [true, false] {
