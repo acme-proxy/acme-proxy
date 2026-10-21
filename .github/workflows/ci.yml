@@ -390,7 +390,10 @@ jobs:
         with:
           manifest-path: release-branch/Cargo.toml
           command: check
-          command-arguments: --config release-branch/deny.toml
+          # Each input reaches cargo-deny as one argv element, and `--config`
+          # is a global option, so it goes before `check` as a single token.
+          # It replaces the default `--all-features`; `deny.toml` sets it.
+          arguments: --config=release-branch/deny.toml
 
   # `sbom.cdx.json` is a committed CycloneDX 1.5 inventory of the dependency
   # closure that ships in the binary — ASVS 5.0 V15.1.2. `supply-chain` above
