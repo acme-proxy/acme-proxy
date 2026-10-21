@@ -189,6 +189,17 @@ migrated configuration before restarting.
   back too, as revoking never disturbed existing accounts; `account deactivate`
   or `eab delete --deactivate-accounts` is what shuts one out.
 
+### Security
+
+- **rustls-webpki 0.103.16 and webpki-roots 1.0.10, for RUSTSEC-2026-0382 and
+  RUSTSEC-2026-0381.** The bundled public roots still held `emSign ECC Root CA -
+  G3`, and path building accepted chains through emSign intermediates whose
+  private keys are now public. Someone holding one of those keys could
+  impersonate a remote service to any of the server's outbound TLS clients that
+  trust the public roots: the relay upstream, IPAM, identity providers, SMTP
+  and PostgreSQL. Both crates now refuse those intermediates. This is a lockfile
+  bump; nothing in the server changed.
+
 ## [0.6.2] — 2026-10-16
 
 ### Fixed
