@@ -196,9 +196,9 @@ migrated configuration before restarting.
   G3`, and path building accepted chains through emSign intermediates whose
   private keys are now public. Someone holding one of those keys could
   impersonate a remote service to any of the server's outbound TLS clients that
-  trust the public roots: the relay upstream, IPAM, identity providers, SMTP
-  and PostgreSQL. Both crates now refuse those intermediates. This is a lockfile
-  bump; nothing in the server changed.
+  trust the public roots: the relay upstream, IPAM, webhook
+  notifications and the identity providers. Both crates now refuse those
+  intermediates. This is a lockfile bump; nothing in the server changed.
 
 ## [0.6.2] — 2026-10-16
 
