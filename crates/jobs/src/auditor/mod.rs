@@ -94,6 +94,7 @@ impl Auditor {
         info!(
             event = "audit_loaded",
             outcome = "success",
+            record_refusals = cfg.record_refusals,
             reverse_dns = cfg.reverse_dns,
             reverse_dns_timeout_ms = cfg.reverse_dns_timeout_ms,
             retention_days = cfg.retention_days,

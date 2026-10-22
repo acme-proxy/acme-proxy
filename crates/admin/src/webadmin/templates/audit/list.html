@@ -2,7 +2,13 @@
 {% block content %}
   <h1>Audit</h1>
   <p class="small">
-    Every certificate this CA signed or withdrew, and every attempt it refused.
+    Certificate and administrative actions recorded by this CA.
+    {% if refusal_audit_enabled %}
+      Refused ACME responses are also recorded, including early policy and protocol refusals.
+    {% else %}
+      Early ACME refusals are logged but not stored here; set
+      <code>audit.record_refusals = true</code> to include them.
+    {% endif %}
     Rows are never edited or deleted from here — pruning is
     <code>acme-proxy audit cleanup</code> or <code>audit.retention_days</code>.
   </p>

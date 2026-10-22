@@ -120,6 +120,14 @@ migrated configuration before restarting.
 - **`GET /ready`**, a readiness check on both listeners (#12): `200` while the
   database answers a `SELECT 1` within two seconds, `503` otherwise. `/health`
   stays a liveness check that touches nothing.
+- **`audit.record_refusals`**, off by default: when on, every refused ACME
+  request (a `4xx` or `5xx` answer on a profile) writes one
+  `acme_request_refused` audit row, including the requests refused before an
+  account or order exists. The row holds the profile, the client address, the
+  request ID, the method, the path, the status and the problem type and detail;
+  never a request body, a nonce or a key. Until now those refusals were only
+  logged. Anyone who can reach the server can add rows at the rate they send
+  requests, so it is meant for a deployment whose network is restricted.
 
 ### Changed
 

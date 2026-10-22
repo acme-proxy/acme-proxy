@@ -41,6 +41,7 @@ fn every_event_round_trips_through_its_stored_form_and_knows_its_outcome() {
     assert_eq!(AuditEvent::CertificateRevoked.outcome(), "success");
     assert_eq!(AuditEvent::CertificateIssueFailed.outcome(), "failure");
     assert_eq!(AuditEvent::CertificateRevokeFailed.outcome(), "failure");
+    assert_eq!(AuditEvent::AcmeRequestRefused.outcome(), "failure");
     // Every administrative action is recorded only on success.
     assert_eq!(AuditEvent::AccountDeleted.outcome(), "success");
     assert_eq!(AuditEvent::OperatorDisabled.outcome(), "success");
@@ -60,6 +61,7 @@ fn the_actor_kinds_match_the_schema_and_only_two_carry_no_id() {
     let accountless = Actor::acme_certificate_key();
     assert_eq!(accountless.kind.as_str(), "acme");
     assert_eq!(accountless.id, None);
+    assert_eq!(Actor::acme_unidentified().id, None);
 
     assert_eq!(Actor::admin("root").kind.as_str(), "admin");
     assert_eq!(Actor::admin("root").id.as_deref(), Some("root"));

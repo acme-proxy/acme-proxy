@@ -437,9 +437,24 @@ trail describes the CA, not one of its endpoints, so this section may not appear
 under `[profiles.<name>]`.
 
 There is deliberately **no `enabled` key**. The address columns on accounts and
-orders, and the `audit_log` table, are always written: recording who asked the
-CA to sign something is what a CA does, not a feature to switch on. The only
-thing here that can be turned off is the reverse lookup.
+orders, and the `audit_log` table, are always written for certificate and
+administrative actions. Refused ACME HTTP responses can additionally be logged.
+
+**`record_refusals`** (`Boolean`) — *Default: `false` | Env: `ACME_PROXY_AUDIT__RECORD_REFUSALS`*
+
+Record one `acme_request_refused` row for each 4xx or 5xx response on a mounted
+ACME profile, including requests rejected before authentication or order
+creation. The row carries the profile, resolved client address, request ID,
+method, path, status, and ACME problem type and bounded detail when available.
+It does not retain a request body, query string, JWS, nonce, or credential.
+Some early refusals cannot identify an account or certificate name.
+
+This is off by default: unauthenticated clients can cause audit rows at the
+request rate, consuming database space and write capacity. Use it with suitable
+network access controls and retention in a private deployment. Audit writes are
+best effort; a database write failure is logged but cannot make the trail
+absolutely complete. A request refusal and a certificate operation failure may
+both appear for one request because they record different events.
 
 **`reverse_dns`** (`Boolean`) — *Default: `true` | Env: `ACME_PROXY_AUDIT__REVERSE_DNS`*
 

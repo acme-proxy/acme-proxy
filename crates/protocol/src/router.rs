@@ -271,6 +271,29 @@ pub fn build_app(
         app
     };
 
+    // Outside admission and the per-profile filter so even early refusals
+    // become visible, but inside access so every row has a request ID.
+    let app = if config.audit.record_refusals {
+        app.layer(middleware::from_fn_with_state(
+            middlewares::refusal_audit::RefusalAudit {
+                auditor: audit,
+                profiles: Arc::new(
+                    profiles
+                        .iter()
+                        .map(|profile| middlewares::refusal_audit::AuditProfile {
+                            name: profile.name.clone(),
+                            path: profile.path.clone(),
+                            proxy: profile.filter.proxy().clone(),
+                        })
+                        .collect(),
+                ),
+            },
+            middlewares::refusal_audit::record_refusal,
+        ))
+    } else {
+        app
+    };
+
     app.layer(security_headers())
         // Outermost of everything, so the `request` span it opens — and the
         // `x-request-id` it echoes — covers every route, the admission layer

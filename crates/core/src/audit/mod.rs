@@ -38,6 +38,9 @@ pub enum AuditEvent {
     // the vocabulary below is not, and `as_str` is its own authority.
     CertificateIssued,
     CertificateIssueFailed,
+    /// One refused ACME HTTP response. Can coexist with a CA operation failure
+    /// row for the same request; the events answer different questions.
+    AcmeRequestRefused,
     CertificateRevoked,
     CertificateRevokeFailed,
     // The administration of the CA: an operator (or the host CLI) changing a
@@ -83,6 +86,7 @@ impl AuditEvent {
         match self {
             Self::CertificateIssued => "certificate_issued",
             Self::CertificateIssueFailed => "certificate_issue_failed",
+            Self::AcmeRequestRefused => "acme_request_refused",
             Self::CertificateRevoked => "certificate_revoked",
             Self::CertificateRevokeFailed => "certificate_revoke_failed",
             Self::AccountDeactivated => "account_deactivated",
@@ -123,7 +127,9 @@ impl AuditEvent {
     #[must_use]
     pub fn outcome(&self) -> &'static str {
         match self {
-            Self::CertificateIssueFailed | Self::CertificateRevokeFailed => "failure",
+            Self::CertificateIssueFailed
+            | Self::CertificateRevokeFailed
+            | Self::AcmeRequestRefused => "failure",
             Self::CertificateIssued
             | Self::CertificateRevoked
             | Self::AccountDeactivated
@@ -179,6 +185,7 @@ impl AuditEvent {
 pub const ALL_AUDIT_EVENTS: &[AuditEvent] = &[
     AuditEvent::CertificateIssued,
     AuditEvent::CertificateIssueFailed,
+    AuditEvent::AcmeRequestRefused,
     AuditEvent::CertificateRevoked,
     AuditEvent::CertificateRevokeFailed,
     AuditEvent::AccountDeactivated,
@@ -209,7 +216,7 @@ pub const ALL_AUDIT_EVENTS: &[AuditEvent] = &[
 
 /// How many variants [`AuditEvent`] has, asserted against
 /// [`ALL_AUDIT_EVENTS`] at compile time.
-const EVENT_COUNT: usize = 28;
+const EVENT_COUNT: usize = 29;
 
 const _: () = assert!(
     ALL_AUDIT_EVENTS.len() == EVENT_COUNT,
@@ -229,6 +236,7 @@ const fn event_count_is_exhaustive(event: AuditEvent) -> usize {
     match event {
         AuditEvent::CertificateIssued => 1,
         AuditEvent::CertificateIssueFailed => 2,
+        AuditEvent::AcmeRequestRefused => 29,
         AuditEvent::CertificateRevoked => 3,
         AuditEvent::CertificateRevokeFailed => 4,
         AuditEvent::AccountDeactivated => 5,
@@ -305,6 +313,15 @@ pub struct Actor {
 }
 
 impl Actor {
+    /// An ACME client rejected before its account could be authenticated.
+    #[must_use]
+    pub fn acme_unidentified() -> Self {
+        Self {
+            kind: ActorKind::Acme,
+            id: None,
+        }
+    }
+
     /// An ACME client acting as a known account.
     #[must_use]
     pub fn acme(account_id: impl Into<String>) -> Self {
