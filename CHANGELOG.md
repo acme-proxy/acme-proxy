@@ -34,6 +34,13 @@ migrated configuration before restarting.
 
 ### Fixed
 
+- **`local_ca` refuses at startup a CA certificate whose subject it cannot
+  reproduce exactly** — one that repeats an attribute type (`DC=com,
+  DC=example`) or has a multi-valued RDN (`OU=PKI+CN=…`), naming the subject.
+  The first used to load and issue certificates and CRLs whose issuer dropped
+  the repeated values, so none chained to the CA; the second failed with an
+  opaque parse error. Supporting such subjects waits on the signing library
+  (rustls/rcgen#81) ([#36](https://github.com/acme-proxy/acme-proxy/issues/36)).
 - **A job whose handler budget exceeds `jobs.lease_seconds` is no longer run
   twice.** The claim held the row for `jobs.lease_seconds` while the attempt
   ran under the handler's own, longer budget — a relayed issuance's
