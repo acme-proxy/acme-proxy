@@ -630,8 +630,10 @@ The forward proxy every outbound HTTP client dials through: the upstream CA the
 tunnel, since it is TLS rather than HTTP.
 
 Not everything outbound. SMTP (`notify.email`) and the RFC 2136 updates
-`signer.relay.dns01` makes are not HTTP and keep dialling directly; an estate
-whose egress is proxy-only needs a separate route for those two.
+`signer.relay.dns01` writes through its `rfc2136` provider are not HTTP and keep
+dialling directly; an estate whose egress is proxy-only needs a separate route
+for those two. The same strategy's `cloudflare` provider *is* HTTP, and dials
+through this table like the upstream CA does.
 
 Every key is empty by default, which means no proxy at all. There is no
 `enabled` key — the presence of a URL is the switch.

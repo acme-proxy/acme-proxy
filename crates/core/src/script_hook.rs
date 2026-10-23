@@ -137,7 +137,8 @@ impl ScriptHook {
         // The script would otherwise inherit the server's entire environment,
         // which legitimately holds secrets: every `ACME_PROXY_*` configuration
         // overlay, including the DNS update TSIG key
-        // (`…SIGNER__RELAY__DNS01__RFC2136__TSIG_KEY_SECRET`) and
+        // (`…SIGNER__RELAY__DNS01__RFC2136__TSIG_KEY_SECRET`), the Cloudflare
+        // API token (`…DNS01__CLOUDFLARE__API_TOKEN`) and
         // `notify.email.smtp_password`. An operator-supplied script has no
         // business receiving those, so it starts from nothing and is given only
         // the documented variables plus a `PATH` without which a
