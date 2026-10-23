@@ -67,6 +67,7 @@
 - [Audit Trail](operations/audit.md)
 - [Monitoring & Observability](operations/monitoring.md)
   - [Grafana Dashboard](operations/grafana.md)
+- [Backup & Restore](operations/backup.md)
 - [Maintenance & Troubleshooting](operations/troubleshooting.md)
 
 # Security
@@ -95,6 +96,5 @@
   - [ADR 0015: The web admin trusts OpenID Connect and LDAP providers, hand-rolling OIDC and taking `ldap3`](dev/adr/0015-external-identity-providers.md)
   - [ADR 0016: Several instances of every role over one PostgreSQL is a supported topology](dev/adr/0016-multi-instance-deployment.md)
 - [Database Schema](dev/database.md)
-- [Custom Plugins Examples](dev/custom_plugins.md)
 - [Testing & Coverage](dev/testing.md)
 - [Contributing](dev/contributing.md)

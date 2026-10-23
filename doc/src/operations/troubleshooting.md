@@ -53,18 +53,23 @@ Failures specific to a hardware CA key — PIN, token, slot and mechanism proble
 ## An order sits in `processing` and never finishes
 
 - **Symptoms** — A client polls an order that reached `processing` and stays
-  there. Only the `relay` backend defers like this; `local_ca` and `custom`
-  answer `finalize` inline.
-- **Cause** — The issuance is a background job, and it is either waiting out a
-  backoff after a retryable upstream failure or has been retired for good. The
-  order object itself will not say which.
+  there.
+- **Cause** — Every backend signs in a background job: `finalize` queues a
+  `signer_issue` job and answers `processing`, and a process running the
+  `worker` role picks it up. The relay then hands over to a
+  `signer_relay_issue` job of its own while the upstream works. A job that has
+  not finished is waiting for a worker, waiting out a backoff after a retryable
+  failure, or retired for good — and the order object itself will not say which.
+  If no process runs `worker`, nothing is ever signed: see
+  [Separate Role Processes](../getting_started/roles.md).
 - **Fix** — Ask the queue:
 
 ```bash
 # What is the job doing, and how many attempts has it spent?
+acme-proxy jobs list --kind signer_issue --limit 20
 acme-proxy jobs list --kind signer_relay_issue --limit 20
 
-# The upstream's own error text, and the URLs it was talking to.
+# The backend's own error text — for a relay, the upstream's, and its URLs.
 acme-proxy jobs show <job-id>
 ```
 
@@ -86,11 +91,35 @@ acme-proxy jobs show <job-id>
   `journal_mode = WAL` is applied. (The server automatically attempts to enable
   WAL on startup).
 
+## The database stops answering
+
+- **Symptoms** — `GET /ready` answers `503` and `server_readiness_failed` is
+  logged; ACME requests fail with `serverInternal`, or queue until they time
+  out. On PostgreSQL this is usually a server that is down, unreachable, or in
+  the middle of a failover.
+- **Cause** — Every request and every job touches the database, so nothing
+  progresses without it. The pool is per process, which is why
+  `acme_proxy_database_pool_connections{state="idle"}` stuck at `0` on one
+  process points at queries that are slow, while a `503` on every process
+  points at the server itself.
+- **Fix** — Restore the database rather than restarting `acme-proxy`: a
+  process whose database returns picks up where it stopped, and the job queue
+  loses nothing. Keep load balancers on `/ready` and liveness probes on
+  `/health`, so a database outage takes instances out of rotation instead of
+  restarting them — see [Monitoring](monitoring.md#readiness) and
+  [High Availability](../getting_started/high_availability.md).
+
 ## Reading the database directly
 
 When the CLI cannot answer a question — usually "what does the row actually
-say?" — the database is readable while the server runs, because WAL allows a
-reader alongside the writer.
+say?" — the database is readable while the server runs: SQLite's WAL allows a
+reader alongside the writer, and PostgreSQL's MVCC does the same.
+
+The recipes are SQLite's, where an id is sixteen bytes and is matched with
+`unhex(replace('<uuid>','-',''))`. On PostgreSQL, run them in `psql`, compare
+ids as plain strings, and read the epoch-second columns with
+`to_timestamp(created_at)` — see
+[Database Schema → Reading it directly](../dev/database.md#reading-it-directly).
 
 ```bash
 # Which migrations have run, and did they all succeed?
@@ -104,18 +133,15 @@ sqlite3 sqlite.db "SELECT datetime(created_at,'unixepoch'), event, profile, clie
 # An order that will not progress: its status and its authorizations'.
 sqlite3 sqlite.db "SELECT o.status, a.identifier, a.status, c.type, c.status, c.error
                      FROM orders o JOIN authorizations a ON a.order_id = o.id
-                     JOIN challenges c ON c.authz_id = a.id WHERE o.id = '…';"
+                     JOIN challenges c ON c.authz_id = a.id
+                    WHERE o.id = unhex(replace('…','-',''));"
 ```
 
 > Read, do not write. The `CHECK` constraints will catch an impossible status,
 > but nothing re-syncs the in-memory state a running handler is holding. Use the
 > [Admin CLI](cli.md) to change anything.
 
-**Backups must include the WAL.** Copying `sqlite.db` on its own gives you a
-database missing every recent write. Either take all three files (`sqlite.db`,
-`-wal`, `-shm`) with the server stopped, or run `sqlite3 sqlite.db ".backup
-backup.db"`, which is consistent by construction and safe against a running
-server.
+**Backups must include the WAL** — see [Backup & Restore](backup.md).
 
 The schema itself — every table, constraint and index, and why each is shaped
 the way it is — is documented in [Database Schema](../dev/database.md).

@@ -302,6 +302,19 @@ their name — so `every profile` and `any status` reach the API as blanks.
 | `POST` | `/api/mfa/totp/confirm` | `{code}` — **returns the recovery codes, once** |
 | `DELETE` | `/api/mfa/totp` | turn it off; `409` while `admin.require_mfa` is on |
 | `POST` | `/api/mfa/recovery-codes` | reissue — **returns them once** |
+| `POST` | `/api/account/password` | `{current_password, new_password}` — see [Changing your own password](webadmin_users.md#changing-your-own-password) |
+| `POST` | `/api/account/contact` | `{current_password, contact}`; a blank `contact` clears it |
+| `GET` | `/api/account/sessions?limit=&offset=` | your own live sessions |
+| `POST` | `/api/account/sessions/{id}/revoke` | one of your own |
+| `GET` | `/api/operators?limit=&offset=` | `admin` role only, as is every `/api/operators` route — see [Managing operators](webadmin_users.md#managing-operators) |
+| `GET` | `/api/operators/{username}` | |
+| `GET` | `/api/operators/{username}/sessions?limit=&offset=` | |
+| `POST` | `/api/operators/{username}/disable` | `{password}` — your own, as step-up; likewise every mutation below |
+| `POST` | `/api/operators/{username}/enable` | `{password}` |
+| `POST` | `/api/operators/{username}/role` | `{password, role}` |
+| `POST` | `/api/operators/{username}/contact` | `{password, contact}` |
+| `POST` | `/api/operators/{username}/totp/reset` | `{password}` |
+| `POST` | `/api/operators/{username}/sessions/{id}/revoke` | `{password}` |
 | `GET` | `/api/accounts?profile=&eabKid=&limit=&offset=` | `eabKid`: the accounts one credential registered |
 | `GET` | `/api/accounts/{id}` | |
 | `GET` | `/api/accounts/{id}/orders?limit=&offset=` | |
@@ -317,6 +330,12 @@ their name — so `every profile` and `any status` reach the API as blanks.
 | `GET` | `/api/eab/{kid}` | |
 | `POST` | `/api/eab/{kid}/revoke` | the row survives, moved to `revoked` |
 | `DELETE` | `/api/eab/{kid}?accounts=keep\|deactivate\|delete` | the row goes; `409 live_certificates` for `delete` while an account holds a live certificate |
+| `GET` | `/api/jobs?kind=&status=&limit=&offset=` | see [The job queue](#the-job-queue) |
+| `GET` | `/api/jobs/{id}` | |
+| `POST` | `/api/jobs/{id}/cancel` | |
+| `POST` | `/api/jobs/{id}/run` | |
+| `GET` | `/api/upstream-orders?profile=&status=&limit=&offset=` | read-only |
+| `GET` | `/api/upstream-orders/{id}` | by local order id |
 | `GET` | `/api/expiring?profile=&days=&superseded=&limit=&offset=` | read-only; `superseded=hide` drops the replaced rows |
 | `GET` | `/api/audit?profile=&accountId=&orderId=&certSerial=&event=&outcome=&limit=&offset=` | read-only |
 | `GET` | `/api/audit/{id}` | one row |
@@ -325,6 +344,7 @@ their name — so `every profile` and `any status` reach the API as blanks.
 | `GET` | `/api/profiles` | the endpoints actually mounted; `profile list`'s document |
 | `GET` | `/api/profiles/{name}/filter` | one endpoint's resolved access policy; read-only |
 | `GET` | `/health` | unauthenticated, no database access |
+| `GET` | `/ready` | unauthenticated; `503` while the database does not answer |
 
 Lists return an envelope, not a bare array — `total` is what the same filters
 match *unpaged*, which is what a page control needs:

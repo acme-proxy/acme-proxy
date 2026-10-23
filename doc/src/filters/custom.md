@@ -38,7 +38,7 @@ The script is invoked at both filter hooks, distinguished by `ACME_FILTER_HOOK`:
 
 | `ACME_FILTER_HOOK` | When | Refusal becomes |
 | --- | --- | --- |
-| `connection` | Every non-exempt request | `403 access_denied` |
+| `connection` | Every request whose connection-stage rules reach the check | `403 access_denied` |
 | `identifiers` | At `newOrder` and at `finalize` | `403 rejectedIdentifier` (newOrder) / `400 badCSR` (finalize) |
 
 If your script only cares about one hook, branch on this variable and `exit 0`
@@ -135,6 +135,37 @@ it is client-visible — do not leak internal detail into it.
    timeout with `kill_on_drop(true)`. A timeout alone only drops the future, so
    without this a hung script would outlive its deadline and leak a process per
    request.
-3. **Cost**: the `connection` hook runs on **every** non-exempt request,
-   including `newNonce`. A script doing network I/O there will dominate your
-   latency; prefer the `identifiers` hook when the policy only concerns names.
+3. **Cost**: the `connection` hook runs on **every** request whose
+   connection-stage rules reach the check, including `newNonce`. A script doing
+   network I/O there will dominate your latency; prefer the `identifiers` hook
+   when the policy only concerns names.
+
+## Example
+
+A connection-stage check that asks a threat-intelligence service about every
+address outside the internal ranges.
+
+```bash
+#!/bin/bash
+# /etc/acme-proxy/filters/threat-intel.sh
+
+# This script only has an opinion about connections.
+[ "$ACME_FILTER_HOOK" = "connection" ] || exit 0
+
+case "$ACME_FILTER_CLIENT_IP" in
+  10.*|192.168.*) exit 0 ;;   # internal: not worth a lookup
+  "") echo "client address unknown"; exit 1 ;;
+esac
+
+status=$(curl -s -o /dev/null -m 2 -w '%{http_code}' \
+  "https://threat.internal/api/check?ip=$ACME_FILTER_CLIENT_IP")
+
+if [ "$status" = "200" ]; then
+  exit 0
+fi
+
+# The first line of stdout is what the client is told: keep it generic.
+# A service that is down lands here too, so this check fails closed.
+echo "address refused by policy"
+exit 1
+```

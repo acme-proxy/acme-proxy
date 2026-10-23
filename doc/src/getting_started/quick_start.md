@@ -115,8 +115,10 @@ internal.example.com {
 4. Because `challenge.bypass = true`, the proxy marked the challenge `valid` the
    moment the client triggered it, without making any network request back to
    the client's responder.
-5. The proxy signed the CSR with its auto-generated local ECDSA CA and returned
-   the certificate.
+5. The client finalized the order with its CSR. `acme-proxy` answered
+   `processing` and queued the signing; the same process, which runs every
+   [role](roles.md) by default, signed it with the auto-generated local ECDSA
+   CA a moment later, and the client's next poll fetched the certificate.
 
 The certificate is signed by a CA nothing trusts yet. See [Trusting the
 CA](trusting_the_ca.md) for how to install `ca.pem` where your clients will
