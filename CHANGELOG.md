@@ -199,6 +199,10 @@ migrated configuration before restarting.
   trust the public roots: the relay upstream, IPAM, webhook
   notifications and the identity providers. Both crates now refuse those
   intermediates. This is a lockfile bump; nothing in the server changed.
+- **ctutils 0.4.5, for RUSTSEC-2026-0385.** Some of its constant-time helpers
+  compiled to branches on secret values. It reaches the server only through the
+  PostgreSQL driver's password authentication (SCRAM and MD5). A lockfile bump;
+  nothing in the server changed.
 
 ## [0.6.2] — 2026-10-16
 

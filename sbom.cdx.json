@@ -1944,16 +1944,16 @@
     },
     {
       "type": "library",
-      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#ctutils@0.4.3",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#ctutils@0.4.5",
       "author": "RustCrypto Developers",
       "name": "ctutils",
-      "version": "0.4.3",
+      "version": "0.4.5",
       "description": "Constant-time utility library with selection and equality testing support targeting cryptographic applications. Supports `const fn` where appropriate. Built on the `cmov` crate which provides architecture-specific predication intrinsics. Heavily inspired by the `subtle` crate. ",
       "scope": "required",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "03bb0e1cc970d482d121d9a1744999169b69a07470b3d644a7894e53fcaf4574"
+          "content": "38d28fb6aa7dd680b3ffd1a3e64e115c177bdba63c0ae7f9cd48129ff05c4fa0"
         }
       ],
       "licenses": [
@@ -1961,11 +1961,11 @@
           "expression": "Apache-2.0 OR MIT"
         }
       ],
-      "purl": "pkg:cargo/ctutils@0.4.3",
+      "purl": "pkg:cargo/ctutils@0.4.5",
       "externalReferences": [
         {
-          "type": "website",
-          "url": "https://github.com/RustCrypto/utils/tree/master/ctutils"
+          "type": "documentation",
+          "url": "https://docs.rs/ctutils"
         },
         {
           "type": "vcs",
@@ -10707,7 +10707,7 @@
       ]
     },
     {
-      "ref": "registry+https://github.com/rust-lang/crates.io-index#ctutils@0.4.3",
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#ctutils@0.4.5",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#cmov@0.5.4"
       ]
@@ -10744,7 +10744,7 @@
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#block-buffer@0.12.1",
         "registry+https://github.com/rust-lang/crates.io-index#crypto-common@0.2.2",
-        "registry+https://github.com/rust-lang/crates.io-index#ctutils@0.4.3"
+        "registry+https://github.com/rust-lang/crates.io-index#ctutils@0.4.5"
       ]
     },
     {
