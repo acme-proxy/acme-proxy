@@ -67,20 +67,78 @@ implementation for at all. Nothing falls back: if the upstream authorization
 does not offer the type the strategy names, the relay says so and stops, rather
 than trying a type it could not finish.
 
-### `dns01` (RFC 2136 TSIG)
+### `dns01`
+
 This is the strategy that can prove a wildcard. The proxy intercepts internal
 HTTP-01 or DNS-01 challenges, but to satisfy the external CA, the proxy solves
-the external DNS-01 challenge itself. It does this using an `rfc2136` provider
-powered by `hickory-proto`. It securely authenticates with the DNS server using
-TSIG (Transaction Signature) to publish the TXT record. **Note:** The TXT record
-uses the thumbprint of the proxy's upstream account key, *not* the internal
-client's key.
+the external DNS-01 challenge itself. The TXT record it needs is one this server
+publishes, and its value uses the thumbprint of the proxy's upstream account
+key, *not* the internal client's key.
+
+Two providers can write that record, and `provider` picks one:
+[`rfc2136`](#provider-rfc2136-rfc-2136-tsig) sends an `nsupdate` signed with a
+TSIG key to any authoritative server that accepts one, and
+[`cloudflare`](#provider-cloudflare) calls Cloudflare's DNS API for a zone
+Cloudflare's nameservers serve, which accept no DNS update at all.
+
+#### Provider `rfc2136` (RFC 2136 TSIG)
+
+The provider is built on `hickory-proto` and authenticates to the DNS server
+with TSIG (Transaction Signature). The update goes to the configured `server`
+directly — not through `dns.resolver`, and not through `[proxy]`, because an
+update is a DNS packet rather than an HTTP request.
+
+It works against any authoritative server implementing RFC 2136 — BIND,
+PowerDNS, Knot, CoreDNS with the `update` plugin — so nothing here is tied to
+one cloud vendor's API.
+
+#### Provider `cloudflare`
+
+For a zone served by Cloudflare's own nameservers, which take no DNS update and
+know no TSIG key: records there change through the Cloudflare API, and this
+provider is that API.
+
+```toml
+[signer.relay.dns01]
+provider = "cloudflare"
+
+[signer.relay.dns01.cloudflare]
+zone = "example.com"
+zone_id = "0f4c1c0e97b34a37a9e1a6f0d4b9c2f1"
+```
+
+Four differences from `rfc2136` are worth knowing before choosing it:
+
+- **One record is one POST; retracting it is two requests.** Cloudflare names a
+  record by an internal id, so a retraction lists the TXT records at the name,
+  deletes the id whose content is this challenge's value, and leaves every other
+  value at that name alone. Values are still appended and retracted one at a
+  time, so a wildcard and its base share a name here exactly as they do under
+  `rfc2136`.
+- **A publish that was refused but did land is recognised.** A retry of a
+  publish whose response was lost in transit can meet a refusal to hold a second
+  copy of a record Cloudflare already has. The provider then checks whether its
+  own value is at the name and, if it is, counts the record as published —
+  because it is, and failing the client's order over a refusal that no longer
+  applies would be worse than one extra request.
+- **Set `mode = "delay"` under propagation.** The API accepting a record is not
+  the edges serving it, and the upstream looks exactly once. See
+  [`[signer.relay.dns01.propagation]`](#signerrelaydns01propagation).
+- **It is an ordinary outbound HTTPS client**, so `dns.resolver` resolves it and
+  `[proxy]` carries it, like the upstream CA itself.
+
+The credential is a scoped **API token** (dashboard: My Profile → API Tokens)
+needing only `Zone / DNS / Edit` on the zone named. The legacy global API key is
+not supported: it authenticates the whole account, and Cloudflare is phasing it
+out. Nothing is contacted at startup — the zone id is configured rather than
+looked up, so an API outage cannot stop the server booting. The first issuance
+reports the failure instead, and the relay's job retries it.
 
 #### DNS alias mode
 
 By default the record is written at `_acme-challenge.<domain>`, so the update
-key needs write access to every zone a profile issues for. Alias mode moves the
-record to one name in a zone set aside for it, the way acme.sh's
+credential needs write access to every zone a profile issues for. Alias mode
+moves the record to one name in a zone set aside for it, the way acme.sh's
 `--challenge-alias` does. Delegate each domain once with a CNAME, then point
 `zone` and `challenge_alias` at the alias zone:
 
@@ -104,9 +162,15 @@ the CNAME, because this server's resolver need not see what the CA sees, and a
 record published at the wrong name invalidates the upstream authorization for
 good.
 
-Whoever can write the alias name can pass `dns-01` for every domain pointing at
-it. Domains that must not share that power belong in separate profiles, each
-with its own alias and key.
+Whichever provider is in use, the alias must lie inside that provider's own
+`zone`, checked by the same test every record is checked against. Whoever can
+write the alias name can pass `dns-01` for every domain pointing at it. Domains
+that must not share that power belong in separate profiles, each with its own
+alias and credential.
+
+On Cloudflare, alias mode is also the way to keep the token's blast radius to
+one zone: every domain CNAMEs its `_acme-challenge` name into the alias zone,
+and the token is scoped to that zone alone.
 
 ### `http01`
 The proxy answers the upstream's `http-01` challenge by serving the key
@@ -287,20 +351,23 @@ Only consulted when `challenge_strategy = "dns01"`.
 
 **`provider`** (`String`) — *Default: `"rfc2136"` | Env: `ACME_PROXY_SIGNER__RELAY__DNS01__PROVIDER`*
 
-DNS provider used to publish the upstream TXT record. `rfc2136` is currently the
-only implementation.
+DNS provider used to publish the upstream TXT record: `rfc2136`, which sends an
+RFC 2136 update signed with a TSIG key, or `cloudflare`, which calls
+Cloudflare's DNS API for a zone on Cloudflare's nameservers. Each reads its own
+section below and ignores the other's; an unrecognised value is a **startup
+error**.
 
 **`challenge_alias`** (`String`) — *Default: `""` | Env: `ACME_PROXY_SIGNER__RELAY__DNS01__CHALLENGE_ALIAS`*
 
 A domain, e.g. `acme-alias.net.`, under which every challenge record is
 published as `_acme-challenge.<alias>` — see [DNS alias mode](#dns-alias-mode).
 Empty publishes at each domain's own `_acme-challenge` name. The alias must lie
-inside `rfc2136.zone`; one outside it, a wildcard, or a value that already
-starts with `_acme-challenge.` is a **startup error**.
+inside the provider's own `zone`; one outside it, a wildcard, or a value that
+already starts with `_acme-challenge.` is a **startup error**.
 
 ### `[signer.relay.dns01.rfc2136]`
 
-All default to `""` and are required once the `dns01` strategy is selected.
+All default to `""` and are required once `provider = "rfc2136"` (the default).
 
 **`server`** — *Env: `ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__SERVER`*
 `host:port` of the nameserver accepting the dynamic update, e.g. `10.0.0.53:53`.
@@ -342,6 +409,51 @@ explained: `BADKEY` means the server does not know `tsig_key_name` under
 `tsig_algorithm`, `BADSIG` that `tsig_key_secret` does not match, and `BADTIME`
 that the two clocks disagree.
 
+### `[signer.relay.dns01.cloudflare]`
+
+All three default to `""` and are required once `provider = "cloudflare"`. Each
+missing one is a **startup error**, as is an `api_token` or `zone_id` carrying
+whitespace or a control character — a secrets-manager template that appends a
+newline would otherwise fail at the first issuance instead.
+
+**`api_token`** — *Env: `ACME_PROXY_SIGNER__RELAY__DNS01__CLOUDFLARE__API_TOKEN`*
+
+**Sensitive.** A Cloudflare API token, sent as `Authorization: Bearer`. It needs
+`Zone / DNS / Edit` on `zone` and nothing else: publishing one challenge TXT
+record is the whole of what this server asks of it. The legacy global API key is
+not accepted, because it authenticates the whole account. Long-lived, since
+every issuance needs it, so it belongs in configuration as the TSIG secret does;
+prefer the environment variable over a file on disk.
+
+**`zone`** — *Env: `ACME_PROXY_SIGNER__RELAY__DNS01__CLOUDFLARE__ZONE`*
+
+The zone's apex name, e.g. `example.com`. A trailing dot is accepted and
+trimmed, since `[signer.relay.dns01.rfc2136]`'s `zone` is spelled with one and
+Cloudflare's own UI spells it without. Every challenge name must lie inside it,
+and one outside is refused before any request is sent.
+
+**`zone_id`** — *Env: `ACME_PROXY_SIGNER__RELAY__DNS01__CLOUDFLARE__ZONE_ID`*
+
+The zone's identifier, as Cloudflare's zone listing shows it. Configured rather
+than looked up from `zone`, so that an unreachable API is not a startup failure
+and a zone renamed or transferred under a running server fails with Cloudflare's
+own words naming the id, rather than this server guessing which zone was meant.
+
+Records are added and removed by value, as under `rfc2136`, so other TXT values
+at the same name are left alone — but through a different shape of request:
+Cloudflare identifies a record by an id, so a retraction is a listing followed
+by a delete of the ids whose content matches. A POST refused because the record
+already exists is checked against the name, and counts as published when this
+server's own value is there: that is a retry whose answer was lost, and the
+record the CA will look for exists.
+
+Records are published with a 60-second TTL, the shortest Cloudflare allows
+outside an Enterprise plan, for the same reason `rfc2136` publishes them with a
+short one: a challenge record is wanted for seconds. Each request has its own
+10-second budget; the relay's `poll_timeout_secs` still bounds the whole
+attempt, and a failed request is reported as the retryable failure the relay's
+job already treats it as.
+
 ### `[signer.relay.dns01.propagation]`
 
 What the `dns01` strategy waits for between publishing the TXT record and
@@ -353,9 +465,9 @@ order and, at a public CA, counts against its failed-validation limit.
 
 `none` triggers the challenge right after the update succeeds, which is right
 when the update server is itself what the CA asks. `delay` sleeps `delay_secs`
-first, for a provider that accepts an update before serving it (a DNS API behind
-an RFC 2136 bridge) or secondaries that lag their primary. Any other value is a
-startup error.
+first, for a provider that accepts an update before serving it — the
+`cloudflare` provider always, and an API behind an RFC 2136 bridge — or for
+secondaries that lag their primary. Any other value is a startup error.
 
 **`delay_secs`** (`u64`) — *Default: `30` | Env: `ACME_PROXY_SIGNER__RELAY__DNS01__PROPAGATION__DELAY_SECS`*
 

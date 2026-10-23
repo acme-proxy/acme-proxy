@@ -146,17 +146,26 @@ pub struct RelayEabConfig {
     pub hmac_key: String,
 }
 /// Which DNS provider the `dns01` challenge strategy writes through.
+///
+/// `provider` names which of the two sections below is read; the other is
+/// parsed and ignored, exactly as `[signer.relay]` is read only under the
+/// `relay` backend.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct Dns01Config {
+    /// `rfc2136` (the default) or `cloudflare`.
     pub provider: String,
     /// DNS alias mode: a domain, e.g. `acme-alias.net.`, under which every
     /// challenge record is published as `_acme-challenge.<alias>` instead of
     /// `_acme-challenge.<identifier>`. The operator CNAMEs each
     /// `_acme-challenge.<identifier>` there; the CA follows the CNAME. Empty
     /// (the default) publishes at the identifier's own name.
+    ///
+    /// Applies to both providers: the alias must lie inside the provider's own
+    /// `zone`, which is checked the same way for each.
     pub challenge_alias: String,
     pub rfc2136: Rfc2136Config,
+    pub cloudflare: CloudflareConfig,
     pub propagation: Dns01PropagationConfig,
 }
 
@@ -166,6 +175,7 @@ impl Default for Dns01Config {
             provider: "rfc2136".to_string(),
             challenge_alias: String::new(),
             rfc2136: Rfc2136Config::default(),
+            cloudflare: CloudflareConfig::default(),
             propagation: Dns01PropagationConfig::default(),
         }
     }
@@ -207,6 +217,36 @@ pub struct Rfc2136Config {
     /// environment variable over a file on disk.
     pub tsig_key_secret: String,
     pub tsig_algorithm: String,
+}
+/// Cloudflare's DNS API, for a zone hosted on Cloudflare's authoritative
+/// nameservers.
+///
+/// Cloudflare accepts record changes through its API only — it takes no RFC
+/// 2136 update and knows no TSIG key — so a zone there needs this provider
+/// rather than a bridge speaking `nsupdate` to it. See
+/// `signer::relay::dns01::cloudflare` for what each call costs and why a
+/// retraction is two requests where the RFC 2136 provider's is one.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct CloudflareConfig {
+    /// SENSITIVE — a Cloudflare **API token** (dashboard: My Profile → API
+    /// Tokens), not the legacy global API key. It needs `Zone / DNS / Edit` on
+    /// the zone below, and nothing else: publishing one challenge TXT record
+    /// is the whole of what this server asks of it. Long-lived, since every
+    /// issuance needs it, so it lives in configuration like the TSIG secret
+    /// does; prefer the environment variable over a file on disk.
+    pub api_token: String,
+    /// The zone's apex name, e.g. `example.com`. A trailing dot is accepted and
+    /// trimmed, since `zone` under `[signer.relay.dns01.rfc2136]` is spelled
+    /// with one. Every challenge name must lie inside it, and one outside is
+    /// refused before any request is sent.
+    pub zone: String,
+    /// The zone's identifier, as Cloudflare's `zones` listing shows it. Required
+    /// rather than looked up by name: a zone renamed or transferred under a
+    /// running server must fail with Cloudflare's own words rather than have
+    /// this server guess at which zone it meant, and the lookup would make an
+    /// unreachable API a startup failure.
+    pub zone_id: String,
 }
 /// Configuration for the persistent local-CA signer backend.
 #[derive(Debug, Clone, Deserialize)]

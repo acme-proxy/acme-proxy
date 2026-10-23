@@ -236,8 +236,12 @@ impl RelaySigner {
         let (client, account, kid, strategy, dns01_alias) = std::thread::scope(|scope| {
             scope
                 .spawn(|| -> anyhow::Result<_> {
-                    let (strategy, dns01_alias) =
-                        build_challenge_strategy(cfg, &parts.database, poll.timeout)?;
+                    let (strategy, dns01_alias) = build_challenge_strategy(
+                        cfg,
+                        &parts.database,
+                        poll.timeout,
+                        outbound.clone(),
+                    )?;
 
                     let (client, account, kid) = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
@@ -290,6 +294,7 @@ fn build_challenge_strategy(
     cfg: &RelayConfig,
     database: &Arc<Database>,
     poll_timeout: Duration,
+    outbound: acme_proxy_net::http_client::Outbound,
 ) -> anyhow::Result<(ChallengeStrategy, Option<String>)> {
     // Validated whether or not it is the selected strategy, for
     // the reason `challenge::from_config` validates names
@@ -314,8 +319,29 @@ fn build_challenge_strategy(
                 }
                 ChallengeStrategy::Dns01(Arc::new(updater))
             }
+            "cloudflare" => {
+                let updater = dns01::cloudflare::CloudflareUpdater::from_config(
+                    &cfg.dns01.cloudflare,
+                    outbound,
+                )?;
+                // The same startup refusal, against the zone this provider
+                // writes: which key to go and edit is named in the message.
+                dns01_alias = dns01::alias_record_name(&cfg.dns01.challenge_alias)?;
+                if let Some(alias) = &dns01_alias {
+                    updater.check_in_zone(alias).map_err(|error| {
+                        anyhow::anyhow!(
+                            "signer.relay.dns01.challenge_alias cannot be \
+                             published through signer.relay.dns01.cloudflare.zone: {error}"
+                        )
+                    })?;
+                }
+                ChallengeStrategy::Dns01(Arc::new(updater))
+            }
             other => {
-                anyhow::bail!("unknown signer.relay.dns01.provider: {other} (supported: rfc2136)")
+                anyhow::bail!(
+                    "unknown signer.relay.dns01.provider: {other} \
+                     (supported: rfc2136, cloudflare)"
+                )
             }
         },
         "http01" => {
