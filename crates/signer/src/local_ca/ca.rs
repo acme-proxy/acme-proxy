@@ -4,11 +4,15 @@
 //! The `pkcs11` key source never reaches any of this: it *loads* a CA and
 //! refuses to create one, deliberately, so that nothing can leave a private key
 //! on disk while the operator believes it is in hardware.
+//!
+//! [`ca_subject_round_trips`] is the exception: it vets an *imported* CA on
+//! every key source, before any of it is used to sign.
 
 use time::{Duration, OffsetDateTime};
 
 use rcgen::{
-    BasicConstraints, CertificateParams, DnType, IsCa, KeyPair, KeyUsagePurpose, SerialNumber,
+    BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair, KeyUsagePurpose,
+    SerialNumber,
 };
 use ring::rand::{SecureRandom, SystemRandom};
 
@@ -89,6 +93,56 @@ pub(super) fn generate_ca(
     Ok((key_pair, ca_cert.pem()))
 }
 
+/// Refuses a CA certificate whose subject rcgen would not write back unchanged.
+///
+/// rcgen does not keep the CA's subject as bytes: `Issuer::from_ca_cert_der`
+/// rebuilds it into a `DistinguishedName`, which holds one value per attribute
+/// type and one attribute per RDN, and writes that copy as the issuer of every
+/// certificate and CRL. A subject that repeats a type (`DC=com, DC=example`)
+/// silently loses all but the last value, so everything this CA signs names an
+/// issuer that does not exist and fails path validation (issue #36). A
+/// multi-valued RDN (`OU=PKI+CN=…`) is refused by rcgen with an opaque parse
+/// error.
+///
+/// Rather than guess which shapes break, this proves the round trip: it builds
+/// an `Issuer` from the certificate exactly as the constructors do, over a
+/// throwaway software key (a token is never touched), signs a throwaway leaf,
+/// and compares that leaf's issuer with the CA's subject byte for byte. rcgen
+/// writes a CRL's issuer with the same function, so the CRL is covered too.
+///
+/// Delete this when rcgen supports repeated attributes (rustls/rcgen#81, fixed
+/// by #394 for 0.15) and the fixtures in `testdata/` round-trip.
+pub(super) fn ca_subject_round_trips(ca_der: &[u8]) -> anyhow::Result<()> {
+    let (_, parsed) = x509_parser::parse_x509_certificate(ca_der)
+        .map_err(|error| anyhow::anyhow!("the CA certificate does not parse: {error}"))?;
+    let subject = &parsed.tbs_certificate.subject;
+
+    // The CA's own key is not needed to see what rcgen writes: an `Issuer`
+    // over a throwaway key names the CA exactly as the real one does.
+    let throwaway = KeyPair::generate()?;
+    let issuer = Issuer::from_ca_cert_der(&ca_der.into(), &throwaway).map_err(|error| {
+        anyhow::anyhow!(
+            "the CA subject `{subject}` cannot be used to sign ({error}): a multi-valued \
+             RDN (such as `OU=PKI+CN=Issuing CA`) or an unusual string type in the subject \
+             is not supported. Re-issue the CA certificate with one attribute per RDN"
+        )
+    })?;
+    let probe = CertificateParams::default().signed_by(&throwaway, &issuer)?;
+    let (_, probe) = x509_parser::parse_x509_certificate(probe.der()).map_err(|error| {
+        anyhow::anyhow!("rcgen wrote a certificate that does not parse: {error}")
+    })?;
+    let written = &probe.tbs_certificate.issuer;
+
+    anyhow::ensure!(
+        written.as_raw() == subject.as_raw(),
+        "the CA subject `{subject}` would be written as `{written}` in every certificate \
+         and CRL this CA signs, so none of them would chain to it. A subject that repeats \
+         an attribute type (such as `DC=com, DC=example`) is not supported yet \
+         (rustls/rcgen#81). Re-issue the CA certificate without the repeated attribute"
+    );
+    Ok(())
+}
+
 /// A fresh 16-byte (127-bit) certificate serial number.
 ///
 /// Without this rcgen derives the serial as `SHA256(subjectPublicKey)[0..20]`,
@@ -104,4 +158,54 @@ pub(super) fn random_serial() -> anyhow::Result<SerialNumber> {
     // Clear the top bit so the DER INTEGER stays positive and fits in 16 bytes.
     bytes[0] &= 0x7f;
     Ok(SerialNumber::from_slice(&bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The first certificate of a PEM file, as DER.
+    fn der(pem: &str) -> Vec<u8> {
+        acme_proxy_core::cert::leaf_der_from_chain(pem).unwrap()
+    }
+
+    #[test]
+    fn a_repeated_attribute_type_is_refused() {
+        let error = ca_subject_round_trips(&der(include_str!("testdata/repeated_dc_ca.pem")))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("DC=com, DC=example"), "{error}");
+        assert!(error.contains("rcgen#81"), "{error}");
+    }
+
+    #[test]
+    fn a_multi_valued_rdn_is_refused() {
+        let error = ca_subject_round_trips(&der(include_str!("testdata/multi_valued_rdn_ca.pem")))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("multi-valued RDN"), "{error}");
+    }
+
+    /// The guard must not refuse an ordinary imported CA: openssl mixes
+    /// `PrintableString` and `UTF8String`, and both must survive.
+    #[test]
+    fn an_openssl_made_ca_round_trips() {
+        ca_subject_round_trips(&der(include_str!("testdata/openssl_ca.pem"))).unwrap();
+    }
+
+    #[test]
+    fn every_generated_subject_round_trips() {
+        let subject = LocalCaSubjectConfig {
+            common_name: Some("Issuing CA".to_string()),
+            organization: Some("Example Corp".to_string()),
+            organizational_unit: Some("PKI".to_string()),
+            country: Some("FR".to_string()),
+            state: Some("Île-de-France".to_string()),
+            locality: Some("Paris".to_string()),
+        };
+        for subject in [LocalCaSubjectConfig::default(), subject] {
+            let (_, ca_pem) = generate_ca("ecdsa-p256", &subject).unwrap();
+            ca_subject_round_trips(&der(&ca_pem)).unwrap();
+        }
+    }
 }
