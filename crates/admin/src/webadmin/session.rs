@@ -1236,13 +1236,16 @@ mod tests {
 
     #[tokio::test]
     async fn the_window_rolls_over() {
-        // A one-second window, so the rollover is observable after a short
-        // sleep rather than by reaching into the table.
-        let limiter = limiter(1, 1).await;
+        // A short window, so the rollover is observable after a sleep rather
+        // than by reaching into the table. Two seconds, not one: the window is
+        // counted in whole seconds, so a one-second window can roll over
+        // between two calls milliseconds apart (a `fail` at x.99, a `begin`
+        // at x+1.00), and the refusal below would then flake.
+        let limiter = limiter(1, 2).await;
         fail(&limiter, ip(1)).await;
         assert!(limiter.begin(ip(1)).await.is_err());
 
-        tokio::time::sleep(Duration::from_millis(1_100)).await;
+        tokio::time::sleep(Duration::from_millis(2_100)).await;
         assert!(
             limiter.begin(ip(1)).await.is_ok(),
             "the window must roll over"
