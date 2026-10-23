@@ -32,11 +32,11 @@ graph TD
     PPROD --> SPROD["signer: relay<br/>filters: ipam"]
     PSTG --> SSTG["signer: local_ca<br/>filters: none"]
 
-    SDEV --> B1["Arc&lt;dyn SignerBackend&gt; #1"]
+    SDEV --> B1["signer backend #1"]
     SSTG --> B1
-    SPROD --> B2["Arc&lt;dyn SignerBackend&gt; #2"]
+    SPROD --> B2["signer backend #2"]
 
-    B1 --> DB[("one SQLite file<br/>rows tagged by profile")]
+    B1 --> DB[("one database<br/>rows tagged by profile")]
     B2 --> DB
 ```
 
@@ -48,7 +48,7 @@ different `crl_distribution_points` for one CRL, say — and that is refused
 rather than left to half-work.
 
 ## Hard database isolation
-Profiles act as a strict isolation boundary in the SQLite database.
+Profiles act as a strict isolation boundary in the database.
 
 The `accounts` table uses a constraint: `UNIQUE(profile, pubkey)`. This means if
 a client registers a key at `/profile/default`, and then uses the exact same

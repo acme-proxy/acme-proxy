@@ -121,6 +121,13 @@ migrated configuration before restarting.
   database answers a `SELECT 1` within two seconds, `503` otherwise. `/health`
   stays a liveness check that touches nothing.
 
+- **A Backup & Restore page in the book**, under Operations: what to back up
+  beside the database, the copy command for SQLite and PostgreSQL, the restore
+  order, and what a restore cannot bring back. It replaces backup advice that
+  was spread over five pages. The script examples on the old Developer →
+  Custom Plugins Examples page move onto the Custom Script page of each
+  signer, filter, IPAM and notification backend, and that page is gone.
+
 ### Changed
 
 - **An account URL that is not the signer's is `unauthorized` even when it
@@ -188,6 +195,16 @@ migrated configuration before restarting.
   account whose EAB credential was since revoked or deleted gets its account
   back too, as revoking never disturbed existing accounts; `account deactivate`
   or `eab delete --deactivate-accounts` is what shuts one out.
+
+- **The book no longer says `local_ca` and `custom` sign inside `finalize`.**
+  Every backend signs in a queued `signer_issue` job; Troubleshooting now looks
+  for that job, and the Quick Start and the custom signer example describe the
+  real exit-code contract (exit `3` makes the order `invalid` with `badCSR`).
+  The introduction, glossary, Profiles and Deployment pages stop describing the
+  database as one SQLite file and the job queue as drained by every process;
+  the glossary gains **Role**. The web admin's API table lists every route,
+  the troubleshooting query for a stuck order matches SQLite's byte ids, and
+  the container recipes set `server.base_url`.
 
 ### Security
 

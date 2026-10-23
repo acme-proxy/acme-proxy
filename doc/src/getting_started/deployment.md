@@ -36,7 +36,8 @@ graph TD
         RP["Reverse proxy (optional)<br/>sets X-Forwarded-For"]
         ACME[":3000 — ACME listener<br/>filters, admission, nonces"]
         ADMIN[":3001 — admin listener<br/>loopback by default"]
-        DB[("sqlite.db + WAL")]
+        WORKER["worker — job queue<br/>no listener"]
+        DB[("database<br/>SQLite file or PostgreSQL")]
         CAKEY[["ca.key — 0600, or a PKCS#11 token"]]
     end
 
@@ -44,11 +45,18 @@ graph TD
     OPS -.->|"SSH tunnel or VPN,<br/>NOT an open port"| ADMIN
     ACME --> DB
     ADMIN --> DB
-    ACME --> CAKEY
+    WORKER --> DB
+    WORKER --> CAKEY
 
-    ACME -->|"challenge validation:<br/>back to the client, :80 / :443 / DNS"| CLIENTS
-    ACME -->|"upstream ACME, DNS updates, SMTP"| OUT(["Egress"])
+    WORKER -->|"challenge validation:<br/>back to the client, :80 / :443 / DNS"| CLIENTS
+    WORKER -->|"upstream ACME, DNS updates, SMTP"| OUT(["Egress"])
+    ACME -->|"IPAM, reverse DNS"| OUT
 ```
+
+The three boxes inside the host are the server's three
+[roles](roles.md). By default one process runs them all; split, only the
+worker reads the CA key and connects to the hosts clients name; the ACME
+process still asks the inventory and the resolver its filters consult.
 
 Two edges are the ones people get wrong:
 

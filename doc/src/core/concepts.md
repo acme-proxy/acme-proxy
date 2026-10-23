@@ -1,6 +1,6 @@
 # Core Concepts & Glossary
 
-Eight words carry most of the meaning in the rest of this book. This page
+Nine words carry most of the meaning in the rest of this book. This page
 defines them once, in the order you meet them, so that every other page can use
 them without re-explaining.
 
@@ -130,8 +130,9 @@ Two details are easy to trip on:
 
 A **job** is one unit of work the server owes itself: a relayed issuance to
 finish, a notification to deliver, a table to sweep. Jobs are rows in the same
-SQLite file as everything else, drained by one runner per process, so they
-survive a restart and need no scheduler beside the server.
+database as everything else, drained by every process that runs the `worker`
+[role](#role), so they survive a restart and need no scheduler beside the
+server.
 
 What is worth carrying away is how a handler reports failure. `Retry` says the
 attempt decided nothing — a refused connection, a proxy, a `503` — and the job
@@ -142,6 +143,20 @@ order `processing` through a five-second upstream blip rather than terminally
 `acme-proxy jobs list` before it is a question for anything else.
 
 See [Admin CLI → Job queue](../operations/cli.md#job-queue).
+
+## Role
+
+A **role** is one of the three jobs a server process does: `acme` serves
+certificate clients, `admin` serves the web admin, and `worker` drains the job
+queue — which makes it the only role that signs, revokes, validates challenges
+and holds the CA key. `acme-proxy serve` runs all three in one process unless
+`--role` names fewer.
+
+Splitting them is privilege separation: the process parsing untrusted requests
+from the network then never holds signing material. Whatever the split, at
+least one process must run `worker`, or nothing is ever signed.
+
+See [Separate Role Processes](../getting_started/roles.md).
 
 ## Challenge
 

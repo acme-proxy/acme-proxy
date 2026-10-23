@@ -49,6 +49,9 @@ services:
       - ./data:/data
     environment:
       - ACME_PROXY_PROFILES__DEFAULT__ENABLED=true
+      # The URL clients reach this server at. Every signed request is checked
+      # against it, so a wrong one rejects every client.
+      - ACME_PROXY_SERVER__BASE_URL=https://acme.example.com
       - ACME_PROXY_DATABASE__URL=sqlite:///data/acme.db
       - RUST_LOG=acme_proxy=info
 ```
@@ -65,6 +68,8 @@ docker compose up -d
 
 `ACME_PROXY_PROFILES__DEFAULT__ENABLED=true` is what defines the profile when
 there is no configuration file — the server serves nothing without at least one.
+`ACME_PROXY_SERVER__BASE_URL` is the public URL — behind a reverse proxy, the
+proxy's; see [Deployment](deployment.md#reverse-proxy-optional).
 For anything beyond a single default profile, mount a `config.toml` into `/data`
 instead.
 
@@ -79,6 +84,7 @@ podman run -d --name acme-proxy \
   -p 3000:3000 \
   -v ./data:/data:U \
   -e ACME_PROXY_PROFILES__DEFAULT__ENABLED=true \
+  -e ACME_PROXY_SERVER__BASE_URL=https://acme.example.com \
   -e ACME_PROXY_DATABASE__URL=sqlite:///data/acme.db \
   ghcr.io/acme-proxy/acme-proxy:0.6.0
 ```

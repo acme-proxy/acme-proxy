@@ -40,19 +40,16 @@ below applies unchanged, the database backup first of all.
 
 Worth knowing before you do it:
 
-- **Take a copy of the database first.** SQLite in WAL mode means three files;
-  copy them together with the server stopped, or use `sqlite3 acme.db ".backup
-  backup.db"` on a running one. Migrations are not reversible, so a downgrade
+- **Take a backup first** — [Backup & Restore](../operations/backup.md) has
+  the command for each backend. Migrations are not reversible, so a downgrade
   means restoring this copy.
-  On PostgreSQL, `pg_dump` is the copy.
 - **`db_migration_failed` at startup means the process is not serving.** The
   most likely cause is running an *older* binary against a database a newer one
   has already migrated.
-- **Files outside the database are untouched.** The CA key and certificate, the
-  exported `ca.crl`, the upstream account key and its `.kid` sidecar all
-  persist across an upgrade — back them up on the same schedule as the database,
-  since the CA key is the one thing that cannot be regenerated without
-  redistributing trust. See [Trusting the CA](trusting_the_ca.md).
+- **Files outside the database are untouched.** The CA key and certificate,
+  the upstream account key and its `.kid` sidecar all persist across an
+  upgrade — back them up on the same schedule as the database, since the CA key
+  is the one thing that cannot be regenerated without redistributing trust.
 - **Read the changelog's `Breaking` section first.** Before 1.0.0 the schema is
   the only compatibility guarantee: configuration keys, profile names, the admin
   JSON API, log event names and the CLI may all have moved, and every such

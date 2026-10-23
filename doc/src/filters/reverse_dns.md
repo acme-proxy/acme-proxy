@@ -26,9 +26,9 @@ When a client connects, the filter performs the following:
 
 ## Timeout budget
 DNS queries happen on the hot path — this is a connection-level filter, so it
-runs on **every** non-exempt request, `newNonce` included. The filter operates
-with a strict `timeout_ms` budget across all DNS queries so slow nameservers
-cannot tie up the ACME server.
+runs on **every** request whose rules reach it, `newNonce` included. The filter
+operates with a strict `timeout_ms` budget across all DNS queries so slow
+nameservers cannot tie up the ACME server.
 
 To keep that affordable, `reverse_dns` builds its **own, caching** resolver —
 deliberately unlike every other DNS consumer in the server, which shares one

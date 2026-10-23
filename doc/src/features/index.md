@@ -32,7 +32,7 @@ advertised resources by reading the directory rather than by constructing paths.
 | `/crl` | `GET` | RFC 5280 | **no** | Routed but not advertised: a CRL is CA infrastructure, not an ACME resource. |
 | `/ca.pem` | `GET` | — | **no** | The profile's trust anchor, so installing it is one `curl`. `404` unless the backend has one of its own. Not advertised, for the same reason as `/crl`. See [Trusting the CA](../getting_started/trusting_the_ca.md). |
 
-Two paths sit outside every profile, on the root router:
+Three paths sit outside every profile, on the root router:
 
 | Path | Purpose |
 | --- | --- |

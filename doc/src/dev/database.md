@@ -469,12 +469,9 @@ ids, so a table holds both versions and only the v7s sort by creation.
 ## Reading it directly
 
 **On SQLite**, the file is `sqlite.db` by default and is opened in **WAL mode**,
-so there are normally `sqlite.db-wal` and `sqlite.db-shm` beside it. Copying
-only `sqlite.db` gives you a database missing every recent write; back up all
-three, or use `sqlite3 sqlite.db ".backup backup.db"`, which is consistent by
-construction. **On PostgreSQL**, back it up the way you back up any other
-database — `pg_dump` is consistent by construction and there are no sidecar
-files to miss.
+so there are normally `sqlite.db-wal` and `sqlite.db-shm` beside it, and a
+reader alongside the running server is safe. How to back up either backend is
+in [Backup & Restore](../operations/backup.md).
 
 Ids are stored as bytes on SQLite, so they need `hex()` on the way out and
 `unhex()` on the way in; on PostgreSQL they are a native `uuid` and need

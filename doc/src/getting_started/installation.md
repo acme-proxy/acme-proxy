@@ -142,32 +142,8 @@ podman build -t acme-proxy .
 That is the same release build as the published image, fat LTO included, so it
 takes tens of minutes.
 
-The image's working directory is `/data` and its entrypoint is the `acme-proxy`
-binary, so mount a volume there for the SQLite database, the configuration and
-the CA key material — all of which default to paths relative to the working
-directory. The image runs as a non-root user, so the mounted directory must be
-writable by it — the `:U` flag below is the rootless-Podman way; see
-[Containers](containers.md) for Docker.
-
-```bash
-podman run -d \
-  -p 3000:3000 \
-  -v ./data:/data:U \
-  ghcr.io/acme-proxy/acme-proxy:0.6.0
-```
-
-Drop a `config.toml` into `./data` (it must define at least one profile — see
-the [Quick Start](quick_start.md)), or configure the container entirely through
-`ACME_PROXY_*` environment variables:
-
-```bash
-podman run -d \
-  -p 3000:3000 \
-  -v ./data:/data:U \
-  -e ACME_PROXY_PROFILES__DEFAULT__ENABLED=true \
-  -e ACME_PROXY_SERVER__BASE_URL=https://acme.example.com \
-  ghcr.io/acme-proxy/acme-proxy:0.6.0
-```
+Running it — the `/data` volume, the non-root user and the Compose file — is
+in [Containers](containers.md).
 
 ### Verifying the image
 

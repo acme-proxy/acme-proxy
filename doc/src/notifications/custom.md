@@ -158,5 +158,3 @@ case "$ACME_NOTIFY_HOOK" in
     ;;
 esac
 ```
-
-See [Custom Plugins Examples](../dev/custom_plugins.md) for more.

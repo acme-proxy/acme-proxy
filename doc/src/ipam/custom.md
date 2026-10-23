@@ -89,8 +89,34 @@ esac
 exit 3              # no record of this address
 ```
 
-A fuller one, reading a real source, is in
-[Custom Plugins Examples](../dev/custom_plugins.md).
+A fuller one reads the permitted names for an address out of a CSV the estate
+already maintains, one `address,name,name,...` row per machine:
+
+```bash
+#!/bin/bash
+# /etc/acme-proxy/ipam/lookup.sh
+set -u
+
+INVENTORY="/etc/acme-proxy/ipam/inventory.csv"
+
+# The address arrives twice — in the environment and in the JSON on stdin.
+# This script uses the environment, so it never has to read stdin at all; a
+# script that exits without reading it is fine and is not an error.
+ROW=$(grep -m1 "^${ACME_IPAM_CLIENT_IP}," "$INVENTORY")
+
+if [ -z "$ROW" ]; then
+    exit 3   # this inventory holds no record of that address
+fi
+
+# The permitted names, one per line, in whatever case the file holds.
+echo "$ROW" | cut -d, -f2- | tr ',' '\n'
+exit 0
+```
+
+A missing inventory file or a `grep` that cannot run exits with something other
+than `0` or `3`, which is a retryable `500` rather than a denial — an inventory
+this server cannot read has decided nothing. `acme-proxy filter explain` really
+runs the policy, so it executes this script too.
 
 ## No sources
 

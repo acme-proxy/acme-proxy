@@ -81,10 +81,17 @@ a local CA at `/profile/dev` and a Let's Encrypt relay at `/profile/prod`.
   append-only [audit trail](operations/audit.md), naming the actor, the address
   it came from and the names it asked for — the question "who got this
   certificate, and from where" has an answer.
+- **As an Operated Service**: A [web admin](operations/webadmin.md) and the
+  [admin CLI](operations/cli.md) manage accounts, orders and credentials;
+  [notifications](notifications/index.md) report issuance and expiry; and the
+  process splits into [role processes](getting_started/roles.md) so that only
+  the worker holds the CA key — several of each, for
+  [high availability](getting_started/high_availability.md).
 
-It is built on `axum`, `tokio` and `sqlx`, and stores everything in one SQLite
-file in WAL mode. There is no second datastore, no message queue and no
-scheduler to operate.
+It is built on `axum`, `tokio` and `sqlx`, and keeps all of its state — the
+background job queue included — in one database: a SQLite file by default, or
+a PostgreSQL server once more than one host is involved. There is no second
+datastore, no message queue and no scheduler to operate.
 
 It is published on [crates.io](https://crates.io/crates/acme-proxy), so
 `cargo install acme-proxy` gets you the whole thing — server and admin CLI in

@@ -153,4 +153,60 @@ profile it is serving. (Backends are shared between profiles with identical
 3. **Failure reporting**: on a non-zero exit, the first non-empty line of stdout
    (falling back to stderr) is used as the error detail.
 
-See [Custom Plugins Examples](../dev/custom_plugins.md) for a complete script.
+## Example
+
+A signer that hands the CSR to an internal PKI's HTTP API. It implements `issue`
+and `revoke`, and leaves `supports_crl` and `supports_renewal_info` at `false`,
+so the other two hooks are never run.
+
+```bash
+#!/bin/bash
+# /etc/acme-proxy/signer/internal-pki.sh
+set -euo pipefail
+
+payload=$(cat)   # every hook gets a JSON object on stdin
+api=https://pki.internal.example.com/api
+
+case "$ACME_SIGNER_HOOK" in
+  issue)
+    csr=$(jq -r '.csr_der_base64' <<<"$payload")
+    status=$(curl -sS -o /tmp/pki-response.$$ -w '%{http_code}' \
+      -X POST "$api/sign" -H 'Content-Type: application/json' \
+      -d "{\"csr\":\"$csr\",\"order_id\":\"$ACME_SIGNER_ORDER_ID\"}") || {
+        echo "internal PKI unreachable"   # retried by the job queue
+        exit 1
+      }
+    response=$(cat /tmp/pki-response.$$); rm -f /tmp/pki-response.$$
+
+    case "$status" in
+      200)
+        jq -r '.certificate_pem' <<<"$response"   # leaf first, then issuers
+        exit 0
+        ;;
+      422)
+        # The PKI judged the CSR itself. Exit 3 makes the order invalid with
+        # badCSR, which the client reads when it polls.
+        jq -r '.error // "CSR rejected by the PKI"' <<<"$response"
+        exit 3
+        ;;
+      *)
+        # Anything else is an outage, not a verdict: any exit but 0 and 3 is
+        # retried under the job queue's attempt budget before the order fails.
+        echo "internal PKI answered $status"
+        exit 1
+        ;;
+    esac
+    ;;
+  revoke)
+    # Must be idempotent: "already revoked" is success.
+    cert=$(jq -r '.cert_der_base64' <<<"$payload")
+    curl -sSf -X POST "$api/revoke" -H 'Content-Type: application/json' \
+      -d "{\"cert\":\"$cert\",\"reason\":${ACME_SIGNER_REASON:-null}}" \
+      >/dev/null || { echo "revocation not confirmed"; exit 1; }
+    exit 0
+    ;;
+esac
+
+echo "unhandled hook $ACME_SIGNER_HOOK"
+exit 1
+```
