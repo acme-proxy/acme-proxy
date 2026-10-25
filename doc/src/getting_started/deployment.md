@@ -208,7 +208,7 @@ building the image yourself from the `Containerfile`, and verifying its
 provenance:
 
 ```bash
-podman pull ghcr.io/acme-proxy/acme-proxy:0.6.2
+podman pull ghcr.io/acme-proxy/acme-proxy:0.6.3
 ```
 
 The image's working directory is `/data` and its entrypoint is the binary
@@ -237,7 +237,7 @@ Create a `docker-compose.yml` file:
 ```yaml
 services:
   acme-proxy:
-    image: ghcr.io/acme-proxy/acme-proxy:0.6.2
+    image: ghcr.io/acme-proxy/acme-proxy:0.6.3
     container_name: acme-proxy
     restart: unless-stopped
     ports:
@@ -277,7 +277,7 @@ podman run -d --name acme-proxy \
   -v ./data:/data:U \
   -e ACME_PROXY_PROFILES__DEFAULT__ENABLED=true \
   -e ACME_PROXY_DATABASE__URL=sqlite:///data/acme.db \
-  ghcr.io/acme-proxy/acme-proxy:0.6.2
+  ghcr.io/acme-proxy/acme-proxy:0.6.3
 ```
 
 ## Running the roles as separate processes
