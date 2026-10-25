@@ -29,7 +29,7 @@ pub mod key;
 mod policy;
 pub mod sweep;
 
-use ca::{generate_ca, random_serial};
+use ca::{ca_subject_round_trips, generate_ca, random_serial};
 use crl::{CrlPaths, CrlStore};
 use policy::LeafPolicy;
 #[cfg(feature = "hsm")]
@@ -199,7 +199,7 @@ impl LocalCa {
             let key_pem = fs::read_to_string(key_path)?;
             warn_if_key_is_readable("local_ca_key_permissive", key_path);
             let key_pair = KeyPair::from_pem(&key_pem)?;
-            let issuer = Issuer::from_ca_cert_pem(&ca_pem, CaSigningKey::Software(key_pair))?;
+            let issuer = issuer_from_ca_pem(&ca_pem, CaSigningKey::Software(key_pair))?;
             info!(event = "local_ca_loaded", outcome = "success", cert_path = ?cfg.cert_path);
             return Self::assemble(
                 issuer,
@@ -214,7 +214,7 @@ impl LocalCa {
         let (key_pair, ca_pem) = generate_ca(&cfg.key_type, &cfg.subject)?;
         fs::write(cert_path, &ca_pem)?;
         write_private_key(key_path, &key_pair.serialize_pem())?;
-        let issuer = Issuer::from_ca_cert_pem(&ca_pem, CaSigningKey::Software(key_pair))?;
+        let issuer = issuer_from_ca_pem(&ca_pem, CaSigningKey::Software(key_pair))?;
         info!(event = "local_ca_generated", outcome = "success", cert_path = ?cfg.cert_path, key_path = ?cfg.key_path);
         Self::assemble(
             issuer,
@@ -294,7 +294,7 @@ impl LocalCa {
             );
         }
 
-        let issuer = Issuer::from_ca_cert_pem(&ca_pem, CaSigningKey::Pkcs11(signing_key))?;
+        let issuer = issuer_from_ca_pem(&ca_pem, CaSigningKey::Pkcs11(signing_key))?;
         info!(
             event = "local_ca_pkcs11_loaded",
             outcome = "success",
@@ -334,7 +334,7 @@ impl LocalCa {
         database: Arc<Database>,
     ) -> anyhow::Result<Self> {
         let (key_pair, ca_pem) = generate_ca(key_type, &LocalCaSubjectConfig::default())?;
-        let issuer = Issuer::from_ca_cert_pem(&ca_pem, CaSigningKey::Software(key_pair))?;
+        let issuer = issuer_from_ca_pem(&ca_pem, CaSigningKey::Software(key_pair))?;
         Self::assemble(
             issuer,
             ca_pem,
@@ -387,6 +387,19 @@ impl LocalCa {
             info,
         })
     }
+}
+
+/// The rcgen [`Issuer`] for the CA certificate `ca_pem` (the first certificate
+/// of the file) and its key, after [`ca_subject_round_trips`] has proved that
+/// rcgen will name this CA exactly as the certificate does. Every constructor
+/// goes through here, so a CA whose leaves and CRLs would fail path validation
+/// is refused at startup, on every key source.
+fn issuer_from_ca_pem(
+    ca_pem: &str,
+    key: CaSigningKey,
+) -> anyhow::Result<Issuer<'static, CaSigningKey>> {
+    ca_subject_round_trips(&acme_proxy_core::cert::leaf_der_from_chain(ca_pem)?)?;
+    Ok(Issuer::from_ca_cert_pem(ca_pem, key)?)
 }
 
 /// The issuer id ([`acme_proxy_core::cert::issuer_id`]) of the CA certificate `ca_pem`:
@@ -806,6 +819,30 @@ mod tests {
             .as_str()
             .unwrap();
         assert_eq!(cn, DEFAULT_CA_COMMON_NAME);
+    }
+
+    /// Issue #36, end to end: an imported CA rcgen cannot name is refused at
+    /// startup, not loaded to sign certificates that chain nowhere.
+    #[tokio::test]
+    async fn load_or_generate_refuses_a_ca_it_cannot_name() {
+        let dir = acme_proxy_core::testutil::TempDir::new("ca");
+        let cert_path = dir.join("ca.pem");
+        let key_path = dir.join("ca.key");
+        fs::write(&cert_path, include_str!("testdata/repeated_dc_ca.pem")).unwrap();
+        // Any key: the subject is refused before the key is put to use.
+        fs::write(&key_path, KeyPair::generate().unwrap().serialize_pem()).unwrap();
+        let cfg = LocalCaConfig {
+            cert_path: cert_path.to_string_lossy().into_owned(),
+            key_path: key_path.to_string_lossy().into_owned(),
+            crl_path: dir.join("ca.crl").to_string_lossy().into_owned(),
+            ..LocalCaConfig::default()
+        };
+
+        let error = LocalCa::load_or_generate(&cfg, memory_db().await)
+            .err()
+            .expect("a CA with a repeated attribute must be refused")
+            .to_string();
+        assert!(error.contains("DC=com, DC=example"), "{error}");
     }
 
     /// Proves the config actually reaches the *persisted* CA, not just the
