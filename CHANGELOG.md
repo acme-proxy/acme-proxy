@@ -46,6 +46,10 @@ migrated configuration before restarting.
   compiled to branches on secret values. It reaches the server only through the
   PostgreSQL driver's password authentication (SCRAM and MD5). A lockfile bump;
   nothing in the server changed.
+- **tokio 1.53.3, for RUSTSEC-2026-0386.** `AsyncFd`'s safe constructors
+  accepted any raw file descriptor; one closed and reused while the `AsyncFd`
+  was alive could lead to a use-after-free in the I/O driver. The server never
+  builds an `AsyncFd`. A lockfile bump; nothing in the server changed.
 
 ## [0.6.2] — 2026-10-16
 
