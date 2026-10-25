@@ -11,7 +11,7 @@ building the image yourself from the `Containerfile`, and verifying its
 provenance:
 
 ```bash
-podman pull ghcr.io/acme-proxy/acme-proxy:0.6.0
+podman pull ghcr.io/acme-proxy/acme-proxy:0.7.0
 ```
 
 The image's working directory is `/data` and its entrypoint is the binary
@@ -40,7 +40,7 @@ Create a `docker-compose.yml` file:
 ```yaml
 services:
   acme-proxy:
-    image: ghcr.io/acme-proxy/acme-proxy:0.6.0
+    image: ghcr.io/acme-proxy/acme-proxy:0.7.0
     container_name: acme-proxy
     restart: unless-stopped
     ports:
@@ -86,5 +86,5 @@ podman run -d --name acme-proxy \
   -e ACME_PROXY_PROFILES__DEFAULT__ENABLED=true \
   -e ACME_PROXY_SERVER__BASE_URL=https://acme.example.com \
   -e ACME_PROXY_DATABASE__URL=sqlite:///data/acme.db \
-  ghcr.io/acme-proxy/acme-proxy:0.6.0
+  ghcr.io/acme-proxy/acme-proxy:0.7.0
 ```

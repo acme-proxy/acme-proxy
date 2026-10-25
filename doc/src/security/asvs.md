@@ -7,9 +7,9 @@ whose text is vendored under `rfc/asvs-5.0/` in this repository.
 - **Assessed at:** Level 2. Every L1 and L2 requirement in scope is given a
   status; L3 requirements are listed too, as information rather than as a bar
   being claimed.
-- **Assessed against:** the tree at release 0.6.0, re-assessed after 0.6.1 for
-  the web admin's single sign-on (OpenID Connect and LDAP), which brought V10
-  into scope and moved rows in V1, V6, V7, V8, V12 and V13.
+- **Assessed against:** the tree at release 0.7.0. The web admin's single
+  sign-on (OpenID Connect and LDAP), new in 0.7.0, brought V10 into scope and
+  moved rows in V1, V6, V7, V8, V12 and V13.
 - **Method:** source review. The evidence column names a file, not a promise —
   for a control requirement, the documentation on this site is context and the
   code is the evidence.
@@ -346,7 +346,7 @@ carries its own signature and its own nonce.
 | 8.1.3 | Documented environmental and contextual attributes | 3 | met | Address, reverse name, IPAM ownership, request path and EAB identity are each documented under [Filters](../filters/checks.md), and the trust placed in a forwarded address under [Allowed IP](../filters/allowed_ip.md) |
 | 8.1.4 | Documented use of contextual factors in decisions | 3 | met | The policy expression language, including how an `or` over an address check weakens a conjunction, is written out in [Hardening](hardening.md#an-or-is-a-hole-you-opened-deliberately) |
 | 8.2.1 | Function-level access restricted to explicit permissions | 1 | met | ACME: `POST`-as-`GET` with a `kid` resolving to the owning account. Admin: three extractors every mutating route passes through |
-| 8.2.2 | Data-specific access restricted (IDOR/BOLA) | 1 | met | Order, authorization and certificate reads check the requesting account owns the object; accounts and orders are additionally isolated **per profile**, so a `kid` naming another profile does not resolve (`crates/protocol/src/extractors/acme.rs`) |
+| 8.2.2 | Data-specific access restricted (IDOR/BOLA) | 1 | met | Order, authorization and certificate reads check the requesting account owns the object; accounts and orders are additionally isolated **per profile**, so a `kid` naming another profile does not resolve (`crates/protocol/src/extractors/acme.rs`). An account URL is checked against the account the `kid` resolved and answers `unauthorized` whether or not its id exists, so it cannot be used to probe for account ids (`crates/protocol/src/acme/account.rs`) |
 | 8.2.3 | Field-level access restricted (BOPLA) | 2 | met | Responses are built from explicit serializer functions, never by serializing a row |
 | 8.2.4 | Adaptive controls from contextual attributes | 3 | met | The filter chain evaluates per request, not per session, so a change of address is re-evaluated on the next call |
 | 8.3.1 | Authorization enforced at a trusted service layer | 1 | met | Extractors and middleware, server-side. No decision depends on anything the client sends unsigned |

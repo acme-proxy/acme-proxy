@@ -86,7 +86,7 @@ never logs in clear.
 
 ```yaml
 x-acme-proxy: &acme-proxy
-  image: ghcr.io/acme-proxy/acme-proxy:0.6.1
+  image: ghcr.io/acme-proxy/acme-proxy:0.7.0
   restart: unless-stopped
   environment: &environment
     ACME_PROXY_CONFIG: /etc/acme-proxy/config.toml

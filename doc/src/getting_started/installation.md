@@ -55,7 +55,7 @@ The per-shell paths are in the
 To pin a version, or to move to a specific one later, name it:
 
 ```bash
-cargo install acme-proxy --version 0.6.0
+cargo install acme-proxy --version 0.7.0
 ```
 
 Upgrading is `cargo install acme-proxy --force`. Before doing so across a minor
@@ -110,18 +110,18 @@ Every release is published to the GitHub Container Registry as a
 multi-architecture image, for `linux/amd64` and `linux/arm64`:
 
 ```bash
-podman pull ghcr.io/acme-proxy/acme-proxy:0.6.0
+podman pull ghcr.io/acme-proxy/acme-proxy:0.7.0
 ```
 
 | Tag      | Points at                                                   |
 |----------|-------------------------------------------------------------|
-| `0.6.0`  | That release. It never moves.                               |
-| `0.6`    | The newest `0.6.x` release: its fixes, never a new minor.   |
+| `0.7.0`  | That release. It never moves.                               |
+| `0.7`    | The newest `0.7.x` release: its fixes, never a new minor.   |
 | `latest` | The highest release, whatever its minor.                    |
 | `edge`   | The head of `main`, rebuilt on every merge. Not a release.  |
 | `sha-…`  | One commit of `main`, as `edge` was when it was built.      |
 
-Run a version tag, or `0.6` to take patch releases without a change on your
+Run a version tag, or `0.7` to take patch releases without a change on your
 side. Avoid `latest` for an unattended deployment. Before 1.0.0 a minor
 release may rename a configuration key, so a pull of `latest` can stop a server
 from starting; the `### Breaking` sections of the
@@ -152,7 +152,7 @@ the repository, the commit and the workflow run that built the image. Check it
 with the [GitHub CLI](https://cli.github.com/) before you run the image:
 
 ```bash
-gh attestation verify oci://ghcr.io/acme-proxy/acme-proxy:0.6.0 \
+gh attestation verify oci://ghcr.io/acme-proxy/acme-proxy:0.7.0 \
   --repo acme-proxy/acme-proxy
 ```
 
