@@ -32,6 +32,8 @@ migrated configuration before restarting.
 
 ## [Unreleased]
 
+## [0.6.3] — 2026-10-25
+
 ### Fixed
 
 - **`local_ca` refuses at startup a CA certificate whose subject it cannot
@@ -2818,7 +2820,8 @@ does *not* cover.
 - Admission control, request timeouts and body limits on the ACME routes.
 - Graceful shutdown on SIGTERM.
 
-[Unreleased]: https://github.com/acme-proxy/acme-proxy/compare/0.6.2...HEAD
+[Unreleased]: https://github.com/acme-proxy/acme-proxy/compare/0.6.3...HEAD
+[0.6.3]: https://github.com/acme-proxy/acme-proxy/compare/0.6.2...0.6.3
 [0.6.2]: https://github.com/acme-proxy/acme-proxy/compare/0.6.1...0.6.2
 [0.6.1]: https://github.com/acme-proxy/acme-proxy/compare/0.6.0...0.6.1
 [0.6.0]: https://github.com/acme-proxy/acme-proxy/compare/0.5.0...0.6.0
