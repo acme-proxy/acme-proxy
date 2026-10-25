@@ -144,6 +144,29 @@ migrated configuration before restarting.
 
 ### Fixed
 
+- **Cancelling the hourly http-01 token sweep warns that it will not run again
+  until a restart**, as cancelling every other sweep does, and the jobs page
+  offers its kind in the filter. Both lists now come from the sweeps' own.
+- **`acme-proxy jobs cancel` no longer calls a cancelled `signer_issue` job a
+  relay job** with an upstream mapping it never had.
+- **One wording per refusal on every surface**: an order with no certificate,
+  one already revoked, one whose profile is not mounted, and a bad reason code
+  read the same from the CLI, the API and the page.
+
+- **The book no longer says `local_ca` and `custom` sign inside `finalize`.**
+  Every backend signs in a queued `signer_issue` job; Troubleshooting now looks
+  for that job, and the Quick Start and the custom signer example describe the
+  real exit-code contract (exit `3` makes the order `invalid` with `badCSR`).
+  The introduction, glossary, Profiles and Deployment pages stop describing the
+  database as one SQLite file and the job queue as drained by every process;
+  the glossary gains **Role**. The web admin's API table lists every route,
+  the troubleshooting query for a stuck order matches SQLite's byte ids, and
+  the container recipes set `server.base_url`.
+
+## [0.6.3] — 2026-10-25
+
+### Fixed
+
 - **`local_ca` refuses at startup a CA certificate whose subject it cannot
   reproduce exactly** — one that repeats an attribute type (`DC=com,
   DC=example`) or has a multi-valued RDN (`OU=PKI+CN=…`), naming the subject.
@@ -181,14 +204,6 @@ migrated configuration before restarting.
 - **An issuance failure is recorded in the audit trail only for an order it
   actually retired.** A redelivered job, or one cancelled after its order was
   already decided, wrote a second `certificate_issue_failed` row.
-- **Cancelling the hourly http-01 token sweep warns that it will not run again
-  until a restart**, as cancelling every other sweep does, and the jobs page
-  offers its kind in the filter. Both lists now come from the sweeps' own.
-- **`acme-proxy jobs cancel` no longer calls a cancelled `signer_issue` job a
-  relay job** with an upstream mapping it never had.
-- **One wording per refusal on every surface**: an order with no certificate,
-  one already revoked, one whose profile is not mounted, and a bad reason code
-  read the same from the CLI, the API and the page.
 - **`newAccount` now returns the verified `externalAccountBinding`** in the
   account object it creates, as RFC 8555 §7.3.4 requires, exactly as the
   request sent it. It is reflected only in the `201` for an account this
@@ -203,16 +218,6 @@ migrated configuration before restarting.
   back too, as revoking never disturbed existing accounts; `account deactivate`
   or `eab delete --deactivate-accounts` is what shuts one out.
 
-- **The book no longer says `local_ca` and `custom` sign inside `finalize`.**
-  Every backend signs in a queued `signer_issue` job; Troubleshooting now looks
-  for that job, and the Quick Start and the custom signer example describe the
-  real exit-code contract (exit `3` makes the order `invalid` with `badCSR`).
-  The introduction, glossary, Profiles and Deployment pages stop describing the
-  database as one SQLite file and the job queue as drained by every process;
-  the glossary gains **Role**. The web admin's API table lists every route,
-  the troubleshooting query for a stuck order matches SQLite's byte ids, and
-  the container recipes set `server.base_url`.
-
 ### Security
 
 - **rustls-webpki 0.103.16 and webpki-roots 1.0.10, for RUSTSEC-2026-0382 and
@@ -220,13 +225,17 @@ migrated configuration before restarting.
   G3`, and path building accepted chains through emSign intermediates whose
   private keys are now public. Someone holding one of those keys could
   impersonate a remote service to any of the server's outbound TLS clients that
-  trust the public roots: the relay upstream, IPAM, webhook
-  notifications and the identity providers. Both crates now refuse those
-  intermediates. This is a lockfile bump; nothing in the server changed.
+  trust the public roots: the relay upstream, IPAM and webhook
+  notifications. Both crates now refuse those intermediates. This is a lockfile
+  bump; nothing in the server changed.
 - **ctutils 0.4.5, for RUSTSEC-2026-0385.** Some of its constant-time helpers
   compiled to branches on secret values. It reaches the server only through the
   PostgreSQL driver's password authentication (SCRAM and MD5). A lockfile bump;
   nothing in the server changed.
+- **tokio 1.53.3, for RUSTSEC-2026-0386.** `AsyncFd`'s safe constructors
+  accepted any raw file descriptor; one closed and reused while the `AsyncFd`
+  was alive could lead to a use-after-free in the I/O driver. The server never
+  builds an `AsyncFd`. A lockfile bump; nothing in the server changed.
 
 ## [0.6.2] — 2026-10-16
 
@@ -2942,7 +2951,8 @@ does *not* cover.
 - Admission control, request timeouts and body limits on the ACME routes.
 - Graceful shutdown on SIGTERM.
 
-[Unreleased]: https://github.com/acme-proxy/acme-proxy/compare/0.6.2...HEAD
+[Unreleased]: https://github.com/acme-proxy/acme-proxy/compare/0.6.3...HEAD
+[0.6.3]: https://github.com/acme-proxy/acme-proxy/compare/0.6.2...0.6.3
 [0.6.2]: https://github.com/acme-proxy/acme-proxy/compare/0.6.1...0.6.2
 [0.6.1]: https://github.com/acme-proxy/acme-proxy/compare/0.6.0...0.6.1
 [0.6.0]: https://github.com/acme-proxy/acme-proxy/compare/0.5.0...0.6.0
