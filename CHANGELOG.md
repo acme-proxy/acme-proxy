@@ -32,6 +32,12 @@ migrated configuration before restarting.
 
 ## [Unreleased]
 
+### Packaging
+
+- **The image's `debian:trixie-slim` base is refreshed** to the 2026-10-20 build
+  (`sha256:62bd423a…`), picking up a month of Debian security updates over the
+  2026-09-18 one 0.6.3 was built on.
+
 ### Breaking
 
 - **`/api/audit` and `/ui/audit` refuse an unknown `event` or `outcome`**

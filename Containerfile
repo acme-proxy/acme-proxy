@@ -50,7 +50,7 @@
 #     docker buildx imagetools inspect debian:trixie-slim
 #
 # (or `podman manifest inspect`), and change both `FROM` lines together.
-FROM debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a AS builder
+FROM debian:trixie-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad AS builder
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        ca-certificates curl build-essential pkg-config libsqlite3-dev \
@@ -107,7 +107,7 @@ RUN --mount=type=cache,target=/root/.cargo/registry,sharing=locked \
     cargo build --profile "${CARGO_PROFILE}" --locked --package acme-proxy \
     && cp "target/${CARGO_PROFILE}/acme-proxy" /app/acme-proxy
 
-FROM debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a
+FROM debian:trixie-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad
 # openssl is here only for tests/e2e/custom_signer/signer_script.sh, a lab
 # scenario for signer.backend = "custom" that runs a real toy CA *inside* this
 # container (the script is a subprocess of acme-proxy itself, so it needs
