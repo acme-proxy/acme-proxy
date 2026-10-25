@@ -357,3 +357,220 @@ async fn eab_field_is_ignored_when_disabled() {
     let res = post_new_account(&app, body).await;
     assert_eq!(res.status(), StatusCode::CREATED);
 }
+
+/// RFC 8555 §7.3.4: the account object a CA returns for a verified binding
+/// "MUST include an `externalAccountBinding` field with the same value as the
+/// field in the request".
+#[tokio::test]
+async fn a_created_account_echoes_the_binding_it_verified() {
+    let (app, db) = test_app_with_challenges(eab_enabled_config(), default_challenges()).await;
+    let signer = EcSigner::new();
+    let key = Eab::create(Some("customer-1".to_string()), None, &db)
+        .await
+        .unwrap();
+
+    let nonce = fetch_nonce(&app).await;
+    let binding = build_eab(
+        &key.kid.to_string(),
+        &key.secret,
+        NEW_ACCOUNT_URL,
+        &signer.jwk(),
+    );
+    let body = signer.sign(
+        NEW_ACCOUNT_URL,
+        &nonce,
+        &json!({ "termsOfServiceAgreed": true, "externalAccountBinding": binding }),
+    );
+
+    let res = post_new_account(&app, body).await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+
+    assert_eq!(body_json(res).await["externalAccountBinding"], binding);
+}
+
+/// A binding sent to an endpoint that does not enforce EAB is never checked, so
+/// it is not vouched for in the answer either.
+#[tokio::test]
+async fn a_binding_that_was_not_verified_is_not_echoed() {
+    let app = test_app().await;
+    let signer = EcSigner::new();
+
+    let nonce = fetch_nonce(&app).await;
+    let binding = build_eab(
+        "unchecked-key-id",
+        b"unchecked secret",
+        NEW_ACCOUNT_URL,
+        &signer.jwk(),
+    );
+    let body = signer.sign(
+        NEW_ACCOUNT_URL,
+        &nonce,
+        &json!({ "termsOfServiceAgreed": true, "externalAccountBinding": binding }),
+    );
+
+    let res = post_new_account(&app, body).await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+
+    assert!(body_json(res).await.get("externalAccountBinding").is_none());
+}
+
+/// §7.3.4 asks for "the same value as the field in the request", so a member
+/// the server does not read is echoed too rather than dropped by a round trip
+/// through the parsed JWS.
+#[tokio::test]
+async fn the_echoed_binding_is_the_value_the_request_sent() {
+    let (app, db) = test_app_with_challenges(eab_enabled_config(), default_challenges()).await;
+    let signer = EcSigner::new();
+    let key = Eab::create(Some("customer-1".to_string()), None, &db)
+        .await
+        .unwrap();
+
+    let nonce = fetch_nonce(&app).await;
+    let mut binding = build_eab(
+        &key.kid.to_string(),
+        &key.secret,
+        NEW_ACCOUNT_URL,
+        &signer.jwk(),
+    );
+    binding["header"] = json!({ "note": "unprotected" });
+    let body = signer.sign(
+        NEW_ACCOUNT_URL,
+        &nonce,
+        &json!({ "termsOfServiceAgreed": true, "externalAccountBinding": binding }),
+    );
+
+    let res = post_new_account(&app, body).await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+
+    assert_eq!(body_json(res).await["externalAccountBinding"], binding);
+}
+
+/// A key that already has an account is found, not created: its binding is
+/// not read (§7.3.1 ignores the request's fields), so the `200` answer does not
+/// carry it.
+#[tokio::test]
+async fn a_found_account_does_not_echo_the_binding() {
+    let (app, db) = test_app_with_challenges(eab_enabled_config(), default_challenges()).await;
+    let signer = EcSigner::new();
+    let key = Eab::create(Some("customer-1".to_string()), None, &db)
+        .await
+        .unwrap();
+    let binding = build_eab(
+        &key.kid.to_string(),
+        &key.secret,
+        NEW_ACCOUNT_URL,
+        &signer.jwk(),
+    );
+    let payload = json!({ "termsOfServiceAgreed": true, "externalAccountBinding": binding });
+
+    let nonce = fetch_nonce(&app).await;
+    let res = post_new_account(&app, signer.sign(NEW_ACCOUNT_URL, &nonce, &payload)).await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+
+    let nonce = fetch_nonce(&app).await;
+    let res = post_new_account(&app, signer.sign(NEW_ACCOUNT_URL, &nonce, &payload)).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    assert!(body_json(res).await.get("externalAccountBinding").is_none());
+}
+
+/// The binding authorizes creating an account (§7.3.4). A key that already
+/// holds one gets it back with a `200` (§7.3.1) without presenting it again.
+#[tokio::test]
+async fn a_known_key_need_not_present_its_binding_again() {
+    let (app, db) = test_app_with_challenges(eab_enabled_config(), default_challenges()).await;
+    let signer = EcSigner::new();
+    let key = Eab::create(None, None, &db).await.unwrap();
+    let binding = build_eab(
+        &key.kid.to_string(),
+        &key.secret,
+        NEW_ACCOUNT_URL,
+        &signer.jwk(),
+    );
+
+    let nonce = fetch_nonce(&app).await;
+    let payload = json!({ "termsOfServiceAgreed": true, "externalAccountBinding": binding });
+    let res = post_new_account(&app, signer.sign(NEW_ACCOUNT_URL, &nonce, &payload)).await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+    let account_id = account_id_from_location(&res);
+
+    let nonce = fetch_nonce(&app).await;
+    let payload = json!({ "termsOfServiceAgreed": true });
+    let res = post_new_account(&app, signer.sign(NEW_ACCOUNT_URL, &nonce, &payload)).await;
+
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(account_id_from_location(&res), account_id);
+}
+
+/// Revoking a credential stops new accounts from being bound and leaves the
+/// existing ones alone (`doc/src/features/eab.md`). `newAccount` for a key it
+/// already bound is one of those: the binding is not read, so the account comes
+/// back even though its credential no longer verifies.
+#[tokio::test]
+async fn a_revoked_binding_does_not_lock_out_a_known_key() {
+    let (app, db) = test_app_with_challenges(eab_enabled_config(), default_challenges()).await;
+    let signer = EcSigner::new();
+    let key = Eab::create(None, None, &db).await.unwrap();
+    let binding = build_eab(
+        &key.kid.to_string(),
+        &key.secret,
+        NEW_ACCOUNT_URL,
+        &signer.jwk(),
+    );
+    let payload = json!({ "termsOfServiceAgreed": true, "externalAccountBinding": binding });
+
+    let nonce = fetch_nonce(&app).await;
+    let res = post_new_account(&app, signer.sign(NEW_ACCOUNT_URL, &nonce, &payload)).await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+    let account_id = account_id_from_location(&res);
+    Eab::revoke(&key.kid.to_string(), &db).await.unwrap();
+
+    let nonce = fetch_nonce(&app).await;
+    let res = post_new_account(&app, signer.sign(NEW_ACCOUNT_URL, &nonce, &payload)).await;
+
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(account_id_from_location(&res), account_id);
+}
+
+/// `onlyReturnExisting` never reads the binding (§7.3.1), so it never echoes
+/// one either.
+#[tokio::test]
+async fn only_return_existing_does_not_echo_the_binding() {
+    let (app, db) = test_app_with_challenges(eab_enabled_config(), default_challenges()).await;
+    let signer = EcSigner::new();
+    let key = Eab::create(Some("customer-1".to_string()), None, &db)
+        .await
+        .unwrap();
+    let binding = build_eab(
+        &key.kid.to_string(),
+        &key.secret,
+        NEW_ACCOUNT_URL,
+        &signer.jwk(),
+    );
+
+    let nonce = fetch_nonce(&app).await;
+    let res = post_new_account(
+        &app,
+        signer.sign(
+            NEW_ACCOUNT_URL,
+            &nonce,
+            &json!({ "termsOfServiceAgreed": true, "externalAccountBinding": binding }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+
+    let nonce = fetch_nonce(&app).await;
+    let res = post_new_account(
+        &app,
+        signer.sign(
+            NEW_ACCOUNT_URL,
+            &nonce,
+            &json!({ "onlyReturnExisting": true, "externalAccountBinding": binding }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    assert!(body_json(res).await.get("externalAccountBinding").is_none());
+}

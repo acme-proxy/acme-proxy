@@ -573,3 +573,118 @@ async fn postgres_is_available_when_it_is_required() {
         testutil::TEST_POSTGRES_URL,
     );
 }
+
+/// Two verdicts on two authorizations of one order, committed concurrently,
+/// must leave the second to commit seeing both — or neither promotes the order
+/// and it sits `pending` with every authorization `valid` until it expires.
+///
+/// `commit_validation`'s shape, reduced to its store calls: write one
+/// authorization, take the order's lock, read the set. Under PostgreSQL's READ
+/// COMMITTED the second transaction's read would miss the first's uncommitted
+/// write without the lock; with it, the second queues until the first commits.
+#[tokio::test]
+async fn a_second_verdict_on_one_order_sees_the_first_on_both_backends() {
+    use acme_proxy_core::identifier::Identifier;
+    use acme_proxy_store::authz::Authorization;
+    use acme_proxy_store::status::AuthzStatus;
+
+    each_backend!(|db| {
+        let order = order_with(&db, &["a.example.com", "b.example.com"]).await;
+        let mut authz_ids = Vec::new();
+        for name in ["a.example.com", "b.example.com"] {
+            let authz = Authorization::create(order.id, Identifier::dns(name), EXPIRES, &db)
+                .await
+                .unwrap();
+            authz_ids.push(authz.id);
+        }
+
+        let valid_seen = |authzs: Vec<Authorization>| {
+            authzs
+                .iter()
+                .filter(|authz| authz.status == AuthzStatus::Valid)
+                .count()
+        };
+
+        let mut first = db.transaction().await.unwrap();
+        assert!(
+            Authorization::set_valid(authz_ids[0], first.conn())
+                .await
+                .unwrap()
+        );
+        Order::lock_on(order.id, first.conn()).await.unwrap();
+        let seen = Authorization::find_by_order_with(order.id, first.conn())
+            .await
+            .unwrap();
+        assert_eq!(valid_seen(seen), 1);
+
+        let second = tokio::spawn({
+            let db = db.clone();
+            let (order_id, authz_id) = (order.id, authz_ids[1]);
+            async move {
+                let mut tx = db.transaction().await.unwrap();
+                assert!(Authorization::set_valid(authz_id, tx.conn()).await.unwrap());
+                Order::lock_on(order_id, tx.conn()).await.unwrap();
+                let seen = Authorization::find_by_order_with(order_id, tx.conn())
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                seen
+            }
+        });
+        // Long enough for the second to reach the lock; a slower start only
+        // makes it read after the commit, which passes for the same reason.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        first.commit().await.unwrap();
+
+        assert_eq!(
+            valid_seen(second.await.unwrap()),
+            2,
+            "the second verdict must see the first's committed write"
+        );
+    });
+}
+
+/// `challenge.max_in_flight_per_account` holds under concurrent claims: the
+/// cap's count is a read, and the account lock taken before it queues a second
+/// claim behind the first so it counts the first's `processing`.
+#[tokio::test]
+async fn the_in_flight_cap_holds_under_concurrent_claims_on_both_backends() {
+    use acme_proxy_core::identifier::Identifier;
+    use acme_proxy_store::authz::{Authorization, Challenge, ValidationClaim};
+
+    each_backend!(|db| {
+        let order = order_with(&db, &["a.example.com", "b.example.com"]).await;
+        let mut challenges = Vec::new();
+        for name in ["a.example.com", "b.example.com"] {
+            let authz = Authorization::create(order.id, Identifier::dns(name), EXPIRES, &db)
+                .await
+                .unwrap();
+            challenges.push(Challenge::create(authz.id, "http-01", &db).await.unwrap());
+        }
+        let mut other = challenges.pop().unwrap();
+        let mut challenge = challenges.pop().unwrap();
+
+        let mut first = db.transaction().await.unwrap();
+        assert_eq!(
+            challenge
+                .claim_for_validation_on(1, first.conn())
+                .await
+                .unwrap(),
+            ValidationClaim::Claimed
+        );
+
+        let second = tokio::spawn({
+            let db = db.clone();
+            async move {
+                let mut tx = db.transaction().await.unwrap();
+                let claim = other.claim_for_validation_on(1, tx.conn()).await.unwrap();
+                tx.commit().await.unwrap();
+                claim
+            }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        first.commit().await.unwrap();
+
+        assert_eq!(second.await.unwrap(), ValidationClaim::Limited);
+    });
+}

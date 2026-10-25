@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 use tracing::{info, instrument};
 use uuid::Uuid;
 
+use crate::acme::account::NewAccount;
 use crate::acme::{AccountService, Error};
 use crate::extractors::acme::{AcmeOptionalPayload, AcmePostAsGet, AcmeRequest};
 use crate::router::AppState;
@@ -56,7 +57,11 @@ pub async fn post_new_account(
         profile: &profile,
     };
 
-    let (account, created) = match accounts
+    let NewAccount {
+        account,
+        created,
+        external_account_binding,
+    } = match accounts
         .new_account(payload, &header, &pubkey, client_ip, &request_context)
         .await
     {
@@ -90,10 +95,13 @@ pub async fn post_new_account(
         StatusCode::OK
     };
     let location = format!("{base}/acct/{}", account.id);
+
+    // The service hands back a binding only when it verified it and created the
+    // account with it, so the edge reflects what it is given and decides nothing.
     Ok((
         status,
         [(header::LOCATION, location)],
-        Json(account.to_json(base)),
+        Json(account.to_json_with_binding(base, external_account_binding)),
     )
         .into_response())
 }

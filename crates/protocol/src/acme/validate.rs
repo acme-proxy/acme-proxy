@@ -292,15 +292,29 @@ impl JobHandler for ChallengeValidateJob {
             "a queued challenge validation was given up; its order is marked invalid"
         );
 
-        let Ok(Subject {
+        let Subject {
             mut challenge,
             mut authz,
             mut order,
             profile,
             ..
-        }) = self.load(challenge_id).await
-        else {
-            return;
+        } = match self.load(challenge_id).await {
+            Ok(subject) => subject,
+            // A row that is gone has nothing left to mark.
+            Err(JobOutcome::Failed(_)) => return,
+            // A read that failed leaves the challenge `processing`, and nothing
+            // calls `abandon` again: the operator is the only one left to tell.
+            Err(outcome) => {
+                error!(
+                    event = "challenge_validation_abandon_failed",
+                    outcome = "failure",
+                    challenge_id = %challenge_id,
+                    error = ?outcome,
+                    "the challenge could not be marked invalid and will stay `processing` \
+                     until its authorization expires"
+                );
+                return;
+            }
         };
         if challenge.status != ChallengeStatus::Processing {
             return;
@@ -328,11 +342,11 @@ impl JobHandler for ChallengeValidateJob {
 
     /// Re-queues a claim a previous process took and never settled.
     ///
-    /// The window is small but real: `post_challenge` claims the challenge and
-    /// then enqueues, so a crash between the two leaves a row `processing` with
-    /// no job. Without this it would stay that way until its authorization
-    /// expired — the trade `claim_for_validation` documents, and the one this
-    /// closes now that something outlives the request.
+    /// `claim_challenge` commits the claim and its job together, so a trigger
+    /// can no longer strand a row. One written by an earlier version — which
+    /// claimed and then enqueued as two writes — still can be `processing` with
+    /// no job, and would stay that way until its authorization expired; this is
+    /// what re-queues it.
     ///
     /// Safely repeatable: the identity index refuses a duplicate, so a
     /// challenge whose job is still live is simply not re-queued.
@@ -697,8 +711,36 @@ mod tests {
         );
     }
 
-    /// The crash-between-claim-and-enqueue window: the claim is on the row and
-    /// nothing is queued for it.
+    /// A read that fails inside `abandon` leaves the challenge as it was — no
+    /// half-written verdict — and is reported, since nothing calls `abandon`
+    /// again.
+    #[tokio::test]
+    async fn an_abandon_whose_read_fails_leaves_the_challenge_processing() {
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let account = account(&database).await;
+        let (_, _, mut challenge) = subject(&database, &account).await;
+        challenge.claim_for_validation(0, &database).await.unwrap();
+
+        sqlx::query("ALTER TABLE orders RENAME TO orders_gone;")
+            .execute(database.raw_pool())
+            .await
+            .unwrap();
+        handler(&database, ChallengeRegistry::default())
+            .abandon(
+                &row(challenge.id.to_string().as_str()),
+                "the attempts ran out",
+            )
+            .await;
+
+        let reloaded = Challenge::find_by_id(challenge.id.to_string().as_str(), &database)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reloaded.status, ChallengeStatus::Processing);
+    }
+
+    /// A claim with nothing queued for it, as an earlier version — which claimed
+    /// and enqueued as two writes — could leave behind.
     #[tokio::test]
     async fn recover_requeues_a_stranded_claim_exactly_once() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());

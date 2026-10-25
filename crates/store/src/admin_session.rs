@@ -13,7 +13,7 @@ use serde_json::Value;
 use tracing::{debug, info};
 
 use crate::db::Database;
-use crate::nonce::{fingerprint, now_secs};
+use crate::nonce::{fingerprint, now_secs, secs_i64};
 use acme_proxy_core::datetime::rfc3339;
 
 /// One logged-in browser session of an [`crate::admin_user::AdminUser`].
@@ -162,7 +162,7 @@ impl AdminSession {
             created_at: now,
             // Saturating, for the same reason `Nonce::verify`'s cutoff is: a
             // configured TTL large enough to overflow must not panic.
-            expires_at: now.saturating_add(ttl.as_secs() as i64),
+            expires_at: now.saturating_add(secs_i64(ttl)),
             last_seen_at: now,
             created_ip: new.created_ip,
             user_agent: new.user_agent,
@@ -257,7 +257,7 @@ impl AdminSession {
             // replaced.
             mfa_attempts: 0,
             created_at: now,
-            expires_at: now.saturating_add(ttl.as_secs() as i64),
+            expires_at: now.saturating_add(secs_i64(ttl)),
             last_seen_at: now,
             created_ip: pending.created_ip,
             user_agent: pending.user_agent,
@@ -561,7 +561,7 @@ impl AdminSession {
     /// outlive a restart, so a startup-only sweep would leak.
     pub async fn cleanup(idle_timeout: Duration, database: &Database) -> Result<u64, sqlx::Error> {
         let now = now_secs();
-        let idle_cutoff = now.saturating_sub(idle_timeout.as_secs() as i64);
+        let idle_cutoff = now.saturating_sub(secs_i64(idle_timeout));
 
         let result = crate::sql::query(
             "DELETE FROM admin_sessions WHERE expires_at <= ? OR last_seen_at <= ?;",
@@ -589,7 +589,7 @@ impl AdminSession {
     /// Unused for longer than `idle_timeout`.
     #[must_use]
     pub fn is_idle(&self, now: i64, idle_timeout: Duration) -> bool {
-        now.saturating_sub(self.last_seen_at) >= idle_timeout.as_secs() as i64
+        now.saturating_sub(self.last_seen_at) >= secs_i64(idle_timeout)
     }
 
     /// Whether the session has completed authentication. A `pending_mfa`
@@ -927,6 +927,17 @@ mod tests {
         let left = AdminSession::list_all(None, &db).await.unwrap();
         assert_eq!(left.len(), 1);
         assert_eq!(left[0].token_hash, "live");
+    }
+
+    /// An idle timeout past `i64::MAX` seconds saturates rather than wrapping
+    /// to a cutoff in the future, which would sweep every live session.
+    #[tokio::test]
+    async fn an_idle_timeout_too_large_for_i64_sweeps_no_live_session() {
+        let (db, user) = db_with_user().await;
+        let live = session(db.clone(), &user, "live").await;
+
+        assert_eq!(AdminSession::cleanup(Duration::MAX, &db).await.unwrap(), 0);
+        assert!(!live.is_idle(now_secs(), Duration::MAX));
     }
 
     const PENDING_TTL: Duration = Duration::from_secs(300);

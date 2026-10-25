@@ -10,7 +10,8 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use axum::http::StatusCode;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
+use serde_json::Value;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
@@ -46,7 +47,43 @@ pub struct NewAccountPayload {
     #[serde(alias = "onlyReturnExisting")]
     pub only_return_existing: bool,
     #[serde(alias = "externalAccountBinding")]
-    pub external_account_binding: Option<eab::EabJws>,
+    pub external_account_binding: Option<ExternalAccountBinding>,
+}
+
+/// A request's `externalAccountBinding`: the JWS it is checked as, and the
+/// value it arrived as.
+///
+/// Both are kept because RFC 8555 §7.3.4 has the account object echo "the same
+/// value as the field in the request", and re-serializing the parsed JWS would
+/// drop any member [`eab::EabJws`] does not name. A value that does not parse
+/// is refused with the payload, as it was before the raw value was kept.
+#[derive(Debug)]
+pub struct ExternalAccountBinding {
+    pub jws: eab::EabJws,
+    pub raw: Value,
+}
+
+impl<'de> Deserialize<'de> for ExternalAccountBinding {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = Value::deserialize(deserializer)?;
+        let jws = eab::EabJws::deserialize(&raw).map_err(serde::de::Error::custom)?;
+        Ok(Self { jws, raw })
+    }
+}
+
+/// What `newAccount` answered: the account, whether this request created it
+/// (`201` against `200` at the edge), and the binding to reflect in the account
+/// object.
+#[derive(Debug)]
+pub struct NewAccount {
+    pub account: Account,
+    pub created: bool,
+    /// The request's binding, exactly as it arrived, when this request both
+    /// verified it and created the account with it (RFC 8555 §7.3.4). `None` at
+    /// an endpoint that does not enforce EAB, where the binding is never
+    /// checked and so is not vouched for, and for an account that already
+    /// existed, which the binding did not create.
+    pub external_account_binding: Option<Value>,
 }
 
 /// Fields an account-update request may carry.
@@ -67,12 +104,14 @@ pub struct AccountService<'a> {
 
 impl AccountService<'_> {
     /// `newAccount` (RFC 8555 §7.3): finds the account `pubkey` holds at this
-    /// endpoint, or creates one. The `bool` is whether it was created — `201`
-    /// against `200` at the edge.
+    /// endpoint, or creates one. [`NewAccount`] says which, and carries the
+    /// binding this request verified when it created the account.
     ///
-    /// `onlyReturnExisting` (§7.3.1) looks up and never creates. A refusal to
-    /// agree to configured terms is [`Error::TermsNotAgreed`], since the
-    /// response it owes carries a `Link` a problem document cannot.
+    /// A key that already holds an account gets it back before any condition
+    /// for creating one is checked (§7.3.1); `onlyReturnExisting` looks up and
+    /// never creates. A refusal to agree to configured terms is
+    /// [`Error::TermsNotAgreed`], since the response it owes carries a `Link` a
+    /// problem document cannot.
     pub async fn new_account(
         &self,
         payload: NewAccountPayload,
@@ -80,26 +119,38 @@ impl AccountService<'_> {
         pubkey: &[u8],
         client_ip: Option<IpAddr>,
         request: &RequestContext,
-    ) -> Result<(Account, bool), Error> {
+    ) -> Result<NewAccount, Error> {
         let (database, profile, audit) = (self.database, self.profile, self.audit);
 
+        // RFC 8555 §7.3.1: a key that already holds an account gets it back with
+        // a 200, and "any fields in the request object MUST be ignored". The
+        // conditions below — contact format, the terms (§7.3.3), the binding
+        // (§7.3.4) — are for creating an account, so they are asked only when
+        // none exists yet; `onlyReturnExisting` never gets that far.
+        let existing = Account::find_by_pubkey(&profile.name, pubkey, database)
+            .await
+            .map_err(|error| {
+                // Distinct from `acme::access`'s `account_lookup_failed`: same
+                // query, but this one is `newAccount`'s §7.3.1 lookup, not the
+                // one that resolves the signer of an order-side request.
+                error!(event = "account_key_lookup_failed", outcome = "failure", error = %error);
+                Problem::server_internal("Account lookup failed")
+            })?;
+        if let Some(account) = existing {
+            refuse_deactivated(&account, payload.only_return_existing)?;
+            info!(event = "account_found", outcome = "success", account_id = %account.id, status = %StatusCode::OK);
+            return Ok(NewAccount {
+                account,
+                created: false,
+                external_account_binding: None,
+            });
+        }
         if payload.only_return_existing {
-            let account = Account::find_by_pubkey(&profile.name, pubkey, database)
-                .await
-                .map_err(|error| {
-                    // Distinct from `acme::access`'s `account_lookup_failed`: same
-                    // query, but this one is `newAccount`'s §7.3.1 lookup, not the
-                    // one that resolves the signer of an order-side request.
-                    error!(event = "account_only_return_existing_lookup_failed", outcome = "failure", error = %error);
-                    Problem::server_internal("Account lookup failed")
-                })?
-                .ok_or_else(|| {
-                    info!(event = "account_only_return_existing_miss", outcome = "failure");
-                    Problem::account_does_not_exist("No account for this key")
-                })?;
-
-            refuse_deactivated(&account, true)?;
-            return Ok((account, false));
+            info!(
+                event = "account_only_return_existing_miss",
+                outcome = "failure"
+            );
+            return Err(Problem::account_does_not_exist("No account for this key").into());
         }
 
         // Checked before the EAB, so a client with a typo'd address hears about
@@ -117,25 +168,27 @@ impl AccountService<'_> {
             return Err(Error::TermsNotAgreed);
         }
 
-        let eab_kid = if profile.eab.enabled {
-            Some(
-                verify_eab(
-                    payload.external_account_binding.as_ref(),
-                    header,
-                    &profile.name,
-                    database,
-                )
-                .await?,
+        // The binding is kept only once it is verified, so nothing downstream
+        // can reflect one this request did not check.
+        let (eab_kid, verified_binding) = if profile.eab.enabled {
+            let binding = payload.external_account_binding;
+            let kid = verify_eab(
+                binding.as_ref().map(|binding| &binding.jws),
+                header,
+                &profile.name,
+                database,
             )
+            .await?;
+            (Some(kid), binding.map(|binding| binding.raw))
         } else {
-            None
+            (None, None)
         };
 
-        // Resolved before the write, and only on this path: `onlyReturnExisting`
-        // returned above without ever creating anything, and `find_or_create`
-        // stamps these columns on the creating branch alone — so a PTR lookup for a
-        // request that turns out to find an existing account is wasted, but a
-        // lookup after the INSERT would need a second UPDATE to record it.
+        // Resolved before the write, and only on this path: a known key returned
+        // above without creating anything, and `find_or_register` stamps these
+        // columns on the creating branch alone — so a PTR lookup is wasted only
+        // when a concurrent request registers the same key first, but a lookup
+        // after the INSERT would need a second UPDATE to record it.
         let client = audit.client(request).await;
         // The credential that authorized this registration and the agreement to
         // the terms are columns of the insert, not writes that follow it: an
@@ -162,8 +215,10 @@ impl AccountService<'_> {
             Problem::server_internal("Account persistence failed")
         })?;
 
-        // Only on the found branch: an account this request just created is never
-        // deactivated, and asking would be reading a column we wrote a line ago.
+        // `created` is false only when a concurrent request registered this key
+        // between the lookup above and the insert; that account is answered as
+        // the lookup would have answered it. An account this request just
+        // created is never deactivated, so it is not asked.
         if !created {
             refuse_deactivated(&account, false)?;
         }
@@ -187,7 +242,9 @@ impl AccountService<'_> {
             StatusCode::OK
         };
         // Two names, because §7.3's find-or-create makes them two different
-        // events: one registered a key, the other recognised one. An operator
+        // events: one registered a key, the other recognised one (here, only
+        // the loser of a registration race; the lookup above logs the rest
+        // under the same name). An operator
         // counting registrations must not have to filter a field out of the
         // count.
         if created {
@@ -195,7 +252,11 @@ impl AccountService<'_> {
         } else {
             info!(event = "account_found", outcome = "success", account_id = %account.id, status = %status);
         }
-        Ok((account, created))
+        Ok(NewAccount {
+            account,
+            created,
+            external_account_binding: verified_binding.filter(|_| created),
+        })
     }
 
     /// `POST /acct/{id}` with an empty payload (RFC 8555 §6.3): the account as

@@ -151,9 +151,10 @@ asked for hardware a software key with no indication of it.
 
 The X.509 Subject (Distinguished Name) of the CA certificate `acme-proxy`
 generates for itself. It is read **only on the startup that generates the CA** —
-supplying your own `cert_path` means supplying your own DN, and editing this
-table afterwards changes nothing, because the certificate already exists. To
-change it, retire the CA and generate a new one.
+supplying your own `cert_path` means supplying your own DN (within the
+limits in [Step 2](#step-2--create-the-intermediate-ca-for-acme-proxy)), and
+editing this table afterwards changes nothing, because the certificate already
+exists. To change it, retire the CA and generate a new one.
 
 Every key is optional and `String`-valued. An unset or empty value is **omitted
 from the Subject** rather than written blank; the empty string is treated as
@@ -235,6 +236,14 @@ openssl ecparam -genkey -name prime256v1 -out acme_intermediate.key
 openssl req -new -key acme_intermediate.key -out acme_intermediate.csr \
   -subj "/CN=My Company ACME Intermediate CA"
 ```
+
+> **Keep the subject to one value per attribute type, and one attribute per
+> RDN.** The signing library cannot reproduce a subject that repeats a type
+> (`/DC=com/DC=example/…`) or joins attributes in one RDN (`/OU=PKI+CN=…`):
+> every certificate and CRL would name an issuer that does not match this CA,
+> and none would verify. `acme-proxy` refuses such a CA at startup, naming the
+> subject. Shorten it (for example `/O=Example/CN=My Company ACME Intermediate
+> CA`) before you have it signed.
 
 Create an OpenSSL extension file (`v3_ext.cnf`) to ensure the Intermediate CA is
 allowed to sign other certificates:

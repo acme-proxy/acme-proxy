@@ -32,6 +32,59 @@ migrated configuration before restarting.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`local_ca` refuses at startup a CA certificate whose subject it cannot
+  reproduce exactly** — one that repeats an attribute type (`DC=com,
+  DC=example`) or has a multi-valued RDN (`OU=PKI+CN=…`), naming the subject.
+  The first used to load and issue certificates and CRLs whose issuer dropped
+  the repeated values, so none chained to the CA; the second failed with an
+  opaque parse error. Supporting such subjects waits on the signing library
+  (rustls/rcgen#81) ([#36](https://github.com/acme-proxy/acme-proxy/issues/36)).
+- **A job whose handler budget exceeds `jobs.lease_seconds` is no longer run
+  twice.** The claim held the row for `jobs.lease_seconds` while the attempt
+  ran under the handler's own, longer budget — a relayed issuance's
+  `signer.relay.poll_timeout_secs`, or a challenge validation's timeout — so
+  the row could expire mid-attempt and a second runner reclaim it. The runner
+  now stretches the lease to the budget before the attempt starts.
+- **On PostgreSQL, an order no longer sticks at `pending` when two of its
+  authorizations validate at once.** Each verdict's transaction read the set
+  without the other's uncommitted write, so neither promoted the order to
+  `ready`. The verdict now locks the order row before that read. The same race
+  let concurrent triggers overshoot `challenge.max_in_flight_per_account`;
+  the claim now locks the account row before counting. SQLite was not
+  affected.
+- **A challenge trigger claims the challenge and queues its validation in one
+  transaction.** They were two writes, so a crash between them left the
+  challenge `processing` with nothing coming for it until the next restart;
+  `challenge_validation_enqueue_failed` is gone, and a failure logs
+  `challenge_claim_failed` with nothing written.
+- **An http-01 response whose body fails mid-read is a connection error**,
+  retried like one, rather than a final "more than N bytes" refusal.
+- **A TTL too large for a signed 64-bit integer no longer wraps negative.**
+  `nonce cleanup` (whose `ttl_seconds` the admin API takes in a request body)
+  and the admin session sweep would have deleted every row, and an oversized
+  session TTL would have created sessions already expired. An oversized
+  `order.validity_seconds` saturates the same way.
+- **`signer.local_ca.leaf_validity_days` above 36 525 (a century) is refused
+  at startup**, rather than panicking in the first signing job.
+- **An issuance failure is recorded in the audit trail only for an order it
+  actually retired.** A redelivered job, or one cancelled after its order was
+  already decided, wrote a second `certificate_issue_failed` row.
+- **`newAccount` now returns the verified `externalAccountBinding`** in the
+  account object it creates, as RFC 8555 §7.3.4 requires, exactly as the
+  request sent it. It is reflected only in the `201` for an account this
+  request created at an endpoint that enforces EAB: a `200` for a key that
+  already has an account does not read the binding, and an endpoint without
+  EAB never checks one, so neither vouches for it.
+- **`newAccount` for a key that already holds an account now answers `200` with
+  that account**, as RFC 8555 §7.3.1 requires, instead of asking again for the
+  terms of service or the external account binding. Those remain conditions for
+  creating an account. A binding is not read at all for such a key, so an
+  account whose EAB credential was since revoked or deleted gets its account
+  back too, as revoking never disturbed existing accounts; `account deactivate`
+  or `eab delete --deactivate-accounts` is what shuts one out.
+
 ### Security
 
 - **rustls-webpki 0.103.16 and webpki-roots 1.0.10, for RUSTSEC-2026-0382 and

@@ -145,6 +145,25 @@ async fn a_configured_tos_must_be_agreed_to() {
     assert_eq!(body_json(res).await["termsOfServiceAgreed"], true);
 }
 
+/// §7.3.3 asks for agreement on the request that creates the account. A key
+/// that already holds one gets it back with a `200` (§7.3.1), whose request
+/// fields are ignored, so it is not asked to agree again.
+#[tokio::test]
+async fn a_known_key_is_not_asked_to_agree_again() {
+    let mut config = Config::default();
+    config.meta.terms_of_service = TOS.to_string();
+    let app = app_with(config).await;
+    let signer = EcSigner::new();
+    let res = register(&app, &signer, true).await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+    let location = res.headers()["location"].clone();
+
+    let res = register(&app, &signer, false).await;
+
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers()["location"], location);
+}
+
 /// With no terms configured the flag is vacuous, and the account object must not
 /// claim anything about it: an account created here neither agreed nor declined,
 /// and `false` would misrepresent that.

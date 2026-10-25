@@ -828,6 +828,15 @@ impl Account {
     /// `orders` list URL (derived from the public `base_url`).
     #[must_use]
     pub fn to_json(&self, base_url: &str) -> Value {
+        self.to_json_with_binding(base_url, None)
+    }
+
+    /// [`Account::to_json`], carrying `externalAccountBinding` when one is
+    /// given: the `newAccount` answer for an account a verified binding just
+    /// created (RFC 8555 §7.3.4). The caller decides whether a binding is owed;
+    /// this only places it.
+    #[must_use]
+    pub fn to_json_with_binding(&self, base_url: &str, binding: Option<Value>) -> Value {
         let mut object = serde_json::Map::new();
         object.insert("status".to_string(), Value::String(self.status.clone()));
         if !self.contact.is_empty() {
@@ -842,6 +851,9 @@ impl Account {
         // service says nothing rather than claiming to have declined.
         if let Some(agreed) = self.terms_of_service_agreed {
             object.insert("termsOfServiceAgreed".to_string(), Value::Bool(agreed));
+        }
+        if let Some(binding) = binding {
+            object.insert("externalAccountBinding".to_string(), binding);
         }
         Value::Object(object)
     }

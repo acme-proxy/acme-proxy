@@ -606,7 +606,37 @@ impl Challenge {
         max_in_flight: u32,
         database: &Database,
     ) -> Result<ValidationClaim, sqlx::Error> {
+        self.claim_for_validation_on(max_in_flight, database).await
+    }
+
+    /// [`claim_for_validation`](Self::claim_for_validation) on a connection of
+    /// the caller's — the challenge trigger takes the claim and queues the
+    /// validation that settles it in **one** transaction, so a challenge is
+    /// never `processing` with nothing coming for it.
+    ///
+    /// Under a cap, the account's row is locked first. The count is a read, and
+    /// under PostgreSQL's READ COMMITTED two concurrent claims would each count
+    /// the other's uncommitted claim as absent and both pass a cap of one; the
+    /// lock queues them, so the second counts after the first commits. Inside a
+    /// transaction only — on a pool the lock is released by the time the count
+    /// runs. SQLite already serializes the writers.
+    pub async fn claim_for_validation_on<'e>(
+        &mut self,
+        max_in_flight: u32,
+        executor: impl Into<crate::sql::Exec<'e>>,
+    ) -> Result<ValidationClaim, sqlx::Error> {
         debug!(event = "db_challenge_claim_started", outcome = "progress", challenge_id = ?self.id);
+        let mut executor = executor.into();
+        if max_in_flight > 0 {
+            crate::sql::query(
+                "UPDATE accounts SET status = status WHERE id = ( \
+                     SELECT o.account_id FROM authorizations a \
+                     JOIN orders o ON o.id = a.order_id WHERE a.id = ?);",
+            )
+            .bind(self.authz_id)
+            .execute(executor.reborrow())
+            .await?;
+        }
         let claimed = crate::sql::query(
             "UPDATE challenges SET status = 'processing' \
              WHERE id = ? AND status = 'pending' AND EXISTS ( \
@@ -625,7 +655,7 @@ impl Challenge {
         .bind(self.id)
         .bind(max_in_flight)
         .bind(max_in_flight)
-        .execute(database)
+        .execute(executor.reborrow())
         .await?
         .rows_affected()
             == 1;
@@ -633,7 +663,7 @@ impl Challenge {
         if !claimed {
             // Which of the two conditions refused it decides what the client is
             // told, and only the count can be answered with "come back later".
-            if max_in_flight > 0 && self.in_flight_for_account(database).await? >= max_in_flight {
+            if max_in_flight > 0 && self.in_flight_for_account(executor).await? >= max_in_flight {
                 debug!(event = "db_challenge_claim_limited", outcome = "advisory", challenge_id = ?self.id, limit = max_in_flight);
                 return Ok(ValidationClaim::Limited);
             }
@@ -648,7 +678,10 @@ impl Challenge {
 
     /// How many validations are in flight for the account this challenge
     /// belongs to.
-    async fn in_flight_for_account(&self, database: &Database) -> Result<u32, sqlx::Error> {
+    async fn in_flight_for_account(
+        &self,
+        executor: crate::sql::Exec<'_>,
+    ) -> Result<u32, sqlx::Error> {
         let row = crate::sql::query(
             "SELECT COUNT(*) FROM challenges c \
              JOIN authorizations a ON a.id = c.authz_id \
@@ -658,47 +691,17 @@ impl Challenge {
                  JOIN orders o2 ON o2.id = a2.order_id WHERE a2.id = ?);",
         )
         .bind(self.authz_id)
-        .fetch_one(database)
+        .fetch_one(executor)
         .await?;
         Ok(u32::try_from(row.try_get::<i64>(0)?).unwrap_or(u32::MAX))
-    }
-
-    /// Gives a claim back, moving `processing` to `pending`.
-    ///
-    /// The guarded inverse of [`claim_for_validation`](Self::claim_for_validation),
-    /// named after `Order::release_finalize_claim` and owed for the same reason:
-    /// `post_challenge` claims the row and *then* queues the work, so a failed
-    /// enqueue would otherwise leave a challenge `processing` with nothing
-    /// coming — polled by its client until the authorization expired.
-    ///
-    /// Guarded on the status rather than fired blindly, so a claim another
-    /// runner has already settled is never walked back to `pending`.
-    pub async fn release_validation_claim(
-        &mut self,
-        database: &Database,
-    ) -> Result<bool, sqlx::Error> {
-        let released = crate::sql::query(
-            "UPDATE challenges SET status = 'pending' WHERE id = ? AND status = 'processing';",
-        )
-        .bind(self.id)
-        .execute(database)
-        .await?
-        .rows_affected()
-            == 1;
-
-        if released {
-            self.status = ChallengeStatus::Pending;
-            debug!(event = "db_challenge_claim_released", outcome = "success", challenge_id = ?self.id);
-        }
-        Ok(released)
     }
 
     /// Every challenge left `processing` whose authorization has not expired,
     /// with that authorization's `expires`.
     ///
-    /// The recovery read behind `ChallengeValidateJob::recover`: a process that
-    /// died between the claim and the enqueue leaves exactly these rows, and
-    /// nothing else re-derives them. Expired authorizations are excluded here
+    /// The recovery read behind `ChallengeValidateJob::recover`: a claim left
+    /// without its job — by an earlier version, which claimed and enqueued as
+    /// two writes — leaves exactly these rows, and nothing else re-derives them. Expired authorizations are excluded here
     /// rather than filtered afterwards — a job queued past its own deadline is
     /// retired without ever running, so queueing one would be work that exists
     /// only to be thrown away.

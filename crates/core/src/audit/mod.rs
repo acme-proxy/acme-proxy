@@ -215,10 +215,12 @@ const _: () = assert!(
 /// Ties [`EVENT_COUNT`] to the enum itself.
 ///
 /// An exhaustive `match` with no catch-all, so a new variant is a compile error
-/// here; the arms count up to `EVENT_COUNT`, which the `const` assertion above
-/// ties back to [`ALL_AUDIT_EVENTS`]. Between them, a variant cannot reach
-/// production without appearing in the array [`AuditEvent::parse`] reads.
-#[allow(dead_code)]
+/// here, and its arm is the variant's 1-based position in [`ALL_AUDIT_EVENTS`]
+/// — checked, entry by entry, by the `const` block below, which also refuses a
+/// duplicate or a reordering. The last arm is spelled `EVENT_COUNT`, so the
+/// variant that takes a new position must move it. What no compiler check can
+/// do is see a variant that was given an arm and left out of the array; the
+/// numbering is what makes that omission visible in review.
 const fn event_count_is_exhaustive(event: AuditEvent) -> usize {
     match event {
         AuditEvent::CertificateIssued => 1,
@@ -250,6 +252,17 @@ const fn event_count_is_exhaustive(event: AuditEvent) -> usize {
         AuditEvent::DatabaseTransferred => EVENT_COUNT,
     }
 }
+
+const _: () = {
+    let mut index = 0;
+    while index < ALL_AUDIT_EVENTS.len() {
+        assert!(
+            event_count_is_exhaustive(ALL_AUDIT_EVENTS[index]) == index + 1,
+            "ALL_AUDIT_EVENTS and event_count_is_exhaustive disagree on a position"
+        );
+        index += 1;
+    }
+};
 
 /// Which front end acted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

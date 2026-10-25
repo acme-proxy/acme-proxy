@@ -121,9 +121,15 @@ pub async fn announce_issuance(
     }
 }
 
-/// Retires an order whose issuance failed for good: one
-/// `certificate_issue_failed` row naming `detail`, then the order `invalid`
-/// with `problem` as the document its client reads.
+/// Retires an order whose issuance failed for good: the order `invalid` with
+/// `problem` as the document its client reads, then one
+/// `certificate_issue_failed` row naming `detail`.
+///
+/// The row only when the write happened. A guarded write that finds the order
+/// already decided by someone else — a redelivered job whose first attempt got
+/// there, an operator who cancelled it — leaves it be, and recording a failure
+/// for it would put an issuance failure in the trail of an order that did not
+/// fail here.
 ///
 /// The client's document and the trail's detail are separate on purpose: what
 /// went wrong upstream or in a signer is for the operator, and the client is
@@ -137,6 +143,9 @@ pub async fn record_issue_failure(
     audit: &Auditor,
     database: &Database,
 ) -> Result<(), sqlx::Error> {
+    if !order.mark_invalid(problem.to_value(), database).await? {
+        return Ok(());
+    }
     audit
         .record(
             acme_proxy_core::audit::AuditRecord::new(
@@ -150,8 +159,58 @@ pub async fn record_issue_failure(
             .with_detail(detail),
         )
         .await;
-    // A `false` here is an order already decided by someone else — a
-    // redelivered job whose first attempt got there — and leaves it be.
-    order.mark_invalid(problem.to_value(), database).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use acme_proxy_core::audit::{Actor, ClientContext};
+    use acme_proxy_store::testutil;
+    use std::sync::Arc;
+
+    async fn audit_rows(database: &Database) -> i64 {
+        acme_proxy_store::audit::AuditEntry::search(&Default::default(), database)
+            .await
+            .unwrap()
+            .1
+    }
+
+    /// The trail records a failure only for the order it actually retired: a
+    /// second retirement of the same order — a redelivered job — finds it
+    /// decided and writes nothing.
+    #[tokio::test]
+    async fn an_order_already_decided_gets_no_second_failure_row() {
+        let database = Arc::new(Database::connect_for_test().await.unwrap());
+        let audit = Auditor::offline(database.clone());
+        let account_id = testutil::account_id(&database).await;
+        let mut order = Order::create(
+            "default",
+            account_id,
+            testutil::dns_identifiers(&["example.com"]),
+            4_102_444_800,
+            None,
+            None,
+            &database,
+        )
+        .await
+        .unwrap();
+        let problem = Problem::server_internal("Certificate issuance failed");
+
+        for _ in 0..2 {
+            record_issue_failure(
+                &mut order,
+                &problem,
+                "the signer refused",
+                Actor::acme(account_id),
+                ClientContext::default(),
+                &audit,
+                &database,
+            )
+            .await
+            .unwrap();
+        }
+
+        assert_eq!(audit_rows(&database).await, 1);
+    }
 }

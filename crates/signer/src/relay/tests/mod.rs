@@ -510,3 +510,29 @@ async fn await_status(database: Arc<Database>, order_id: &str, wanted: OrderStat
         .unwrap();
     panic!("order stayed {}, expected {wanted}", order.status);
 }
+
+/// Waits for a relay to be abandoned: the local order `invalid`, then the
+/// mapping row carrying the reason. `abandon_relayed_order` writes the two in
+/// that order and not in one transaction, so the order alone is not enough —
+/// a read of the mapping straight after it can still see `processing`.
+async fn await_abandoned(database: Arc<Database>, order_id: &str) -> (Order, UpstreamOrder) {
+    let order = await_status(database.clone(), order_id, OrderStatus::Invalid).await;
+    for _ in 0..200 {
+        let mapping = UpstreamOrder::find_by_order_id(order_id, &database)
+            .await
+            .unwrap()
+            .unwrap();
+        if mapping.status == "invalid" {
+            return (order, mapping);
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let mapping = UpstreamOrder::find_by_order_id(order_id, &database)
+        .await
+        .unwrap()
+        .unwrap();
+    panic!(
+        "order is invalid but its mapping stayed {}, expected invalid",
+        mapping.status
+    );
+}
