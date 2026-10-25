@@ -32,11 +32,7 @@ migrated configuration before restarting.
 
 ## [Unreleased]
 
-### Packaging
-
-- **The image's `debian:trixie-slim` base is refreshed** to the 2026-10-20 build
-  (`sha256:62bd423a…`), picking up a month of Debian security updates over the
-  2026-09-18 one 0.6.3 was built on.
+## [0.7.0] — 2026-10-25
 
 ### Breaking
 
@@ -68,6 +64,9 @@ migrated configuration before restarting.
   `account_not_found` and `account_key_mismatch` here, and
   `account_orders_ownership_mismatch` on `/acct/{id}/orders`.
   `account_update_lookup_failed` is gone: there is no second lookup to fail.
+  A failed lookup of a `newAccount` key logs `account_key_lookup_failed` (was
+  `account_only_return_existing_lookup_failed`); 0.6.3 shipped this one
+  without listing it.
 
 ### Added
 
@@ -168,6 +167,12 @@ migrated configuration before restarting.
   the glossary gains **Role**. The web admin's API table lists every route,
   the troubleshooting query for a stuck order matches SQLite's byte ids, and
   the container recipes set `server.base_url`.
+
+### Packaging
+
+- **The image's `debian:trixie-slim` base is refreshed** to the 2026-10-20 build
+  (`sha256:62bd423a…`), picking up a month of Debian security updates over the
+  2026-09-18 one 0.6.3 was built on.
 
 ## [0.6.3] — 2026-10-25
 
@@ -2957,7 +2962,8 @@ does *not* cover.
 - Admission control, request timeouts and body limits on the ACME routes.
 - Graceful shutdown on SIGTERM.
 
-[Unreleased]: https://github.com/acme-proxy/acme-proxy/compare/0.6.3...HEAD
+[Unreleased]: https://github.com/acme-proxy/acme-proxy/compare/0.7.0...HEAD
+[0.7.0]: https://github.com/acme-proxy/acme-proxy/compare/0.6.3...0.7.0
 [0.6.3]: https://github.com/acme-proxy/acme-proxy/compare/0.6.2...0.6.3
 [0.6.2]: https://github.com/acme-proxy/acme-proxy/compare/0.6.1...0.6.2
 [0.6.1]: https://github.com/acme-proxy/acme-proxy/compare/0.6.0...0.6.1

@@ -8,8 +8,8 @@ a name they do not control. Reports are taken seriously.
 
 | Version | Supported |
 | --- | --- |
-| 0.6.x | yes |
-| 0.5.x | no |
+| 0.7.x | yes |
+| 0.6.x | no |
 
 Before 1.0.0 only the newest release line is maintained: a fix lands on `main`
 and is backported to that line's `release/X.Y` branch as a patch release
