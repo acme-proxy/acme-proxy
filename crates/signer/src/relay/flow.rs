@@ -141,7 +141,7 @@ pub struct RelayJob {
     /// names no endpoint (see [`RelayJob::target_for`]). Longer than one backend
     /// asked for is the safe direction: an attempt that would have been cut
     /// short runs to its own conclusion instead. `None` only with no targets at
-    /// all, which falls back to `jobs.lease_seconds` like any other handler.
+    /// all, which falls back to `jobs.lease` like any other handler.
     longest_lease: Option<Duration>,
     /// The pool, which every backend shares, taken as an argument rather than
     /// from a target so the legacy-row fallback can read an order before it has
@@ -241,7 +241,7 @@ impl JobHandler for RelayJob {
     }
 
     /// The per-attempt budget is the **owning endpoint's**
-    /// `signer.relay.poll_timeout_secs`, which is what the hand-rolled
+    /// `signer.relay.poll_timeout`, which is what the hand-rolled
     /// `tokio::time::timeout` around this used to be — so an attempt is bounded
     /// exactly as before, and the queue adds retries on top rather than changing
     /// how long one try may take.

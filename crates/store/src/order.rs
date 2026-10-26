@@ -529,7 +529,7 @@ impl Order {
     /// error.
     ///
     /// `valid` orders are kept whatever their `expires`, since the order
-    /// object's expiry is housekeeping (`order.validity_seconds`) and the
+    /// object's expiry is housekeeping (`order.validity`) and the
     /// certificate it points at outlives it — that URL still works.
     pub async fn find_active_by_account(
         account_id: Uuid,
@@ -619,7 +619,7 @@ impl Order {
     /// and a `pending`/`ready`/`processing` order past its own `expires` is
     /// refused on read by every handler that loads one.
     ///
-    /// Scoped to one endpoint because `order.retention_days` is a per-endpoint
+    /// Scoped to one endpoint because `order.retention` is a per-endpoint
     /// key: two endpoints in one process may reasonably keep their history for
     /// different lengths of time.
     pub async fn cleanup(

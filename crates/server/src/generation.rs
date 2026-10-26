@@ -3,7 +3,6 @@
 //! publishes every later one.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use tracing::{error, info, warn};
 
@@ -74,10 +73,7 @@ pub(crate) fn build_generation(
             error!(event = "tls_init_failed", outcome = "failure", error = %error);
         })?
         .map(|acceptor| {
-            tls::TlsSettings::new(
-                acceptor,
-                Duration::from_millis(config.server.tls.handshake_timeout_ms),
-            )
+            tls::TlsSettings::new(acceptor, config.server.tls.handshake_timeout.as_std())
         });
 
     let admin_tls = match admin_enabled {
@@ -87,10 +83,7 @@ pub(crate) fn build_generation(
                 error!(event = "admin_tls_init_failed", outcome = "failure", error = %error);
             })?
             .map(|acceptor| {
-                tls::TlsSettings::new(
-                    acceptor,
-                    Duration::from_millis(config.admin.tls.handshake_timeout_ms),
-                )
+                tls::TlsSettings::new(acceptor, config.admin.tls.handshake_timeout.as_std())
             }),
     };
 
@@ -276,7 +269,7 @@ fn job_registry_for(
     ));
     // Challenge validation. `POST /chall/{id}` claims the challenge and queues
     // the outbound check, so the probe of a client-chosen host no longer holds
-    // an admission permit for the length of `challenge.timeout_ms`. Registered
+    // an admission permit for the length of `challenge.timeout`. Registered
     // unconditionally for `SignerRevokeJob`'s reason above — a row queued
     // before a configuration change must still find a handler — and holding the
     // endpoints rather than one endpoint, since the registry refuses a second
@@ -308,7 +301,7 @@ fn job_registry_for(
     )));
 
     // The expiry digest, registered only when some endpoint asked for one
-    // (`notify.expiry.lead_days`), the way `CrlSweepJob` is registered only
+    // (`notify.expiry.lead`), the way `CrlSweepJob` is registered only
     // when there is a ledger to prune. It takes the `Notifiers` handle rather
     // than the endpoints' own dispatchers for `NotifyJob`'s reason above, and
     // the queue because its per-endpoint rows are something it maintains on
@@ -327,35 +320,35 @@ fn job_registry_for(
     // and its schedule survives a restart. Their `recover` is also the startup
     // sweep — it queues at `run_at = now`, so the runner performs the first pass
     // on its way into the loop and there is nothing to run separately here.
-    let ttl = Duration::from_secs(config.nonce.ttl_seconds);
+    let ttl = config.nonce.ttl.as_std();
     let mut sweeps = vec![acme_proxy_jobs::jobs::SweepJob::nonces(
         database.clone(),
         ttl,
     )];
-    // `0` keeps everything for ever on both of these, and is a handler not
+    // Zero keeps everything for ever on both of these, and is a handler not
     // registered rather than a sweep with a cutoff at the epoch.
-    if config.audit.retention_days > 0 {
+    if !config.audit.retention.is_zero() {
         sweeps.push(acme_proxy_jobs::jobs::SweepJob::audit(
             database.clone(),
-            config.audit.retention_days,
+            config.audit.retention.as_std(),
         ));
     }
-    if config.jobs.retention_days > 0 {
+    if !config.jobs.retention.is_zero() {
         sweeps.push(acme_proxy_jobs::jobs::SweepJob::jobs(
             database.clone(),
-            config.jobs.retention_days,
+            config.jobs.retention.as_std(),
         ));
     }
     // One handler covering every mounted endpoint, since the registry refuses a
     // second handler for one kind. An endpoint keeping everything (`0`) is left
     // out of the list rather than swept with a cutoff at the epoch.
-    let order_retention: Vec<(String, u64)> = resolved
+    let order_retention: Vec<(String, std::time::Duration)> = resolved
         .iter()
-        .filter(|endpoint| endpoint.sections.order.retention_days > 0)
+        .filter(|endpoint| !endpoint.sections.order.retention.is_zero())
         .map(|endpoint| {
             (
                 endpoint.name.clone(),
-                endpoint.sections.order.retention_days,
+                endpoint.sections.order.retention.as_std(),
             )
         })
         .collect();
@@ -378,9 +371,9 @@ fn job_registry_for(
     if admin_enabled {
         sweeps.push(acme_proxy_jobs::jobs::SweepJob::admin_sessions(
             database.clone(),
-            Duration::from_secs(config.admin.session_idle_timeout_seconds),
-            config.admin.session_ttl_seconds,
-            Duration::from_secs(config.admin.login_window_seconds),
+            config.admin.session_idle_timeout.as_std(),
+            config.admin.session_ttl.as_secs(),
+            config.admin.login_window.as_std(),
         ));
     }
     handlers.extend(

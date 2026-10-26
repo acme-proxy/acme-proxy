@@ -12,7 +12,7 @@ Three ACME operations used to do their real work inside the HTTP request:
 
 - **`POST /chall/{id}`** awaited the challenge validation. That reached out to
   an address the *client* named, over DNS, HTTP or TLS, to a host that may never
-  answer. It held an admission permit for the whole of `challenge.timeout_ms`.
+  answer. It held an admission permit for the whole of `challenge.timeout`.
   Up to `server.max_concurrent_requests` clients pointing at black-holed
   addresses could pin every permit. It also forced a startup rule that the
   request timeout exceed the validation timeout.
@@ -43,7 +43,7 @@ with `Retry-After`. certbot, acme.sh and lego all poll.
 - **Revocation.** A local CA's revocation is a `revocations` row and the order's
   stamp in one transaction; the worker then signs the CRL. A relay or `custom`
   revocation is a `signer_revoke` job that the request waits on, for up to
-  `server.request_timeout_ms` less a second, answering `503` + `Retry-After` if
+  `server.request_timeout` less a second, answering `503` + `Retry-After` if
   the job is still running. See `crates/protocol/src/acme/revoke.rs`.
 - **A verdict is terminal.** A check that ran records its answer, pass or fail.
   A job is retried only when the attempt could not happen at all: the database
@@ -59,7 +59,7 @@ with `Retry-After`. certbot, acme.sh and lego all poll.
 
 ## Consequences
 
-- `challenge.timeout_ms` bounds a job attempt, not an HTTP request. The only
+- `challenge.timeout` bounds a job attempt, not an HTTP request. The only
   timeout rule left at startup concerns `signer.custom`'s read hooks, the one
   backend call still made inline.
 - A client sees `processing` on every finalize, including against a local CA.

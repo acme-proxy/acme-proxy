@@ -117,7 +117,7 @@ pub fn admin_from_config(
         enabled: cfg.tls.enabled,
         cert_path: cfg.tls.cert_path.clone(),
         key_path: cfg.tls.key_path.clone(),
-        handshake_timeout_ms: cfg.tls.handshake_timeout_ms,
+        handshake_timeout: cfg.tls.handshake_timeout,
     };
     Ok(Some(acceptor_from(
         &tls,
@@ -232,7 +232,7 @@ fn generate_self_signed(base_url: &str) -> anyhow::Result<(String, String)> {
 /// The pair travels together because both halves come from the same `[tls]`
 /// section and both are read at the same moment — the top of a handshake. Making
 /// this the unit [`crate::listener`]'s accept loop reads is what lets a renewed
-/// certificate and a changed `handshake_timeout_ms` land without rebinding the
+/// certificate and a changed `handshake_timeout` land without rebinding the
 /// socket: a configuration reload publishes a new `TlsSettings` and the next
 /// connection uses it, while connections already established are untouched.
 ///
@@ -273,7 +273,7 @@ mod tests {
                 enabled: true,
                 cert_path: dir.join("server.pem").display().to_string(),
                 key_path: dir.join("server.key").display().to_string(),
-                handshake_timeout_ms: 5_000,
+                handshake_timeout: acme_proxy_core::config::ConfigDuration::from_millis(5_000),
             },
             ..ServerConfig::default()
         }
@@ -297,7 +297,7 @@ mod tests {
                 enabled: true,
                 cert_path: dir.join("admin.pem").display().to_string(),
                 key_path: dir.join("admin.key").display().to_string(),
-                handshake_timeout_ms: 5_000,
+                handshake_timeout: acme_proxy_core::config::ConfigDuration::from_millis(5_000),
             },
             ..acme_proxy_core::config::AdminConfig::default()
         }
@@ -401,7 +401,7 @@ mod tests {
                 enabled: true,
                 cert_path: dir.join("server.pem").display().to_string(),
                 key_path: dir.join("server.key").display().to_string(),
-                handshake_timeout_ms: 5_000,
+                handshake_timeout: acme_proxy_core::config::ConfigDuration::from_millis(5_000),
             },
             ..ServerConfig::default()
         };

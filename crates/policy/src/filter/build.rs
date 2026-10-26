@@ -148,7 +148,7 @@ fn keys_set(config: &CheckConfig) -> Vec<&'static str> {
         config.require_forward_confirm.is_some(),
         "require_forward_confirm",
     );
-    note(config.timeout_ms.is_some(), "timeout_ms");
+    note(config.timeout.is_some(), "timeout");
     note(!config.script_path.is_empty(), "script_path");
     note(config.pass_stdin.is_some(), "pass_stdin");
     keys
@@ -304,7 +304,7 @@ fn build_check(
                     deny: config.deny.clone(),
                     allow_regex: config.allow_regex.clone(),
                     deny_regex: config.deny_regex.clone(),
-                    timeout_ms: config.timeout_ms.unwrap_or(defaults.timeout_ms),
+                    timeout: config.timeout.unwrap_or(defaults.timeout),
                 }
             },
             dns,
@@ -351,7 +351,7 @@ fn build_check(
             let defaults = custom::Settings::default();
             custom::Settings {
                 script_path: config.script_path.clone(),
-                timeout_ms: config.timeout_ms.unwrap_or(defaults.timeout_ms),
+                timeout: config.timeout.unwrap_or(defaults.timeout),
                 pass_stdin: config.pass_stdin.unwrap_or(defaults.pass_stdin),
                 args: config.args.clone(),
             }
@@ -455,7 +455,7 @@ fn refuse_removed_keys(cfg: &FilterConfig) -> anyhow::Result<()> {
     anyhow::ensure!(
         cfg.netbox.is_none(),
         "[filter.netbox] is now [ipam.netbox], read by a check with type = \"ipam\": \
-         timeout_ms moves to ipam.timeout_ms, and use_dns_name / device_fallback become \
+         timeout_ms moves to ipam.timeout, and use_dns_name / device_fallback become \
          \"dns_name\" / \"device\" in ipam.netbox.sources."
     );
     Ok(())

@@ -143,7 +143,7 @@ Skip this section entirely if `admin.enabled` is `false`, which is the default.
 - [ ] **Backups copy the WAL.** `sqlite.db` alone is missing every recent write;
       use `.backup`, or take all three files.
       → [Backup & Restore](../operations/backup.md)
-- [ ] **decide — `audit.retention_days`.** `0`, the default, keeps everything
+- [ ] **decide — `audit.retention`.** `0`, the default, keeps everything
   for
       ever, which is the right default for a trail whose value is that it is
       complete.

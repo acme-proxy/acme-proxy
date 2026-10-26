@@ -264,7 +264,7 @@ impl Job {
     /// was lost.
     ///
     /// The claim is written before the runner knows which handler will answer,
-    /// so it carries `jobs.lease_seconds`; a handler whose own budget is longer
+    /// so it carries `jobs.lease`; a handler whose own budget is longer
     /// has its lease stretched here, before the attempt starts. Without it the
     /// row would expire mid-attempt and `reclaim_expired` would hand it to a
     /// second runner while the first was still working it.
@@ -495,7 +495,7 @@ impl Job {
     ///
     /// **No index covers `WHERE kind = ? AND status = ? ORDER BY created_at`.**
     /// This table stays small by construction: [`Self::cleanup`] deletes
-    /// terminal rows past `jobs.retention_days`, and the partial identity index
+    /// terminal rows past `jobs.retention`, and the partial identity index
     /// admits at most one live row per `(kind, dedup_key)`. A dedicated
     /// `(kind, created_at)` index is a future migration if a deployment ever
     /// says otherwise — the `Order::find_expiring` tradeoff exactly.
@@ -607,7 +607,7 @@ impl Job {
     }
 
     /// Pulls a live `ready` job's `run_at` forward to now. `Ok(None)` if it is
-    /// not `ready`. The runner picks the change up within `jobs.poll_interval_ms`
+    /// not `ready`. The runner picks the change up within `jobs.poll_interval`
     /// — this does not wake it.
     pub async fn advance_row(id: Uuid, database: &Database) -> Result<Option<Self>, sqlx::Error> {
         let now = now_secs();

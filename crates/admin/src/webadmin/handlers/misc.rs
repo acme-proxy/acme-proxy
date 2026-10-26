@@ -20,7 +20,7 @@ use acme_proxy_store::nonce::Nonce;
 /// The optional body of `POST /api/nonces/cleanup`.
 #[derive(Debug, Deserialize, Default)]
 pub struct CleanupRequest {
-    /// Age past which a nonce is swept. Absent means `nonce.ttl_seconds`.
+    /// Age past which a nonce is swept. Absent means `nonce.ttl`.
     #[serde(rename = "ttlSeconds")]
     pub ttl_seconds: Option<u64>,
 }
@@ -36,7 +36,7 @@ pub async fn get_nonces(
     let count = Nonce::count(&state.database).await?;
     Ok(Json(admin::render_nonce_stats_json(
         count,
-        state.config.nonce.ttl_seconds,
+        state.config.nonce.ttl.as_secs(),
     )))
 }
 
@@ -49,7 +49,7 @@ pub async fn cleanup_nonces(
 ) -> Result<Json<Value>, AdminError> {
     let seconds = body
         .and_then(|Json(body)| body.ttl_seconds)
-        .unwrap_or(state.config.nonce.ttl_seconds);
+        .unwrap_or(state.config.nonce.ttl.as_secs());
 
     let removed =
         apply_cleanup_nonces(&state, &Caller::api(&auth, &request_context), seconds).await?;

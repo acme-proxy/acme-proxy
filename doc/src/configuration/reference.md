@@ -27,6 +27,38 @@ context.
 > but the server serves ACME only through endpoints and refuses to start without
 > at least one enabled. See [`[endpoints]`](#endpointsname) below.
 
+## Durations
+
+Every length of time — a timeout, a retention, a certificate's lifetime — is a
+`Duration`: a string holding a number and its unit, from a file and from the
+environment alike.
+
+```toml
+request_timeout = "1m"
+leaf_validity = "160h"
+retention = "0s"        # zero, where zero means "off"
+```
+
+| Unit | Length |
+|---|---|
+| `ms` | millisecond |
+| `s` | second |
+| `m` | minute |
+| `h` | hour |
+| `d` | 86 400 seconds |
+| `w` | 7 days |
+| `y` | 365 days |
+
+Units add up, in any order: `"1h30m"` is `"90m"`. They are fixed lengths, not
+calendar arithmetic — `"1y"` is 365 days, not "the same date next year" — and
+there is no month, because `m` is minutes. **A bare number is refused**
+(`retention = 30` would not say whether it means seconds or days), and so is
+zero without a unit: write `"0s"`.
+
+Before 0.8 these keys carried their unit in their name (`timeout_ms`,
+`validity_seconds`, `retention_days`, …). A configuration still using one is
+refused at startup, naming the key and the line to write instead.
+
 ## Every section, and where it is documented
 
 Six sections are large enough to have a chapter of their own, and their keys
@@ -130,18 +162,18 @@ enabled, this must be set to the public URL or every client is rejected.
 
 How many ACME requests may be in flight at once before the server sheds load.
 
-**`admission_wait_ms`** (`Integer`) — *Default: `50` | Env: `ACME_PROXY_SERVER__ADMISSION_WAIT_MS`*
+**`admission_wait`** (`Duration`) — *Default: `"50ms"` | Env: `ACME_PROXY_SERVER__ADMISSION_WAIT`*
 
 How long a request may wait for a slot before it is refused. Past the limit a
 request waits this long and then gets `503` + `Retry-After` — it is **shed, not
 queued**.
 
-**`request_timeout_ms`** (`Integer`) — *Default: `60000` | Env: `ACME_PROXY_SERVER__REQUEST_TIMEOUT_MS`*
+**`request_timeout`** (`Duration`) — *Default: `"1m"` | Env: `ACME_PROXY_SERVER__REQUEST_TIMEOUT`*
 
-Whole-request deadline. It **must exceed** `signer.custom.timeout_ms` when that
+Whole-request deadline. It **must exceed** `signer.custom.timeout` when that
 backend is installed with its `crl` or `renewal_info` hook enabled, since those
 hooks run inline inside a request; the server refuses to start otherwise. It is
-deliberately independent of `challenge.timeout_ms` and of the script's `issue`
+deliberately independent of `challenge.timeout` and of the script's `issue`
 and `revoke` hooks, which run in the job queue — see [Challenge
 Validation](../challenges/index.md). A relay or custom revocation that a request
 queues is waited on for this long, less a second.
@@ -175,7 +207,7 @@ written when either this or `key_path` is missing.
 
 Path to the private key.
 
-**`handshake_timeout_ms`** (`Integer`) — *Default: `10000` | Env: `ACME_PROXY_SERVER__TLS__HANDSHAKE_TIMEOUT_MS`*
+**`handshake_timeout`** (`Duration`) — *Default: `"10s"` | Env: `ACME_PROXY_SERVER__TLS__HANDSHAKE_TIMEOUT`*
 
 Budget for one TLS handshake. Handshakes run concurrently, off the accept path,
 so this never delays another client.
@@ -223,17 +255,17 @@ does for the ACME listener. Through a tunnel this stays `localhost`. The
 resolved origin is logged at startup (`admin_origin_resolved`) so a mismatch is
 visible before the first refused request.
 
-**`session_ttl_seconds`** (`Integer`) — *Default: `43200` (12 h) | Env: `ACME_PROXY_ADMIN__SESSION_TTL_SECONDS`*
+**`session_ttl`** (`Duration`) — *Default: `"12h"` | Env: `ACME_PROXY_ADMIN__SESSION_TTL`*
 
 Absolute session lifetime. Never extended by activity: past it, the operator
 signs in again.
 
-**`session_idle_timeout_seconds`** (`Integer`) — *Default: `3600` (1 h) | Env: `ACME_PROXY_ADMIN__SESSION_IDLE_TIMEOUT_SECONDS`*
+**`session_idle_timeout`** (`Duration`) — *Default: `"1h"` | Env: `ACME_PROXY_ADMIN__SESSION_IDLE_TIMEOUT`*
 
 Idle lifetime, advanced on use — at most once a minute, so a polling page is not
 a stream of database writes. Whichever deadline comes first wins.
 
-**`login_max_attempts`** (`Integer`) / **`login_window_seconds`** (`Integer`) — *Defaults: `5` / `300` | Env: `ACME_PROXY_ADMIN__LOGIN_MAX_ATTEMPTS`, `ACME_PROXY_ADMIN__LOGIN_WINDOW_SECONDS`*
+**`login_max_attempts`** (`Integer`) / **`login_window`** (`Integer`) — *Defaults: `5` / `300` | Env: `ACME_PROXY_ADMIN__LOGIN_MAX_ATTEMPTS`, `ACME_PROXY_ADMIN__LOGIN_WINDOW`*
 
 Failed sign-ins allowed from one address per window, then `429` with a
 `Retry-After`. The password hash is deliberately expensive (PBKDF2-HMAC-SHA256
@@ -343,7 +375,7 @@ written at startup; the generated key is created `0600`. Separate paths from
 `[server.tls]` on purpose — the two listeners answer to different names and
 should not share a certificate by accident.
 
-**`handshake_timeout_ms`** (`Integer`) — *Default: `10000` | Env: `ACME_PROXY_ADMIN__TLS__HANDSHAKE_TIMEOUT_MS`*
+**`handshake_timeout`** (`Duration`) — *Default: `"10s"` | Env: `ACME_PROXY_ADMIN__TLS__HANDSHAKE_TIMEOUT`*
 
 As `[server.tls]`.
 
@@ -371,11 +403,11 @@ there rather than being restated here.
 
 ## `[order]`
 
-**`validity_seconds`** (`Integer`) — *Default: `604800` (7 days) | Env: `ACME_PROXY_ORDER__VALIDITY_SECONDS`*
+**`validity`** (`Duration`) — *Default: `"7d"` | Env: `ACME_PROXY_ORDER__VALIDITY`*
 
 Lifetime of the ACME **order object** before it expires. This is housekeeping
 for the order resource, not the issued certificate's validity — that is
-`signer.local_ca.leaf_validity_days`, or whatever the delegating backend
+`signer.local_ca.leaf_validity`, or whatever the delegating backend
 decides.
 
 **`max_identifiers`** (`Integer`) — *Default: `100` | Env: `ACME_PROXY_ORDER__MAX_IDENTIFIERS`*
@@ -395,11 +427,11 @@ Refused as `malformed` rather than `rateLimited` deliberately: the order is
 malformed for this server whenever it is sent, so `rateLimited` — which tells a
 client to come back later — would be a lie.
 
-**`retention_days`** (`Integer`) — *Default: `30` | Env: `ACME_PROXY_ORDER__RETENTION_DAYS`*
+**`retention`** (`Duration`) — *Default: `"30d"` | Env: `ACME_PROXY_ORDER__RETENTION`*
 
 Days an order is kept **after it expires**, before the daily `order_sweep`
 deletes it. The authorizations and challenges beneath it go with it, through the
-schema's `ON DELETE CASCADE`. `0` keeps everything for ever.
+schema's `ON DELETE CASCADE`. `"0s"` keeps everything for ever.
 
 **A `valid` order is never swept, whatever its age.** Its row is how
 `revokeCert` and the CRL resolve a certificate by serial, and what RFC 9773
@@ -423,7 +455,7 @@ line per endpoint.
 
 ## `[nonce]`
 
-**`ttl_seconds`** (`Integer`) — *Default: `300` | Env: `ACME_PROXY_NONCE__TTL_SECONDS`*
+**`ttl`** (`Duration`) — *Default: `"5m"` | Env: `ACME_PROXY_NONCE__TTL`*
 
 Freshness window for JWS anti-replay nonces. Expired nonces are swept on an
 interval for the life of the process.
@@ -449,16 +481,16 @@ would fail, every `*_ptr` column would end up `NULL` anyway, and all that would
 be left is the round trip. Lookups go through `dns.resolver` like every other
 DNS query this server makes.
 
-**`reverse_dns_timeout_ms`** (`Integer`) — *Default: `2000` | Env: `ACME_PROXY_AUDIT__REVERSE_DNS_TIMEOUT_MS`*
+**`reverse_dns_timeout`** (`Duration`) — *Default: `"2s"` | Env: `ACME_PROXY_AUDIT__REVERSE_DNS_TIMEOUT`*
 
 Budget for one PTR lookup. Deliberately small: this runs inside a request that
 has already done its real work, so a slow nameserver costs a `NULL` in one
 column rather than latency on issuance. **Every failure is a `NULL`, never a
 refused request.**
 
-**`retention_days`** (`Integer`) — *Default: `0` | Env: `ACME_PROXY_AUDIT__RETENTION_DAYS`*
+**`retention`** (`Duration`) — *Default: `"0s"` | Env: `ACME_PROXY_AUDIT__RETENTION`*
 
-Delete `audit_log` rows older than this many days. `0` keeps everything for
+Delete `audit_log` rows older than this. `"0s"` keeps everything for
 ever, which is the right default for a trail whose value is that it is complete.
 Any non-zero value schedules a daily `audit_sweep` job beside the nonce one,
 running the same `DELETE` as `acme-proxy audit cleanup --older-than <days>`.
@@ -488,16 +520,16 @@ section's reach is wider than the name suggests:
   CA's CRL signing (`local_ca_crl_regenerate`).
 - **Deliveries** — every [notification](../notifications/index.md)
   (`notify_deliver`) and the expiry digest (`notify_expiry_digest`).
-- **Periodic sweeps** — expired nonces, orders past `order.retention_days`,
-  `audit.retention_days`, expired admin sessions, stale `http-01` tokens, the
+- **Periodic sweeps** — expired nonces, orders past `order.retention`,
+  `audit.retention`, expired admin sessions, stale `http-01` tokens, the
   daily CRL refresh (`local_ca_crl_sweep`), and this queue's own
-  `retention_days`.
+  `retention`.
 
 A runner that is not running is a server that validates, issues, sweeps and
 notifies nothing — `job_runner_started` is the line that says it is. With role
 processes, only a `worker` process runs one.
 
-**`poll_interval_ms`** (`Integer`) — *Default: `1000` | Env: `ACME_PROXY_JOBS__POLL_INTERVAL_MS`*
+**`poll_interval`** (`Duration`) — *Default: `"1s"` | Env: `ACME_PROXY_JOBS__POLL_INTERVAL`*
 
 How often the runner looks for work nobody woke it for. This bounds only
 *scheduled* work — a backoff coming due, a periodic sweep firing. Queueing a job
@@ -523,31 +555,31 @@ Unlike every other key here, this one is **frozen onto each row as it is
 queued** rather than read afresh each attempt, so raising it applies to work
 queued from then on and not to a backlog already waiting.
 
-**`retry_base_seconds`** (`Integer`) — *Default: `30` | Env: `ACME_PROXY_JOBS__RETRY_BASE_SECONDS`*
+**`retry_base`** (`Duration`) — *Default: `"30s"` | Env: `ACME_PROXY_JOBS__RETRY_BASE`*
 
 The first retry delay; each subsequent one doubles. Longer than any single
 upstream round trip, so a retry is not simply the same failure again, and short
 enough that a blip clears inside one client poll cycle.
 
-**`retry_max_seconds`** (`Integer`) — *Default: `3600` | Env: `ACME_PROXY_JOBS__RETRY_MAX_SECONDS`*
+**`retry_max`** (`Duration`) — *Default: `"1h"` | Env: `ACME_PROXY_JOBS__RETRY_MAX`*
 
 Where the doubling stops, and a real ceiling — the jitter applied to each delay
 only ever subtracts, so no retry is scheduled past this. An hour sits well under
 the default order lifetime, which keeps a job's own deadline the binding
 constraint rather than this.
 
-**`lease_seconds`** (`Integer`) — *Default: `300` | Env: `ACME_PROXY_JOBS__LEASE_SECONDS`*
+**`lease`** (`Duration`) — *Default: `"5m"` | Env: `ACME_PROXY_JOBS__LEASE`*
 
 The default budget for one attempt, and therefore how long a claim is held
 before another runner may take the row. A handler needing a different one says
-so itself: the `relay` signer asks for its own `signer.relay.poll_timeout_secs`.
+so itself: the `relay` signer asks for its own `signer.relay.poll_timeout`.
 
-**`retention_days`** (`Integer`) — *Default: `7` | Env: `ACME_PROXY_JOBS__RETENTION_DAYS`*
+**`retention`** (`Duration`) — *Default: `"7d"` | Env: `ACME_PROXY_JOBS__RETENTION`*
 
-Delete settled job rows older than this many days. Unlike
-[`audit.retention_days`](#audit) this defaults to a **non-zero** value: a
+Delete settled job rows older than this. Unlike
+[`audit.retention`](#audit) this defaults to a **non-zero** value: a
 finished job is a receipt, not evidence, and the trail that has to be complete
-is `audit_log`'s. `0` keeps everything for ever and stops the sweep being
+is `audit_log`'s. `"0s"` keeps everything for ever and stops the sweep being
 scheduled at all.
 
 ---

@@ -11,7 +11,6 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::json;
-use std::time::Duration;
 use tracing::{info, warn};
 
 use crate::admin::mfa::MfaOutcome;
@@ -254,7 +253,7 @@ pub(crate) async fn start_session(
     let user_agent = crate::webadmin::user_agent_of(headers);
 
     let Some(step) = step else {
-        let ttl = Duration::from_secs(state.config.admin.session_ttl_seconds);
+        let ttl = state.config.admin.session_ttl.as_std();
         let session = AdminSession::create(
             NewSession {
                 user_id: user.id,
@@ -461,7 +460,7 @@ pub(crate) async fn promote_pending(
     state: &AdminState,
     pending_token_hash: &str,
 ) -> Result<(AdminSession, String), AdminError> {
-    let ttl = Duration::from_secs(state.config.admin.session_ttl_seconds);
+    let ttl = state.config.admin.session_ttl.as_std();
     let minted = mint_token();
     let csrf_token = mint_csrf_token();
 

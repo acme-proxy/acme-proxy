@@ -95,13 +95,14 @@ impl Auditor {
             event = "audit_loaded",
             outcome = "success",
             reverse_dns = cfg.reverse_dns,
-            reverse_dns_timeout_ms = cfg.reverse_dns_timeout_ms,
-            retention_days = cfg.retention_days,
+            reverse_dns_timeout_ms =
+                acme_proxy_core::logfields::millis(cfg.reverse_dns_timeout.as_std()),
+            retention_seconds = cfg.retention.as_secs(),
         );
         Ok(Self {
             database,
             resolver,
-            ptr_timeout: Duration::from_millis(cfg.reverse_dns_timeout_ms),
+            ptr_timeout: cfg.reverse_dns_timeout.as_std(),
             metrics: Some(metrics),
         })
     }

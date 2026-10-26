@@ -6,6 +6,8 @@
 
 use serde::Deserialize;
 
+use super::ConfigDuration;
+
 /// Governs the traceability columns and the `audit_log` table.
 ///
 /// Process-wide, so deliberately absent from `ENDPOINT_SECTIONS`: the retention
@@ -30,24 +32,24 @@ pub struct AuditConfig {
     ///
     /// Small on purpose: this runs inside a request that has already done its
     /// real work, and a slow nameserver must cost a `NULL` in one column rather
-    /// than latency on issuance. Matches `filter.reverse_dns.timeout_ms`, whose
+    /// than latency on issuance. Matches `filter.reverse_dns.timeout`, whose
     /// lookup is against the same nameserver.
-    pub reverse_dns_timeout_ms: u64,
-    /// Delete `audit_log` rows older than this many days.
+    pub reverse_dns_timeout: ConfigDuration,
+    /// Delete `audit_log` rows older than this.
     ///
-    /// `0` (the default) keeps everything for ever, which is the right default
+    /// `"0s"` (the default) keeps everything for ever, which is the right default
     /// for a trail whose value is that it is complete. Set it where a retention
     /// policy says otherwise; `acme-proxy audit cleanup --older-than` is the
     /// same sweep run by hand.
-    pub retention_days: u64,
+    pub retention: ConfigDuration,
 }
 
 impl Default for AuditConfig {
     fn default() -> Self {
         Self {
             reverse_dns: true,
-            reverse_dns_timeout_ms: 2_000,
-            retention_days: 0,
+            reverse_dns_timeout: ConfigDuration::from_millis(2_000),
+            retention: ConfigDuration::ZERO,
         }
     }
 }

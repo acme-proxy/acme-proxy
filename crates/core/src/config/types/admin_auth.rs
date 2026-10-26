@@ -9,6 +9,8 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
+use super::ConfigDuration;
+
 use super::string_list;
 
 /// The web admin's sign-in realms.
@@ -105,8 +107,8 @@ pub struct OidcProviderConfig {
     /// Extra CA certificates (PEM) to trust on top of the public roots, for a
     /// provider behind an internal PKI.
     pub ca_cert_path: String,
-    /// Bound on each call to the provider, in milliseconds.
-    pub timeout_ms: u64,
+    /// Bound on each call to the provider.
+    pub timeout: ConfigDuration,
     pub roles: RoleMapConfig,
 }
 
@@ -129,7 +131,7 @@ impl Default for OidcProviderConfig {
             required_acr: Vec::new(),
             required_amr: Vec::new(),
             ca_cert_path: String::new(),
-            timeout_ms: 10_000,
+            timeout: ConfigDuration::from_millis(10_000),
             roles: RoleMapConfig::default(),
         }
     }
@@ -182,8 +184,8 @@ pub struct LdapProviderConfig {
     /// too, with the `LDAP_MATCHING_RULE_IN_CHAIN` rule. Needs
     /// `group_search_base`.
     pub nested_groups: bool,
-    /// Bound on the whole exchange with the directory, in milliseconds.
-    pub timeout_ms: u64,
+    /// Bound on the whole exchange with the directory.
+    pub timeout: ConfigDuration,
     pub roles: RoleMapConfig,
 }
 
@@ -205,7 +207,7 @@ impl Default for LdapProviderConfig {
             group_search_base: String::new(),
             group_filter: "(member={dn})".to_string(),
             nested_groups: false,
-            timeout_ms: 5_000,
+            timeout: ConfigDuration::from_millis(5_000),
             roles: RoleMapConfig::default(),
         }
     }

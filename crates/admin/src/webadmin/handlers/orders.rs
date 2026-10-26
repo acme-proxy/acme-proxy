@@ -284,7 +284,9 @@ pub(crate) fn revoker<'a>(
     acme_proxy_protocol::acme::revoke::Revoker::for_route(
         route,
         &state.jobs,
-        acme_proxy_protocol::acme::revoke::request_wait(state.config.server.request_timeout_ms),
+        acme_proxy_protocol::acme::revoke::request_wait(
+            state.config.server.request_timeout.as_millis(),
+        ),
     )
 }
 

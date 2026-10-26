@@ -336,7 +336,7 @@ async fn a_reload_changes_what_the_running_socket_answers() {
 /// pacing from a cell on each pass and the queue reads `max_attempts` from a
 /// shared atomic, so all seven ride an ordinary generation.
 ///
-/// `retention_days` is the half with an observable in the report: it is the one
+/// `retention` is the half with an observable in the report: it is the one
 /// key carried by a *handler* rather than by the runner's own loop, so turning it
 /// off has to reach `job_kinds` — which is also what proves the section was
 /// applied rather than merely accepted. `crates/server/src/reload.rs`'s
@@ -353,13 +353,13 @@ async fn a_jobs_change_reloads_and_rebuilds_the_registry() {
         false,
         "https://before.example",
         "[jobs]\n\
-         poll_interval_ms = 250\n\
+         poll_interval = \"250ms\"\n\
          max_concurrent = 3\n\
          max_attempts = 9\n\
-         retry_base_seconds = 15\n\
-         retry_max_seconds = 900\n\
-         lease_seconds = 120\n\
-         retention_days = 0\n",
+         retry_base = \"15s\"\n\
+         retry_max = \"900s\"\n\
+         lease = \"120s\"\n\
+         retention = \"0d\"\n",
     );
 
     let report = server
@@ -370,7 +370,7 @@ async fn a_jobs_change_reloads_and_rebuilds_the_registry() {
     assert_eq!(report.generation, 2);
     assert!(
         !report.job_kinds.contains(&"job_retention_sweep"),
-        "`retention_days = 0` unregisters the sweep, so the new registry must \
+        "`retention = \"0d\"` unregisters the sweep, so the new registry must \
          not carry it: {:?}",
         report.job_kinds,
     );
@@ -381,7 +381,7 @@ async fn a_jobs_change_reloads_and_rebuilds_the_registry() {
         &dir,
         false,
         "https://before.example",
-        "[jobs]\nretention_days = 3\n",
+        "[jobs]\nretention = \"3d\"\n",
     );
     let report = server
         .reload
@@ -1149,7 +1149,7 @@ async fn a_signer_edit_reloads_without_losing_a_revocation() {
         &dir,
         false,
         "https://before.example",
-        "endpoints.default.signer.local_ca.leaf_validity_days = 30",
+        "endpoints.default.signer.local_ca.leaf_validity = 30",
     );
     let report = server
         .reload

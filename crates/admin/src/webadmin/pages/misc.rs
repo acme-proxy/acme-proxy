@@ -26,7 +26,7 @@ use acme_proxy_store::status::JobStatus;
 /// The form of `POST /ui/nonces/cleanup`.
 #[derive(Debug, Deserialize, Default)]
 pub struct CleanupForm {
-    /// Blank means `nonce.ttl_seconds`, matching the JSON API's absent member.
+    /// Blank means `nonce.ttl`, matching the JSON API's absent member.
     #[serde(default, rename = "ttlSeconds")]
     pub ttl_seconds: String,
 }
@@ -157,7 +157,7 @@ pub async fn get_nonces(
     context.insert("count".to_string(), Value::from(count));
     context.insert(
         "ttl_seconds".to_string(),
-        Value::from(state.config.nonce.ttl_seconds),
+        Value::from(state.config.nonce.ttl.as_secs()),
     );
 
     respond(
@@ -177,7 +177,7 @@ pub async fn cleanup_nonces(
     axum::Form(form): axum::Form<CleanupForm>,
 ) -> Result<Html<String>, PageError> {
     let seconds = match form.ttl_seconds.trim() {
-        "" => state.config.nonce.ttl_seconds,
+        "" => state.config.nonce.ttl.as_secs(),
         raw => raw.parse::<u64>().map_err(|_| {
             PageError::from(crate::webadmin::error::AdminError::bad_request(format!(
                 "`{raw}` is not a number of seconds"
@@ -197,7 +197,7 @@ pub async fn cleanup_nonces(
     context.insert("count".to_string(), Value::from(count));
     context.insert(
         "ttl_seconds".to_string(),
-        Value::from(state.config.nonce.ttl_seconds),
+        Value::from(state.config.nonce.ttl.as_secs()),
     );
     context.insert(
         "flash".to_string(),

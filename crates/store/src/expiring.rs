@@ -21,7 +21,7 @@ use acme_proxy_core::config::Config;
 
 /// The window the panel opens on when the caller names no `days`.
 ///
-/// Only reached when `[notify.expiry]` is off (`lead_days = 0`): a deployment
+/// Only reached when `[notify.expiry]` is off (`lead = "0s"`): a deployment
 /// that has chosen a lead time gets that one, since the operator reading the
 /// page is the operator who set it.
 const DEFAULT_LEAD_DAYS: u64 = 30;
@@ -100,11 +100,12 @@ pub fn days_remaining(not_after: i64, now: i64) -> i64 {
     not_after.saturating_sub(now).max(0) / (24 * 60 * 60)
 }
 
-/// The lead time a surface should default to: the configured one, or
-/// [`DEFAULT_LEAD_DAYS`] when the digest is switched off.
+/// The lead time a surface should default to: the configured one rounded up
+/// to whole days (the unit every listing counts in, so `"12h"` lists a day),
+/// or [`DEFAULT_LEAD_DAYS`] when the digest is switched off.
 #[must_use]
 pub fn default_lead_days(config: &Config) -> u64 {
-    match config.notify.expiry.lead_days {
+    match config.notify.expiry.lead.as_secs().div_ceil(24 * 60 * 60) {
         0 => DEFAULT_LEAD_DAYS,
         days => days,
     }
@@ -445,14 +446,14 @@ mod tests {
     }
 
     /// The panel needs a window even where the digest is switched off, which
-    /// `lead_days = 0` is.
+    /// `lead = "0s"` is.
     #[test]
     fn the_default_window_falls_back_only_when_the_digest_is_off() {
         let mut config = Config::default();
-        assert_eq!(config.notify.expiry.lead_days, 0, "off by default");
+        assert!(config.notify.expiry.lead.is_zero(), "off by default");
         assert_eq!(default_lead_days(&config), DEFAULT_LEAD_DAYS);
 
-        config.notify.expiry.lead_days = 3;
+        config.notify.expiry.lead = acme_proxy_core::config::ConfigDuration::from_days(3);
         assert_eq!(
             default_lead_days(&config),
             3,

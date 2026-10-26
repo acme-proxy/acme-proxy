@@ -182,7 +182,7 @@ async fn from_config_builds_a_resolver_only_when_the_lookup_is_on() {
     let on = Auditor::from_config(
         &AuditConfig {
             reverse_dns: true,
-            reverse_dns_timeout_ms: 1,
+            reverse_dns_timeout: acme_proxy_core::config::ConfigDuration::from_millis(1),
             ..AuditConfig::default()
         },
         &acme_proxy_core::config::DnsConfig {

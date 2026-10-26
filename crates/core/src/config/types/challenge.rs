@@ -6,6 +6,8 @@
 
 use serde::Deserialize;
 
+use super::ConfigDuration;
+
 use super::string_list;
 
 /// Challenge configuration.
@@ -25,7 +27,7 @@ pub struct ChallengeConfig {
     /// prove control; the convenience of not proving it is worth having, but
     /// worth having to ask for.
     pub bypass: bool,
-    pub timeout_ms: u64,
+    pub timeout: ConfigDuration,
     /// How many of one account's challenges may be validating at once.
     ///
     /// A validation is queued work that reaches out to an address the client
@@ -47,7 +49,7 @@ impl Default for ChallengeConfig {
         Self {
             enabled: vec!["http-01".to_string()],
             bypass: false,
-            timeout_ms: 5000,
+            timeout: ConfigDuration::from_millis(5000),
             max_in_flight_per_account: 32,
             http_01: Http01Config::default(),
             tls_alpn_01: TlsAlpnConfig::default(),

@@ -75,7 +75,7 @@ pub async fn post_certificate(
 }
 
 /// How long a client is asked to wait before asking again about a revocation
-/// still queued: a worker picks a row up within `jobs.poll_interval_ms`, so a
+/// still queued: a worker picks a row up within `jobs.poll_interval`, so a
 /// second is usually enough.
 const REVOCATION_RETRY_AFTER: &str = "1";
 
@@ -124,7 +124,7 @@ pub async fn post_revoke_cert(
         revoker: Revoker::for_route(
             &route,
             &jobs,
-            crate::acme::revoke::request_wait(config.server.request_timeout_ms),
+            crate::acme::revoke::request_wait(config.server.request_timeout.as_millis()),
         ),
     };
     match revocations

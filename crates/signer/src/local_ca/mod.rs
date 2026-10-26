@@ -51,6 +51,7 @@ use tracing::{error, info, warn};
 
 use crate::{IssueOutcome, RequestedValidity, SignerBackend, SignerError};
 use acme_proxy_core::cert::cert_serial_and_spki;
+use acme_proxy_core::config::ConfigDuration;
 use acme_proxy_core::config::LocalCaConfig;
 use acme_proxy_core::config::LocalCaSubjectConfig;
 use acme_proxy_core::identifier::Identifier;
@@ -78,8 +79,8 @@ pub struct LocalCa {
     issuer: Arc<Issuer<'static, CaSigningKey>>,
     /// The CA certificate PEM, appended after the leaf to form the chain.
     ca_pem: String,
-    /// Issued-leaf validity, in days (backend policy — see the module doc).
-    leaf_validity_days: u64,
+    /// Issued-leaf validity (backend policy — see the module doc).
+    leaf_validity: ConfigDuration,
     /// What an issued leaf says about this CA's own services: where its CRL
     /// and its certificate can be fetched. Validated and DER-encoded once, at
     /// construction — see [`policy`].
@@ -103,15 +104,21 @@ const CA_VALIDITY_DAYS: i64 = 3653;
 /// clock skew between this server and a verifier.
 const CLOCK_SKEW_ALLOWANCE: Duration = Duration::hours(1);
 
-/// The longest `leaf_validity_days` a CA accepts: a century, far past any
-/// sane leaf and far short of the year 9999 `OffsetDateTime` stops at.
-const MAX_LEAF_VALIDITY_DAYS: u64 = 36_525;
+/// The longest `leaf_validity` a CA accepts: a century, far past any sane leaf
+/// and far short of the year 9999 `OffsetDateTime` stops at.
+const MAX_LEAF_VALIDITY: ConfigDuration = ConfigDuration::from_days(36_525);
+
+/// The shortest `leaf_validity` a CA accepts. Every leaf is backdated by
+/// [`CLOCK_SKEW_ALLOWANCE`] on top of its lifetime, so below an hour the
+/// backdate would be most of what a verifier sees — and `"0s"` would sign a
+/// leaf whose only validity is the hour before it was issued.
+const MIN_LEAF_VALIDITY: ConfigDuration = ConfigDuration::from_hours(1);
 
 /// The leaf validity window to sign, given this CA's policy and what the order
 /// asked for (RFC 8555 §7.4's `notBefore`/`notAfter`).
 ///
 /// The request narrows, never widens. §7.4 lets the server decide, and this CA
-/// advertises `leaf_validity_days`: honouring an unbounded `notAfter` would let
+/// advertises `leaf_validity`: honouring an unbounded `notAfter` would let
 /// any client holding one authorization mint a certificate outliving the policy
 /// its operator configured. So:
 ///
@@ -125,13 +132,13 @@ const MAX_LEAF_VALIDITY_DAYS: u64 = 36_525;
 ///   no verifier would accept.
 fn clamp_leaf_validity(
     now: OffsetDateTime,
-    leaf_validity_days: u64,
+    leaf_validity: ConfigDuration,
     requested: RequestedValidity,
 ) -> (OffsetDateTime, OffsetDateTime) {
     let default_start = now - CLOCK_SKEW_ALLOWANCE;
-    // Bounded by `MAX_LEAF_VALIDITY_DAYS` in `assemble`, so neither the cast
-    // nor the addition can overflow.
-    let default_end = now + Duration::days(leaf_validity_days as i64);
+    // Bounded by `MAX_LEAF_VALIDITY` in `assemble`, so the addition cannot
+    // overflow. Whole seconds: a certificate's times have no finer grain.
+    let default_end = now + Duration::seconds(leaf_validity.as_secs_i64());
 
     if requested.is_empty() {
         return (default_start, default_end);
@@ -204,7 +211,7 @@ impl LocalCa {
             return Self::assemble(
                 issuer,
                 ca_pem,
-                cfg.leaf_validity_days,
+                cfg.leaf_validity,
                 leaf_policy,
                 Some(paths),
                 database,
@@ -219,7 +226,7 @@ impl LocalCa {
         Self::assemble(
             issuer,
             ca_pem,
-            cfg.leaf_validity_days,
+            cfg.leaf_validity,
             leaf_policy,
             Some(paths),
             database,
@@ -304,7 +311,7 @@ impl LocalCa {
         Self::assemble(
             issuer,
             ca_pem,
-            cfg.leaf_validity_days,
+            cfg.leaf_validity,
             leaf_policy,
             Some(paths),
             database,
@@ -333,12 +340,28 @@ impl LocalCa {
         leaf_validity_days: u64,
         database: Arc<Database>,
     ) -> anyhow::Result<Self> {
+        // Saturating, so a test asking for an absurd lifetime meets the
+        // ceiling's refusal rather than an overflow here.
+        Self::generate_in_memory_lasting(
+            key_type,
+            ConfigDuration::from_secs(leaf_validity_days.saturating_mul(24 * 60 * 60)),
+            database,
+        )
+    }
+
+    /// [`generate_in_memory`](Self::generate_in_memory) with a lifetime finer
+    /// than a day, for the tests of short-lived certificates.
+    pub fn generate_in_memory_lasting(
+        key_type: &str,
+        leaf_validity: ConfigDuration,
+        database: Arc<Database>,
+    ) -> anyhow::Result<Self> {
         let (key_pair, ca_pem) = generate_ca(key_type, &LocalCaSubjectConfig::default())?;
         let issuer = issuer_from_ca_pem(&ca_pem, CaSigningKey::Software(key_pair))?;
         Self::assemble(
             issuer,
             ca_pem,
-            leaf_validity_days,
+            leaf_validity,
             LeafPolicy::default(),
             None,
             database,
@@ -350,18 +373,24 @@ impl LocalCa {
     fn assemble(
         issuer: Issuer<'static, CaSigningKey>,
         ca_pem: String,
-        leaf_validity_days: u64,
+        leaf_validity: ConfigDuration,
         leaf_policy: LeafPolicy,
         paths: Option<CrlPaths>,
         database: Arc<Database>,
     ) -> anyhow::Result<Self> {
         // Refused here, at startup, rather than met at the first issuance:
-        // `clamp_leaf_validity` adds this many days to the clock, and a value
-        // past what `OffsetDateTime` can hold panics there, inside a signing job.
+        // `clamp_leaf_validity` adds this much to the clock, and a value past
+        // what `OffsetDateTime` can hold panics there, inside a signing job.
         anyhow::ensure!(
-            leaf_validity_days <= MAX_LEAF_VALIDITY_DAYS,
-            "local_ca leaf_validity_days = {leaf_validity_days} is beyond the \
-             {MAX_LEAF_VALIDITY_DAYS}-day ceiling"
+            leaf_validity <= MAX_LEAF_VALIDITY,
+            "signer.local_ca.leaf_validity = \"{leaf_validity}\" is beyond the \
+             \"{MAX_LEAF_VALIDITY}\" ceiling"
+        );
+        anyhow::ensure!(
+            leaf_validity >= MIN_LEAF_VALIDITY,
+            "signer.local_ca.leaf_validity = \"{leaf_validity}\" is below the \
+             \"{MIN_LEAF_VALIDITY}\" floor: every leaf is also backdated by an hour, \
+             which would be most of a shorter lifetime"
         );
         // The key, not a path or an endpoint, is what the revocation state is
         // stored under — see `cert::issuer_id`.
@@ -375,7 +404,7 @@ impl LocalCa {
         Ok(Self {
             issuer: issuer.clone(),
             ca_pem,
-            leaf_validity_days,
+            leaf_validity,
             leaf_policy,
             crl: Arc::new(CrlStore::new(
                 database,
@@ -587,7 +616,7 @@ impl SignerBackend for LocalCa {
         // The leaf's validity: this backend's policy, narrowed by whatever the
         // order asked for.
         let now = OffsetDateTime::now_utc();
-        let (not_before, not_after) = clamp_leaf_validity(now, self.leaf_validity_days, validity);
+        let (not_before, not_after) = clamp_leaf_validity(now, self.leaf_validity, validity);
         csr.params.not_before = not_before;
         csr.params.not_after = not_after;
 
@@ -727,10 +756,53 @@ mod tests {
         let error = LocalCa::generate_in_memory("ecdsa-p256", u64::MAX, memory_db().await)
             .err()
             .expect("u64::MAX days must be refused");
-        assert!(error.to_string().contains("leaf_validity_days"), "{error}");
+        assert!(error.to_string().contains("leaf_validity"), "{error}");
         assert!(
-            LocalCa::generate_in_memory("ecdsa-p256", MAX_LEAF_VALIDITY_DAYS, memory_db().await)
+            LocalCa::generate_in_memory_lasting("ecdsa-p256", MAX_LEAF_VALIDITY, memory_db().await)
                 .is_ok()
+        );
+    }
+
+    /// Below an hour the one-hour backdate would be most of the lifetime, and
+    /// `"0s"` would sign a leaf valid only before it was issued.
+    #[tokio::test]
+    async fn a_leaf_validity_under_the_floor_is_refused_at_construction() {
+        for short in [ConfigDuration::ZERO, ConfigDuration::from_mins(59)] {
+            let error = LocalCa::generate_in_memory_lasting("ecdsa-p256", short, memory_db().await)
+                .err()
+                .expect("a sub-hour lifetime must be refused");
+            assert!(error.to_string().contains("floor"), "{error}");
+        }
+        assert!(
+            LocalCa::generate_in_memory_lasting("ecdsa-p256", MIN_LEAF_VALIDITY, memory_db().await)
+                .is_ok()
+        );
+    }
+
+    /// The point of a duration over a day count: a lifetime of hours signs a
+    /// leaf of hours, plus only the backdate.
+    #[tokio::test]
+    async fn a_sub_day_leaf_validity_signs_a_leaf_of_that_length() {
+        let ca = LocalCa::generate_in_memory_lasting(
+            "ecdsa-p256",
+            ConfigDuration::from_hours(36),
+            memory_db().await,
+        )
+        .unwrap();
+        let key_pair = KeyPair::generate().unwrap();
+        let csr = CertificateParams::new(vec!["short.example".to_string()])
+            .unwrap()
+            .serialize_request(&key_pair)
+            .unwrap();
+        let chain = issue_chain(&ca, csr.der(), &[Identifier::dns("short.example")])
+            .await
+            .unwrap();
+        let leaf = first_certificate(&chain);
+        let (not_before, not_after) = acme_proxy_core::cert::cert_validity(&leaf).unwrap();
+        // 36h of lifetime plus the 1h backdate, give or take the test's clock.
+        assert!(
+            (not_after - not_before - 37 * 3600).abs() <= 2,
+            "{not_before}..{not_after}"
         );
     }
 
@@ -854,7 +926,7 @@ mod tests {
             cert_path: dir.join("ca.pem").to_string_lossy().into_owned(),
             key_path: dir.join("ca.key").to_string_lossy().into_owned(),
             key_type: "ecdsa-p256".to_string(),
-            leaf_validity_days: 90,
+            leaf_validity: ConfigDuration::from_days(90),
             crl_path: dir.join("ca.crl").to_string_lossy().into_owned(),
             subject: LocalCaSubjectConfig {
                 organization: Some("Example Corp".to_string()),
@@ -1059,7 +1131,7 @@ mod tests {
     /// never widen it: the order object echoes them back, so dropping them
     /// entirely (as this backend used to) made that echo a fiction — but
     /// honouring an unbounded `notAfter` would let any client outlive the
-    /// `leaf_validity_days` its operator configured.
+    /// `leaf_validity` its operator configured.
     #[test]
     fn a_requested_validity_narrows_but_never_widens_the_window() {
         let now = OffsetDateTime::now_utc();
@@ -1067,14 +1139,18 @@ mod tests {
         let default_end = now + Duration::days(90);
 
         // Nothing requested: the policy window, unchanged.
-        let (start, end) = clamp_leaf_validity(now, 90, RequestedValidity::default());
+        let (start, end) = clamp_leaf_validity(
+            now,
+            ConfigDuration::from_days(90),
+            RequestedValidity::default(),
+        );
         assert_eq!((start, end), (default_start, default_end));
 
         // A shorter certificate is the client's to choose.
         let wanted_end = now + Duration::days(30);
         let (start, end) = clamp_leaf_validity(
             now,
-            90,
+            ConfigDuration::from_days(90),
             RequestedValidity {
                 not_before: None,
                 not_after: Some(wanted_end.unix_timestamp()),
@@ -1086,7 +1162,7 @@ mod tests {
         // A longer one is not.
         let (_, end) = clamp_leaf_validity(
             now,
-            90,
+            ConfigDuration::from_days(90),
             RequestedValidity {
                 not_before: None,
                 not_after: Some((now + Duration::days(3650)).unix_timestamp()),
@@ -1098,7 +1174,7 @@ mod tests {
         let wanted_start = now + Duration::days(1);
         let (start, _) = clamp_leaf_validity(
             now,
-            90,
+            ConfigDuration::from_days(90),
             RequestedValidity {
                 not_before: Some(wanted_start.unix_timestamp()),
                 not_after: None,
@@ -1108,7 +1184,7 @@ mod tests {
 
         let (start, _) = clamp_leaf_validity(
             now,
-            90,
+            ConfigDuration::from_days(90),
             RequestedValidity {
                 not_before: Some((now - Duration::days(365)).unix_timestamp()),
                 not_after: None,
@@ -1122,7 +1198,7 @@ mod tests {
         // An inverted request is discarded whole rather than signed.
         let (start, end) = clamp_leaf_validity(
             now,
-            90,
+            ConfigDuration::from_days(90),
             RequestedValidity {
                 not_before: Some((now + Duration::days(60)).unix_timestamp()),
                 not_after: Some((now + Duration::days(30)).unix_timestamp()),
@@ -1482,7 +1558,7 @@ mod tests {
             cert_path: dir.join("ca.pem").to_string_lossy().into_owned(),
             key_path: dir.join("ca.key").to_string_lossy().into_owned(),
             key_type: "ecdsa-p256".to_string(),
-            leaf_validity_days: 90,
+            leaf_validity: ConfigDuration::from_days(90),
             crl_path: dir.join("ca.crl").to_string_lossy().into_owned(),
             ..LocalCaConfig::default()
         }

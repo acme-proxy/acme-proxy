@@ -251,9 +251,9 @@ async fn the_lease_is_the_owning_endpoint_s_own_poll_timeout() {
     let parts = relay_parts(db.clone(), no_notifiers(), queue);
 
     let mut quick_config = config(&quick_upstream, &dir_quick);
-    quick_config.poll_timeout_secs = 11;
+    quick_config.poll_timeout = acme_proxy_core::config::ConfigDuration::from_secs(11);
     let mut patient_config = config(&patient_upstream, &dir_patient);
-    patient_config.poll_timeout_secs = 97;
+    patient_config.poll_timeout = acme_proxy_core::config::ConfigDuration::from_secs(97);
 
     let quick = RelaySigner::from_config(&quick_config, &parts).unwrap();
     let patient = RelaySigner::from_config(&patient_config, &parts).unwrap();

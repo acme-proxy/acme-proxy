@@ -173,7 +173,7 @@ impl OidcProvider {
                 outbound: outbound.clone(),
                 tls: Arc::new(tls),
             },
-            timeout: Duration::from_millis(config.timeout_ms),
+            timeout: config.timeout.as_std(),
             cache: Mutex::new(Cache::default()),
         })
     }
@@ -449,7 +449,7 @@ impl OidcProvider {
         Ok(keys)
     }
 
-    /// One call to the provider, bounded by `timeout_ms`.
+    /// One call to the provider, bounded by `timeout`.
     async fn timed(
         &self,
         call: impl Future<Output = Result<Value, String>>,

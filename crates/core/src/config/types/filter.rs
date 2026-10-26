@@ -13,6 +13,8 @@
 use std::collections::BTreeMap;
 
 use serde::Deserialize;
+
+use super::ConfigDuration;
 use serde::de::IgnoredAny;
 
 use super::string_list;
@@ -194,7 +196,7 @@ pub struct CheckConfig {
     /// address back. Defaults to `true`.
     pub require_forward_confirm: Option<bool>,
     /// `reverse_dns` (2000) and `custom` (5000): the budget for one attempt.
-    pub timeout_ms: Option<u64>,
+    pub timeout: Option<ConfigDuration>,
     /// `custom`: path to the executable.
     pub script_path: String,
     /// `custom`: pipe the JSON context to the script's stdin. Defaults to

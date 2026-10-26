@@ -111,7 +111,7 @@ impl AdminState {
             .map(|endpoint| (endpoint.name.clone(), endpoint.clone()))
             .collect();
         let max_attempts = config.admin.login_max_attempts;
-        let window = config.admin.login_window_seconds;
+        let window = config.admin.login_window.as_secs();
         let logins = LoginLimiter::new(database.clone(), max_attempts, window);
         let oidc_starts = LoginLimiter::scoped(
             session::OIDC_START_SCOPE,
@@ -553,7 +553,7 @@ pub fn build_admin_app_from_parts(
         // Read-only, and therefore absent from `mutating_endpoints()`: there
         // is no route here that writes an audit row, by design. The trail is
         // pruned from the host (`acme-proxy audit cleanup`) or by
-        // `audit.retention_days`, never through a browser session — a panel
+        // `audit.retention`, never through a browser session — a panel
         // that can delete its own audit history is a panel whose audit history
         // proves nothing.
         .route("/audit", get(handlers::list_audit))

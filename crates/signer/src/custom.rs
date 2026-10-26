@@ -76,7 +76,7 @@ struct CachedCrl {
 
 /// The hook `cfg` describes, or the refusal of an empty `script_path`.
 fn hook_from(cfg: &CustomSignerConfig) -> anyhow::Result<ScriptHook> {
-    ScriptHook::new(&cfg.script_path, &cfg.args, cfg.timeout_ms).ok_or_else(|| {
+    ScriptHook::new(&cfg.script_path, &cfg.args, cfg.timeout.as_millis()).ok_or_else(|| {
         anyhow::anyhow!(
             "signer.backend is \"custom\" but signer.custom.script_path is empty; \
              provide a path to an executable script"
@@ -93,7 +93,7 @@ impl CustomScriptSigner {
             event = "signer_custom_loaded",
             outcome = "success",
             script_path = %hook.path().display(),
-            timeout_ms = cfg.timeout_ms,
+            timeout_ms = acme_proxy_core::logfields::millis(cfg.timeout.as_std()),
             supports_crl = cfg.supports_crl,
             supports_renewal_info = cfg.supports_renewal_info,
             // The count, not the values: an argument may carry a credential
@@ -865,7 +865,7 @@ exit 0
     async fn script_timeout_returns_internal() {
         let dir = TempDir::new("signer-custom");
         let cfg = CustomSignerConfig {
-            timeout_ms: 100,
+            timeout: acme_proxy_core::config::ConfigDuration::from_millis(100),
             ..write_script(
                 &dir,
                 "sleep.sh",
@@ -895,7 +895,7 @@ exit 0
         let dir = TempDir::new("signer-custom");
         let marker = dir.path().join("survived");
         let cfg = CustomSignerConfig {
-            timeout_ms: 50,
+            timeout: acme_proxy_core::config::ConfigDuration::from_millis(50),
             ..write_script(
                 &dir,
                 "slow.sh",

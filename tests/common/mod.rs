@@ -417,9 +417,9 @@ impl NotifyHarness {
         // between attempts would only make them wait. The retry behaviour itself
         // is covered inline, in `crates/jobs/src/notify/job.rs`.
         let config = JobsConfig {
-            poll_interval_ms: 5,
+            poll_interval: acme_proxy_core::config::ConfigDuration::from_millis(5),
             max_attempts: 1,
-            retry_base_seconds: 0,
+            retry_base: acme_proxy_core::config::ConfigDuration::from_secs(0),
             ..JobsConfig::default()
         };
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
@@ -747,9 +747,9 @@ fn spawn_worker_runner(
 /// The `[jobs]` pacing [`spawn_worker_runner`] drains at.
 fn worker_jobs_config() -> JobsConfig {
     JobsConfig {
-        poll_interval_ms: 10,
-        retry_base_seconds: 0,
-        retry_max_seconds: 0,
+        poll_interval: acme_proxy_core::config::ConfigDuration::from_millis(10),
+        retry_base: acme_proxy_core::config::ConfigDuration::from_secs(0),
+        retry_max: acme_proxy_core::config::ConfigDuration::from_secs(0),
         ..JobsConfig::default()
     }
 }

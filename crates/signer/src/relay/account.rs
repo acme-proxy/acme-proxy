@@ -199,12 +199,8 @@ pub async fn register_upstream_account(
     eab: Option<(&str, &[u8])>,
 ) -> anyhow::Result<String> {
     let account = load_or_generate_key(&cfg.account_key_path)?;
-    let client = AcmeClient::discover(
-        &cfg.directory_url,
-        outbound,
-        Duration::from_secs(cfg.poll_timeout_secs),
-    )
-    .await?;
+    let client =
+        AcmeClient::discover(&cfg.directory_url, outbound, cfg.poll_timeout.as_std()).await?;
 
     let kid = register(&client, &account, cfg, eab).await?;
     write_kid(cfg, &kid)?;

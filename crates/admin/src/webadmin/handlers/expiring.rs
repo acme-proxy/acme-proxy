@@ -32,7 +32,7 @@ pub struct ExpiringListParams {
     #[serde(default, deserialize_with = "empty_is_absent")]
     pub endpoint: Option<String>,
     /// How far ahead to look. Absent is [`acme_proxy_store::expiring::default_lead_days`],
-    /// which is the deployment's own `[notify.expiry] lead_days` wherever the
+    /// which is the deployment's own `[notify.expiry] lead` wherever the
     /// digest is on — the operator reading this page is the operator who set
     /// it.
     pub days: Option<u64>,

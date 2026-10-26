@@ -30,7 +30,7 @@
 //! The network calls happen inside the sign-in request, which ADR 0006 would
 //! otherwise forbid; ADR 0015 argues why this one is acceptable (an
 //! operator-chosen host, on the admin listener only, bounded by the provider's
-//! `timeout_ms` and behind the login limiter).
+//! `timeout` and behind the login limiter).
 
 mod http;
 pub mod ldap;

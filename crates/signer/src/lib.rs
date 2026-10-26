@@ -50,7 +50,7 @@
 //!
 //! The order's requested window reaches the backend as a [`RequestedValidity`],
 //! and the backend has the last word: [`local_ca::LocalCa`] clamps it to its own
-//! `leaf_validity_days`, and a delegating backend leaves it to whoever signs.
+//! `leaf_validity`, and a delegating backend leaves it to whoever signs.
 //!
 //! ## A backend outlives the configuration it was built from
 //!
@@ -156,7 +156,7 @@ impl RenewalWindow {
 /// are — most clients let the CA decide.
 ///
 /// A request, not an instruction: §7.4 lets the server override, and
-/// [`local_ca::LocalCa`] clamps it to its own `leaf_validity_days` rather than
+/// [`local_ca::LocalCa`] clamps it to its own `leaf_validity` rather than
 /// letting a client mint a ten-year certificate. But before this existed the
 /// fields were stored and echoed in the order object while being dropped on the
 /// way to the signer — so a client that asked for a window, and read one back,
@@ -777,7 +777,7 @@ mod tests {
 
         // The operator edits one key of `[signer]` and signals.
         let mut edited = cfg;
-        edited.local_ca.leaf_validity_days = 30;
+        edited.local_ca.leaf_validity = acme_proxy_core::config::ConfigDuration::from_days(30);
         let reloaded = build_backends(&[endpoint("le", edited)], &parts, &running).unwrap();
 
         let incoming = reloaded.get("le").unwrap();
@@ -978,7 +978,7 @@ mod tests {
     async fn sharing_ca_files_with_a_different_configuration_is_a_startup_error() {
         let (first, _dir) = config("local_ca");
         let mut second = first.clone();
-        second.local_ca.leaf_validity_days = 7;
+        second.local_ca.leaf_validity = acme_proxy_core::config::ConfigDuration::from_days(7);
 
         let endpoints = vec![endpoint("a", first), endpoint("b", second)];
         let error = match build_backends(&endpoints, &parts().await, &SignerSet::default()) {
@@ -1258,7 +1258,7 @@ mod tests {
         ));
 
         let mut edited = cfg;
-        edited.local_ca.leaf_validity_days = 30;
+        edited.local_ca.leaf_validity = acme_proxy_core::config::ConfigDuration::from_days(30);
         let third = build_infos(&[endpoint("le", edited)], &parts, &second).unwrap();
         assert!(!Arc::ptr_eq(
             second.get("le").unwrap(),

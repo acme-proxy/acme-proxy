@@ -28,7 +28,7 @@ enabled = ["http-01", "dns-01"]
 bypass = false
 
 # Budget for one validation attempt.
-timeout_ms = 5000
+timeout = "5s"
 ```
 
 `[challenge]` is a **per-endpoint** section: each endpoint can offer a different
@@ -49,12 +49,12 @@ Mark a triggered challenge `valid` immediately, with no network check. With this
 on, `[filter]` is the **only** access control there is — which is why it is not
 the default.
 
-**`timeout_ms`** (`Integer`) — *Default: `5000` | Env: `ACME_PROXY_CHALLENGE__TIMEOUT_MS`*
+**`timeout`** (`Duration`) — *Default: `"5s"` | Env: `ACME_PROXY_CHALLENGE__TIMEOUT`*
 
 Budget for one validation attempt, applied at the registry level whatever the
 type. It bounds a job attempt in the runner, not a request — see
 [Validation runs in the job queue](#validation-runs-in-the-job-queue) — and it
-must stay below `server.request_timeout_ms`, which
+must stay below `server.request_timeout`, which
 `server::endpoint::build_all` refuses to start otherwise.
 
 **`max_in_flight_per_account`** (`Integer`) — *Default: `32` | Env:
@@ -160,7 +160,7 @@ sequenceDiagram
     P-->>C: 200 + challenge object (processing)<br/>+ Retry-After + Link: rel="up"
     W->>D: claim the job
     rect rgb(240, 240, 240)
-        Note over W,T: in the runner, under challenge.timeout_ms
+        Note over W,T: in the runner, under challenge.timeout
         W->>T: fetch token / query TXT / TLS handshake
         T-->>W: answer, or timeout
     end
@@ -172,8 +172,8 @@ sequenceDiagram
 
 Three consequences:
 
-- `challenge.timeout_ms` bounds a **job attempt**, not an HTTP request. It is
-  therefore independent of `server.request_timeout_ms`, and the server no
+- `challenge.timeout` bounds a **job attempt**, not an HTTP request. It is
+  therefore independent of `server.request_timeout`, and the server no
   longer refuses to start when it exceeds it.
 - A client that points a name at an unreachable host no longer occupies one of
   `server.max_concurrent_requests` while the server waits for it.

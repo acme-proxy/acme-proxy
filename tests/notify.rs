@@ -464,7 +464,7 @@ async fn a_dispatch_that_never_ran_is_still_owed_afterwards() {
         queue.clone(),
         Arc::new(registry),
         &JobsConfig {
-            poll_interval_ms: 5,
+            poll_interval: acme_proxy_core::config::ConfigDuration::from_millis(5),
             ..JobsConfig::default()
         },
         receiver,
@@ -502,9 +502,9 @@ async fn the_expiry_digest_reaches_a_backend_through_the_runner() {
     use acme_proxy_store::order::Order;
 
     let config = JobsConfig {
-        poll_interval_ms: 5,
+        poll_interval: acme_proxy_core::config::ConfigDuration::from_millis(5),
         max_attempts: 1,
-        retry_base_seconds: 0,
+        retry_base: acme_proxy_core::config::ConfigDuration::from_secs(0),
         ..JobsConfig::default()
     };
     let database = Arc::new(Database::connect_in_memory().await.unwrap());
@@ -566,7 +566,7 @@ async fn the_expiry_digest_reaches_a_backend_through_the_runner() {
         sections: EndpointSections {
             notify: NotifyConfig {
                 expiry: ExpiryNotifyConfig {
-                    lead_days: 14,
+                    lead: acme_proxy_core::config::ConfigDuration::from_days(14),
                     ..ExpiryNotifyConfig::default()
                 },
                 ..NotifyConfig::default()

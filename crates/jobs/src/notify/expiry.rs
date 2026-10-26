@@ -33,7 +33,7 @@
 //! ## One row per endpoint
 //!
 //! One registered kind, one job row per endpoint, keyed on the endpoint name.
-//! Each endpoint keeps its own `interval_days` and produces its own message,
+//! Each endpoint keeps its own `interval` and produces its own message,
 //! which is what "one summary per endpoint" means.
 //!
 //! That makes the rows something this handler has to maintain, because
@@ -171,21 +171,26 @@ impl ContactPolicy {
 }
 
 impl ExpirySettings {
-    /// The settings for an endpoint, or `None` when `lead_days` is `0` — which is
+    /// The settings for an endpoint, or `None` when `lead` is zero — which is
     /// off, and is why an endpoint with the default configuration never gets a
     /// row.
     #[must_use]
     pub fn from_config(config: &acme_proxy_core::config::ExpiryNotifyConfig) -> Option<Self> {
-        if config.lead_days == 0 {
+        if config.lead.is_zero() {
             return None;
         }
         Some(Self {
-            lead: Duration::from_secs(config.lead_days * 24 * 60 * 60),
-            lead_days: config.lead_days,
-            // Floored at a day: `interval_days = 0` would otherwise make the
+            lead: config.lead.as_std(),
+            // What the message says, in the unit it has always said it in:
+            // rounded up, so a `"12h"` lead reads "within 1 day", never 0.
+            lead_days: config.lead.as_secs().div_ceil(24 * 60 * 60),
+            // Floored at a day: a zero `interval` would otherwise make the
             // runner re-run this immediately and for ever, which is a busy loop
             // that also sends a message every pass.
-            interval: Duration::from_secs(config.interval_days.max(1) * 24 * 60 * 60),
+            interval: config
+                .interval
+                .as_std()
+                .max(Duration::from_secs(24 * 60 * 60)),
             max_entries: i64::try_from(config.max_entries).unwrap_or(i64::MAX).max(1),
             contact: config.contact.then(|| ContactPolicy {
                 domains: config
@@ -475,7 +480,7 @@ impl JobHandler for ExpiryDigestJob {
     async fn run(&self, job: &Job) -> JobOutcome {
         let endpoint = job.dedup_key.clone();
         let Some(settings) = self.endpoints.get(&endpoint).cloned() else {
-            // The endpoint was unmounted, or its `lead_days` went back to zero.
+            // The endpoint was unmounted, or its `lead` went back to zero.
             // The one case that retires the row rather than rescheduling it —
             // see the module docs.
             info!(
@@ -566,7 +571,7 @@ mod tests {
 
     fn settings(lead_days: u64) -> ExpiryNotifyConfig {
         ExpiryNotifyConfig {
-            lead_days,
+            lead: acme_proxy_core::config::ConfigDuration::from_days(lead_days),
             ..ExpiryNotifyConfig::default()
         }
     }
@@ -668,7 +673,7 @@ mod tests {
     /// `[notify.expiry]` with the per-account digest on, over `domains`.
     fn contact_settings(lead_days: u64, domains: &[&str]) -> ExpiryNotifyConfig {
         ExpiryNotifyConfig {
-            lead_days,
+            lead: acme_proxy_core::config::ConfigDuration::from_days(lead_days),
             contact: true,
             contact_domains: domains.iter().map(|d| (*d).to_string()).collect(),
             ..ExpiryNotifyConfig::default()
@@ -982,7 +987,7 @@ mod tests {
         assert_eq!(Job::count_live(EXPIRY_JOB_KIND, &db).await.unwrap(), 1);
     }
 
-    /// `lead_days = 0` is off, and it is off by being absent rather than by
+    /// `lead = "0s"` is off, and it is off by being absent rather than by
     /// being checked later: no settings, so no handler and no row at all.
     #[test]
     fn a_zero_lead_configures_no_digest() {
@@ -995,8 +1000,8 @@ mod tests {
     #[test]
     fn the_interval_is_floored_at_a_day() {
         let config = ExpiryNotifyConfig {
-            lead_days: 7,
-            interval_days: 0,
+            lead: acme_proxy_core::config::ConfigDuration::from_days(7),
+            interval: acme_proxy_core::config::ConfigDuration::ZERO,
             ..ExpiryNotifyConfig::default()
         };
         let settings = ExpirySettings::from_config(&config).unwrap();

@@ -14,7 +14,7 @@ enterprise HSM tomorrow are the same configuration with a different
 ## What this protects, and what it does not
 
 Everything else about the Local CA is unchanged: the same [CSR
-sanitisation](local_ca.md#security-constraints), the same `leaf_validity_days`
+sanitisation](local_ca.md#security-constraints), the same `leaf_validity`
 clamping, the same CRL and revocations. Only *where the signature comes
 from* moves.
 

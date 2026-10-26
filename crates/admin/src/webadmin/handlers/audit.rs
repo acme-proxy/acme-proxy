@@ -2,7 +2,7 @@
 //!
 //! There is no mutating route in this file and there is not meant to be one.
 //! The trail is pruned from the host (`acme-proxy audit cleanup`) or by
-//! `audit.retention_days`; a panel session that could delete audit history
+//! `audit.retention`; a panel session that could delete audit history
 //! would make the history prove nothing, since the first thing a stolen session
 //! would do is use it. That is also why neither handler here takes
 //! [`AuthenticatedWrite`](crate::webadmin::session::AuthenticatedWrite) and why

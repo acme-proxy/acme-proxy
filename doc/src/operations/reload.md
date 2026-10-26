@@ -83,7 +83,7 @@ Everything else, including the things operators reach for most:
 - **The listeners themselves** — see below.
 - **The panel's templates** — `admin.template_dir` is recompiled. A template
   that does not parse fails the *reload*, so a mistake never reaches a browser.
-- **Retention** — `audit.retention_days` and `jobs.retention_days`. A sweep
+- **Retention** — `audit.retention` and `jobs.retention`. A sweep
   already scheduled keeps its current time and picks the new cutoff up on its
   next run.
 - **Background work** — every `[jobs]` key, so slowing a retry storm, widening a
@@ -207,7 +207,7 @@ The runner does not restart; it picks the new values up on its next pass and
 says so:
 
 ```text
-job_runner_retuned poll_interval_ms=250 lease_seconds=120 max_concurrent=16
+job_runner_retuned poll_interval="250ms" lease="2m" max_concurrent=16
 ```
 
 That line is the confirmation worth grepping for. `server_config_reloaded` means
@@ -218,19 +218,19 @@ sections stay quiet.
 Each key lands at its own grain, and the differences are all in the same
 direction — nothing already in flight is disturbed:
 
-- **`poll_interval_ms`** takes effect immediately, without waiting out the old
+- **`poll_interval`** takes effect immediately, without waiting out the old
   interval first.
 - **`max_concurrent`** widens at once when raised. Lowered, it takes back the
   slots that are free and reaches the new figure as running jobs finish; no job
   is cancelled to get there sooner.
-- **`lease_seconds`, `retry_base_seconds` and `retry_max_seconds`** apply to the
+- **`lease`, `retry_base` and `retry_max`** apply to the
   next job claimed. One already running keeps the budget and the backoff it
   started under.
 - **`max_attempts`** is frozen onto each job when it is queued, so a change
   applies to work queued from then on. Raising it is *not* a way to rescue a
   backlog that is about to give up — those rows keep the budget they were queued
   with.
-- **`retention_days`** rebuilds the sweep, including registering it when it goes
+- **`retention`** rebuilds the sweep, including registering it when it goes
   from `0` to a real value.
 
 ## Systemd

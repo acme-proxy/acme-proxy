@@ -101,7 +101,7 @@ pub(crate) async fn verify_current_password(
     // password step and the code step; a second budget here would hand an
     // attacker `2 × login_max_attempts` guesses per window against one password.
     // The cost is that a lockout earned on the account card also refuses sign-in
-    // from that address until `login_window_seconds` rolls over — already true
+    // from that address until `login_window` rolls over — already true
     // of the code step, and the same remedy.
     //
     // What this does *not* bound: an `active` cookie is valid from any address

@@ -166,7 +166,7 @@ impl WebhookNotifier {
             method,
             headers,
             body_template,
-            timeout: Duration::from_millis(cfg.timeout_ms),
+            timeout: cfg.timeout.as_std(),
             tls: Arc::new(acme_proxy_net::http_client::webpki_tls_config()),
             outbound,
             env: Arc::new(env),
@@ -742,7 +742,7 @@ mod tests {
     }
 
     /// A provider that accepts the connection and then says nothing must not
-    /// hold the delivery open for ever: `timeout_ms` bounds the whole attempt,
+    /// hold the delivery open for ever: `timeout` bounds the whole attempt,
     /// and running out is retryable — the next attempt may find it awake.
     #[tokio::test]
     async fn a_silent_webhook_times_out_and_is_retryable() {
@@ -757,7 +757,7 @@ mod tests {
 
         let notifier = build(&WebhookNotifyConfig {
             url: format!("http://{addr}/hooks/xyz"),
-            timeout_ms: 100,
+            timeout: acme_proxy_core::config::ConfigDuration::from_millis(100),
             ..cfg()
         })
         .unwrap();

@@ -185,8 +185,8 @@ through an OpenID Connect provider, a provider's sign-in for one; see
 - It travels in a `__Host-acme_admin_session` cookie, `HttpOnly; Secure;
   SameSite=Strict; Path=/`. The `__Host-` prefix is browser-enforced: it
   *requires* those attributes, so an edit that drops one breaks visibly.
-- Sessions have both an absolute lifetime (`session_ttl_seconds`, never extended
-  by activity) and an idle timeout (`session_idle_timeout_seconds`).
+- Sessions have both an absolute lifetime (`session_ttl`, never extended
+  by activity) and an idle timeout (`session_idle_timeout`).
 - Passwords are hashed with PBKDF2-HMAC-SHA256 at 600 000 iterations. A failed
   sign-in costs the same whether the username exists or not, so the endpoint
   cannot be used to enumerate operators — and every failure returns the same
@@ -422,7 +422,7 @@ both requiring an `operator`-or-higher session (a `viewer` is refused):
   operator — the way to stop a relayed issuance that will never complete.
   Cancelling a periodic sweep job stops that sweep until the server restarts.
 - **`POST /api/jobs/{id}/run`** — makes the job eligible immediately (picked up
-  within `jobs.poll_interval_ms`; the runner is not woken). On a `ready` job it
+  within `jobs.poll_interval`; the runner is not woken). On a `ready` job it
   pulls `run_at` forward; on a `failed` one it grants **exactly one more
   attempt** — `attempts` is set to `max_attempts - 1`, not reset, so repeatedly
   clicking it is the only way to loop a permanently failing job.
@@ -446,7 +446,7 @@ that is all they do. There is no route on this listener that deletes audit
 history, and that is a deliberate limit rather than a missing feature: the first
 thing a stolen session would do is erase what it had just done, and a trail the
 watched thing can erase proves nothing. Pruning happens on the host with
-`acme-proxy audit cleanup`, or on a schedule via `audit.retention_days`.
+`acme-proxy audit cleanup`, or on a schedule via `audit.retention`.
 
 This is also why `/api/audit` contributes no entry to the CSRF test table — with
 no mutating verb, there is nothing to protect. Every other verb on those paths
@@ -472,7 +472,7 @@ than in SQL, so the count beside the page cannot follow the filter down — and 
 pager whose arithmetic quietly disagrees with the rows under it would be worse
 than saying so. The page says it in a line above the table.
 
-The default window is `[notify.expiry] lead_days` wherever the digest is on,
+The default window is `[notify.expiry] lead` wherever the digest is on,
 and 30 days where it is off: an operator who has chosen a lead time gets that
 one back.
 
@@ -606,7 +606,7 @@ $ curl -sb jar -X POST http://127.0.0.1:3001/api/eab \
   control, and filters nothing until `[admin.filter]` names a rule. That is
   worth knowing rather than discovering.
 - Sign-in is protected by a fixed-window rate limiter
-  (`admin.login_max_attempts` per `admin.login_window_seconds`, keyed on the
+  (`admin.login_max_attempts` per `admin.login_window`, keyed on the
   client address — an IPv6 client by its /64, which one subscriber can rotate
   through at will). An attempt counts from the moment it starts, so a parallel
   burst gets no more guesses than a sequence, and the count is in the database,

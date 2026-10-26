@@ -34,6 +34,39 @@ migrated configuration before restarting.
 
 ### Breaking
 
+- **Every length of time in the configuration is a duration with its unit**,
+  and the keys lost the unit from their names: `timeout_ms = 5000` is now
+  `timeout = "5s"`. Units are `ms`, `s`, `m`, `h`, `d`, `w` and `y` (fixed
+  lengths), and they add up (`"1h30m"`). A bare number is refused, from a file
+  and from the environment; zero is `"0s"`. Every old key is refused at startup
+  by name — at the top level, inside an `[endpoints.<name>]` overlay and inside
+  a named entry — with the converted line in the message. The renames, each
+  also under its environment variable (`…_TIMEOUT_MS` → `…_TIMEOUT`):
+
+  | Was | Now |
+  |---|---|
+  | `server.admission_wait_ms`, `server.request_timeout_ms` | `server.admission_wait`, `server.request_timeout` |
+  | `server.tls.handshake_timeout_ms`, `admin.tls.handshake_timeout_ms` | `….handshake_timeout` |
+  | `admin.session_ttl_seconds`, `admin.session_idle_timeout_seconds`, `admin.login_window_seconds` | `admin.session_ttl`, `admin.session_idle_timeout`, `admin.login_window` |
+  | `admin.auth.oidc.<name>.timeout_ms`, `admin.auth.ldap.<name>.timeout_ms` | `….timeout` |
+  | `nonce.ttl_seconds` | `nonce.ttl` |
+  | `order.validity_seconds`, `order.retention_days` | `order.validity`, `order.retention` |
+  | `audit.reverse_dns_timeout_ms`, `audit.retention_days` | `audit.reverse_dns_timeout`, `audit.retention` |
+  | `jobs.poll_interval_ms`, `jobs.retry_base_seconds`, `jobs.retry_max_seconds`, `jobs.lease_seconds`, `jobs.retention_days` | `jobs.poll_interval`, `jobs.retry_base`, `jobs.retry_max`, `jobs.lease`, `jobs.retention` |
+  | `challenge.timeout_ms`, `ipam.timeout_ms` | `challenge.timeout`, `ipam.timeout` |
+  | `filter.check.<name>.timeout_ms` (`reverse_dns`, `custom`) | `….timeout` |
+  | `signer.custom.timeout_ms` | `signer.custom.timeout` |
+  | `signer.local_ca.leaf_validity_days` | `signer.local_ca.leaf_validity` |
+  | `signer.relay.poll_interval_ms`, `signer.relay.poll_timeout_secs`, `signer.relay.dns01.propagation.delay_secs` | `signer.relay.poll_interval`, `signer.relay.poll_timeout`, `signer.relay.dns01.propagation.delay` |
+  | `notify.email.timeout_ms`, `notify.webhook.<name>.timeout_ms`, `notify.custom.<name>.timeout_ms` | `….timeout` |
+  | `notify.expiry.lead_days`, `notify.expiry.interval_days` | `notify.expiry.lead`, `notify.expiry.interval` |
+
+  The `audit_loaded` log event carries `retention_seconds` (was
+  `retention_days`). Log fields keep their unit suffixes (`timeout_ms`, …).
+- **`signer.local_ca.leaf_validity` below one hour is refused at startup.**
+  Every leaf is backdated by an hour on top of its lifetime; a shorter lifetime
+  (and `0`, which signed a leaf valid only before it was issued) is a mistake.
+
 - **A configured ACME endpoint is called an endpoint everywhere, no longer a
   "profile"** — the word is left for ACME profiles (draft-ietf-acme-profiles).
   Every operator-facing spelling moved, with no alias:
@@ -68,6 +101,13 @@ migrated configuration before restarting.
   `endpoint_issuers`, and queued jobs and audit rows written by the previous
   release are rewritten to the new names, so work in flight at the upgrade
   still runs.
+
+### Added
+
+- **Short-lived certificates from `local_ca`** (#54): `leaf_validity` takes
+  any duration from `"1h"`, so `leaf_validity = "160h"` issues only 160-hour
+  certificates whatever a client asks for — a client's `notAfter` can still only
+  shorten one.
 
 ## [0.7.0] — 2026-10-25
 

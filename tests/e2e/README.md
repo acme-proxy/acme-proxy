@@ -91,7 +91,7 @@ the one that got tuned. Three things keep it cheap, and all three are needed:
   BuildKit if you point `CONTAINER_RUNTIME` at docker with the legacy builder.
 - **`--profile e2e`** (`[profile.e2e]` in the root `Cargo.toml`) is release
   without fat LTO and with 16 codegen units. `opt-level` stays at 3, because
-  `challenge.timeout_ms` and friends are real budgets these scenarios run
+  `challenge.timeout` and friends are real budgets these scenarios run
   against. The lab asks for it with `--build-arg CARGO_PROFILE=e2e`; the
   `Containerfile`'s own default is `release`, the build that is published.
   So a bare `podman build .` is **not** the lab's build: it is a fat-LTO,

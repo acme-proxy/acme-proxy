@@ -3,7 +3,7 @@
 //! [`build_all`] resolves the endpoints, gives each its filter policy, challenge
 //! registry and signer handle, and fails as a whole: a configuration with one
 //! broken endpoint mounts none, at startup and on a reload alike. The startup
-//! checks that span sections — `server.request_timeout_ms` against a custom
+//! checks that span sections — `server.request_timeout` against a custom
 //! signer's timeout — live here too.
 
 use std::sync::Arc;
@@ -120,7 +120,7 @@ pub fn build_all_with(
     Ok(endpoints)
 }
 
-/// Refuses a `server.request_timeout_ms` shorter than the work the server does
+/// Refuses a `server.request_timeout` shorter than the work the server does
 /// *inside* a request.
 ///
 /// One hook still runs inline in a handler: a `custom` signer's read-only
@@ -132,7 +132,7 @@ pub fn build_all_with(
 /// start and say which two numbers disagree.
 ///
 /// **Two budgets used to be checked here and deliberately are not any more.**
-/// `challenge.timeout_ms` went when validation moved into the job queue
+/// `challenge.timeout` went when validation moved into the job queue
 /// (`acme::validate`), and the script's `issue` hook when finalize did
 /// (`acme::issue`): both now bound a job attempt rather than a request. A
 /// revocation a `custom` endpoint delegates waits on its job for at most the
@@ -142,7 +142,7 @@ fn check_request_timeout(
     name: &str,
     sections: &config::EndpointSections,
 ) -> anyhow::Result<()> {
-    let deadline = config.server.request_timeout_ms;
+    let deadline = config.server.request_timeout;
     let custom = &sections.signer.custom;
     // Only when that backend is the one installed, and only for the hooks a
     // request runs; an unused `[signer.custom]` section, or one whose read
@@ -150,15 +150,15 @@ fn check_request_timeout(
     let budget = if sections.signer.backend == "custom"
         && (custom.supports_crl || custom.supports_renewal_info)
     {
-        custom.timeout_ms
+        custom.timeout
     } else {
-        0
+        config::ConfigDuration::ZERO
     };
 
     anyhow::ensure!(
         deadline > budget,
-        "endpoint `{name}`: server.request_timeout_ms ({deadline}) must exceed \
-         signer.custom.timeout_ms ({budget}) — the script's `crl`/`renewal_info` hooks run inside \
+        "endpoint `{name}`: server.request_timeout (\"{deadline}\") must exceed \
+         signer.custom.timeout (\"{budget}\") — the script's `crl`/`renewal_info` hooks run inside \
          the request, so a shorter deadline would cut off an answer that was coming and report it \
          to the client as a server failure",
     );
@@ -312,12 +312,12 @@ mod tests {
         let config = config_from(
             r#"
             [server]
-            request_timeout_ms = 1000
+            request_timeout = "1000ms"
 
             [endpoints.le]
             signer.backend = "custom"
             signer.custom.script_path = "/bin/true"
-            signer.custom.timeout_ms = 5000
+            signer.custom.timeout = "5000ms"
             signer.custom.supports_crl = true
             "#,
         );
@@ -327,11 +327,11 @@ mod tests {
             &acme_proxy_jobs::testutil::idle_job_queue(database().await),
         ) {
             Err(error) => error.to_string(),
-            Ok(_) => panic!("a deadline below signer.custom.timeout_ms is a startup error"),
+            Ok(_) => panic!("a deadline below signer.custom.timeout is a startup error"),
         };
         assert!(error.contains("endpoint `le`"), "{error}");
-        assert!(error.contains("request_timeout_ms"), "{error}");
-        assert!(error.contains("signer.custom.timeout_ms"), "{error}");
+        assert!(error.contains("server.request_timeout (\"1s\")"), "{error}");
+        assert!(error.contains("signer.custom.timeout"), "{error}");
     }
 
     /// The script's `issue` hook runs in the `signer_issue` job now, so a
@@ -342,12 +342,12 @@ mod tests {
         let config = config_from(
             r#"
             [server]
-            request_timeout_ms = 1000
+            request_timeout = "1000ms"
 
             [endpoints.le]
             signer.backend = "custom"
             signer.custom.script_path = "/bin/true"
-            signer.custom.timeout_ms = 5000
+            signer.custom.timeout = "5000ms"
             "#,
         );
         crate::endpoint::build_all(
@@ -358,7 +358,7 @@ mod tests {
         .expect("issuance no longer runs inside the request");
     }
 
-    /// `challenge.timeout_ms` is deliberately **not** checked against the
+    /// `challenge.timeout` is deliberately **not** checked against the
     /// request deadline any more: validation runs in the job queue, so that
     /// budget bounds an attempt rather than a request and the two numbers are
     /// independent. A configuration the old check refused must now start.
@@ -369,10 +369,10 @@ mod tests {
             &dir,
             r#"
             [server]
-            request_timeout_ms = 1000
+            request_timeout = "1000ms"
 
             [endpoints.le]
-            challenge.timeout_ms = 5000
+            challenge.timeout = "5000ms"
             "#,
         );
         crate::endpoint::build_all(
@@ -383,7 +383,7 @@ mod tests {
         .expect("challenge validation no longer runs inside the request");
     }
 
-    /// The same check must not fire on `signer.custom.timeout_ms` when that
+    /// The same check must not fire on `signer.custom.timeout` when that
     /// backend is not the one installed — an unused `[signer.custom]` section
     /// says nothing about how long this endpoint's requests take.
     #[tokio::test]
@@ -393,14 +393,14 @@ mod tests {
             &dir,
             r#"
             [server]
-            request_timeout_ms = 2000
+            request_timeout = "2000ms"
 
             [signer.custom]
             script_path = "/bin/true"
-            timeout_ms = 30000
+            timeout = "30000ms"
 
             [endpoints.le]
-            challenge.timeout_ms = 1000
+            challenge.timeout = "1000ms"
             "#,
         );
         assert!(

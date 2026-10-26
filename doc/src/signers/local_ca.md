@@ -39,7 +39,7 @@ When processing a Certificate Signing Request (CSR) from a client, the
 
 ## Certificate validity
 
-Leaves are valid for `leaf_validity_days`, starting one hour in the past to
+Leaves are valid for `leaf_validity`, starting one hour in the past to
 absorb clock skew between the CA and its clients.
 
 A client may narrow that window using the order's `notBefore`/`notAfter` (RFC
@@ -48,6 +48,32 @@ A client may narrow that window using the order's `notBefore`/`notAfter` (RFC
 the default end. A request whose clamped window would be empty or inverted is
 discarded whole, the policy default is used, and a
 `local_ca_requested_validity_discarded` warning is logged.
+
+### Short-lived certificates
+
+`leaf_validity` is a ceiling no client can raise, so it is also how a CA issues
+**only** short-lived certificates, whatever its clients ask for:
+
+```toml
+[signer.local_ca]
+leaf_validity = "160h"   # what Let's Encrypt's short-lived profile issues
+```
+
+It takes any [duration](../configuration/reference.md#durations) from `"1h"`
+up, and refuses anything shorter at startup: the one-hour backdate is added on
+top of the lifetime, so a `"1h"` leaf is valid for two hours, and below that the
+backdate would be most of what a verifier sees.
+
+[Renewal information](../features/renewal_info.md) needs no setting of its
+own: the suggested window is a fraction of each certificate's own lifetime, and
+the `Retry-After` the server sends shrinks with it, so an ARI-aware client polls
+often enough not to miss a window measured in hours. Two other settings deserve
+a look on a CA issuing short-lived certificates:
+
+- **The expiry digest** (`notify.expiry.lead`): a lead of days would list every
+  live certificate. Keep it well under the lifetime, e.g. `"1d"` for 160 h.
+- **`order.retention`** is unaffected — it ages orders from their own expiry,
+  not their certificate's.
 
 ## Configuration
 
@@ -60,7 +86,7 @@ cert_path = "ca.pem"
 key_path = "ca.key"
 key_type = "ecdsa-p256"
 crl_path = "ca.crl"
-leaf_validity_days = 90
+leaf_validity = "90d"
 ```
 
 ### Reference
@@ -131,10 +157,10 @@ same validation and the same startup errors as `crl_distribution_points` above.
 The sibling access method, `id-ad-ocsp`, is never written: this server runs no
 OCSP responder, and a pointer at one that does not exist is worse than none.
 
-**`leaf_validity_days`** (`Integer`) — *Default: `90` | Env: `ACME_PROXY_SIGNER__LOCAL_CA__LEAF_VALIDITY_DAYS`*
+**`leaf_validity`** (`Duration`) — *Default: `"90d"` | Env: `ACME_PROXY_SIGNER__LOCAL_CA__LEAF_VALIDITY`*
 
-The validity period (in days) for issued leaf certificates. Distinct from
-`order.validity_seconds`, which bounds the ACME *order object*, not the
+The validity period for issued leaf certificates. Distinct from
+`order.validity`, which bounds the ACME *order object*, not the
 certificate.
 
 **`key_source`** (`String`) — *Default: `"file"` | Env: `ACME_PROXY_SIGNER__LOCAL_CA__KEY_SOURCE`*

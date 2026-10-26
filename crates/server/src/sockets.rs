@@ -2,7 +2,6 @@
 //! a reload, and announcing one that has come up.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
@@ -374,7 +373,7 @@ pub(super) async fn announce_admin_listener(
 
     // Swept once now, then on an interval: sessions outlive a restart, so a
     // startup-only sweep would leak every one an operator never signed out of.
-    let idle = Duration::from_secs(config.admin.session_idle_timeout_seconds);
+    let idle = config.admin.session_idle_timeout.as_std();
     if let Err(error) = acme_proxy_store::admin_session::AdminSession::cleanup(idle, database).await
     {
         error!(event = "admin_session_cleanup_failed", outcome = "failure", error = %error);

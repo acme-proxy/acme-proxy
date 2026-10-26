@@ -404,7 +404,7 @@ impl UpstreamOrder {
     ///
     /// The one index on this table is `(status)`; `o.endpoint` and the
     /// `ORDER BY` scan. The table is bounded by the cascade from `orders`
-    /// (`order.retention_days`), so this is the `Order::find_expiring` tradeoff
+    /// (`order.retention`), so this is the `Order::find_expiring` tradeoff
     /// again — a dedicated index is a future migration if a deployment says so.
     pub async fn search(
         query: &UpstreamOrderQuery,

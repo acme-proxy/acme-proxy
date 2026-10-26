@@ -20,7 +20,7 @@ use acme_proxy_store::nonce::Nonce;
 pub enum NonceCommand {
     /// Delete nonces older than the TTL.
     Cleanup {
-        /// The age past which a nonce is deleted. Defaults to `nonce.ttl_seconds`.
+        /// The age past which a nonce is deleted. Defaults to `nonce.ttl`.
         #[arg(long = "ttl-seconds")]
         ttl_seconds: Option<u64>,
     },
@@ -41,7 +41,7 @@ pub async fn run_nonce_command(
 ) -> Result<(), CliError> {
     match command {
         NonceCommand::Cleanup { ttl_seconds } => {
-            let ttl = Duration::from_secs(ttl_seconds.unwrap_or(config.nonce.ttl_seconds));
+            let ttl = ttl_seconds.map_or(config.nonce.ttl.as_std(), Duration::from_secs);
             match admin::confirm_cleanup_nonces(ttl, yes, reader, database.clone()).await? {
                 None => println!("Cancelled."),
                 Some(removed) => {
@@ -64,7 +64,7 @@ pub async fn run_nonce_command(
             // command deliberately leaves to the operator reading the two
             // numbers together.
             let count = Nonce::count(&database).await?;
-            let ttl = config.nonce.ttl_seconds;
+            let ttl = config.nonce.ttl.as_secs();
             if json {
                 println!("{}", admin::render_nonce_stats_json(count, ttl));
             } else {
@@ -85,7 +85,7 @@ mod tests {
     async fn count_reports_the_table_and_the_configured_ttl() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         let mut config = Config::default();
-        config.nonce.ttl_seconds = 42;
+        config.nonce.ttl = acme_proxy_core::config::ConfigDuration::from_secs(42);
 
         for _ in 0..3 {
             Nonce::new().save(&database).await.unwrap();
@@ -93,7 +93,7 @@ mod tests {
         assert_eq!(Nonce::count(&database).await.unwrap(), 3);
 
         assert_eq!(
-            admin::render_nonce_stats_json(3, config.nonce.ttl_seconds),
+            admin::render_nonce_stats_json(3, config.nonce.ttl.as_secs()),
             serde_json::json!({ "count": 3, "ttlSeconds": 42 }),
         );
 
@@ -111,7 +111,7 @@ mod tests {
         }
     }
 
-    /// Omitting `--ttl-seconds` falls back to `nonce.ttl_seconds`, and a
+    /// Omitting `--ttl-seconds` falls back to `nonce.ttl`, and a
     /// declined confirmation sweeps nothing without being a failure.
     #[tokio::test]
     async fn cleanup_honours_the_configured_ttl_and_the_prompt() {
@@ -121,7 +121,7 @@ mod tests {
                 .unwrap(),
         );
         let mut config = Config::default();
-        config.nonce.ttl_seconds = 1;
+        config.nonce.ttl = acme_proxy_core::config::ConfigDuration::from_secs(1);
 
         let mut declined: &[u8] = b"n\n";
         run_nonce_command(

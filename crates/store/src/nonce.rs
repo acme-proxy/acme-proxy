@@ -210,7 +210,7 @@ mod tests {
     use base64::prelude::*;
     use std::sync::Arc;
 
-    /// Matches the default `nonce.ttl_seconds` (5 minutes).
+    /// Matches the default `nonce.ttl` (5 minutes).
     const TTL: Duration = Duration::from_secs(300);
 
     async fn nonce_count(database: &Arc<Database>) -> i64 {

@@ -51,7 +51,7 @@ use acme_proxy_core::script_hook::ScriptStdin;
 #[derive(Debug, Clone)]
 pub struct Settings {
     pub script_path: String,
-    pub timeout_ms: u64,
+    pub timeout: acme_proxy_core::config::ConfigDuration,
     pub pass_stdin: bool,
     pub args: Vec<String>,
 }
@@ -60,7 +60,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             script_path: String::new(),
-            timeout_ms: 5000,
+            timeout: acme_proxy_core::config::ConfigDuration::from_millis(5000),
             pass_stdin: true,
             args: Vec::new(),
         }
@@ -79,9 +79,11 @@ pub struct CustomScriptFilter {
 impl CustomScriptFilter {
     /// Validates the configuration and creates the check.
     pub fn from_settings(name: &str, settings: &Settings) -> anyhow::Result<Self> {
-        let Some(hook) =
-            ScriptHook::new(&settings.script_path, &settings.args, settings.timeout_ms)
-        else {
+        let Some(hook) = ScriptHook::new(
+            &settings.script_path,
+            &settings.args,
+            settings.timeout.as_millis(),
+        ) else {
             anyhow::bail!(
                 "filter.check.{name}.script_path is empty; provide a path to an \
                  executable script or drop the check"
@@ -93,7 +95,7 @@ impl CustomScriptFilter {
             outcome = "success",
             check = name,
             script_path = %hook.path().display(),
-            timeout_ms = settings.timeout_ms,
+            timeout_ms = acme_proxy_core::logfields::millis(settings.timeout.as_std()),
             pass_stdin = settings.pass_stdin,
             args = ?settings.args,
         );
@@ -414,7 +416,7 @@ exit 0
     async fn script_timeout_returns_internal() {
         let dir = TempDir::new("filter-custom");
         let cfg = Settings {
-            timeout_ms: 100,
+            timeout: acme_proxy_core::config::ConfigDuration::from_millis(100),
             ..write_script(&dir, "sleep.sh", "#!/bin/sh\nsleep 2\nexit 0\n")
         };
         let filter = CustomScriptFilter::from_settings("hook", &cfg).unwrap();
@@ -487,7 +489,7 @@ exit 0
         let dir = TempDir::new("filter-custom");
         let marker = dir.path().join("survived");
         let cfg = Settings {
-            timeout_ms: 50,
+            timeout: acme_proxy_core::config::ConfigDuration::from_millis(50),
             ..write_script(
                 &dir,
                 "slow.sh",

@@ -232,7 +232,7 @@ async fn trigger_validation(
 ) -> Result<Option<Response>, Problem> {
     // Claimed and queued — never awaited. The check reaches an address the
     // client named, so awaiting it here held an admission permit for the length
-    // of `challenge.timeout_ms`. The challenge now answers `processing`, which
+    // of `challenge.timeout`. The challenge now answers `processing`, which
     // §7.1.6 defines for exactly this ("transitions to the `processing` state
     // when the client responds to the challenge") and §8.2 pairs with the
     // `Retry-After` below.

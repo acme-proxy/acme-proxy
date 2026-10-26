@@ -6,6 +6,8 @@
 
 use serde::Deserialize;
 
+use super::ConfigDuration;
+
 use super::string_list;
 
 /// Certificate-issuance signer configuration.
@@ -38,7 +40,7 @@ impl Default for SignerConfig {
 #[serde(default)]
 pub struct CustomSignerConfig {
     pub script_path: String,
-    pub timeout_ms: u64,
+    pub timeout: ConfigDuration,
     #[serde(deserialize_with = "string_list")]
     pub args: Vec<String>,
     /// Whether the script answers the `crl` hook (`GET /crl`). Off by
@@ -57,7 +59,7 @@ impl Default for CustomSignerConfig {
     fn default() -> Self {
         Self {
             script_path: String::new(),
-            timeout_ms: 5000,
+            timeout: ConfigDuration::from_millis(5000),
             args: Vec::new(),
             supports_crl: false,
             supports_renewal_info: false,
@@ -89,10 +91,10 @@ pub struct RelayConfig {
     /// the upstream asks for, which is what a public CA requires).
     pub challenge_strategy: String,
     /// How often to poll an upstream order/authorization while it resolves.
-    pub poll_interval_ms: u64,
+    pub poll_interval: ConfigDuration,
     /// Total budget for one upstream issuance, after which the local order is
     /// marked `invalid` rather than left processing forever.
-    pub poll_timeout_secs: u64,
+    pub poll_timeout: ConfigDuration,
     pub dns01: Dns01Config,
     pub eab: RelayEabConfig,
 }
@@ -104,8 +106,8 @@ impl Default for RelayConfig {
             account_key_path: "upstream_account.key".to_string(),
             contact: Vec::new(),
             challenge_strategy: "bypass".to_string(),
-            poll_interval_ms: 2000,
-            poll_timeout_secs: 300,
+            poll_interval: ConfigDuration::from_millis(2000),
+            poll_timeout: ConfigDuration::from_secs(300),
             dns01: Dns01Config::default(),
             eab: RelayEabConfig::default(),
         }
@@ -173,23 +175,23 @@ impl Default for Dns01Config {
 /// What the `dns01` strategy waits for between publishing a record and asking
 /// the upstream to validate it.
 ///
-/// Validated (against `poll_timeout_secs`, the attempt's whole budget) in
+/// Validated (against `poll_timeout`, the attempt's whole budget) in
 /// `RelaySigner::from_config`, and only when `dns01` is the strategy in force.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct Dns01PropagationConfig {
     /// `none` (trigger right after the update) or `delay`.
     pub mode: String,
-    /// Under `delay`: seconds between the update and the trigger. Ignored
+    /// Under `delay`: how long between the update and the trigger. Ignored
     /// under `none`.
-    pub delay_secs: u64,
+    pub delay: ConfigDuration,
 }
 
 impl Default for Dns01PropagationConfig {
     fn default() -> Self {
         Self {
             mode: "none".to_string(),
-            delay_secs: 30,
+            delay: ConfigDuration::from_secs(30),
         }
     }
 }
@@ -215,7 +217,7 @@ pub struct LocalCaConfig {
     pub cert_path: String,
     pub key_path: String,
     pub key_type: String,
-    pub leaf_validity_days: u64,
+    pub leaf_validity: ConfigDuration,
     pub crl_path: String,
     /// Where a relying party can fetch the CRL, written into every issued leaf
     /// as `cRLDistributionPoints` (RFC 5280 §4.2.1.13). Empty (the default)
@@ -263,7 +265,7 @@ impl Default for LocalCaConfig {
             cert_path: "ca.pem".to_string(),
             key_path: "ca.key".to_string(),
             key_type: "ecdsa-p256".to_string(),
-            leaf_validity_days: 90,
+            leaf_validity: ConfigDuration::from_days(90),
             crl_path: "ca.crl".to_string(),
             crl_distribution_points: Vec::new(),
             ca_issuer_urls: Vec::new(),

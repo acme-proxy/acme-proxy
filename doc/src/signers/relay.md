@@ -208,8 +208,8 @@ directory_url = "https://acme-staging-v02.api.letsencrypt.org/directory"
 account_key_path = "upstream_account.key"
 contact = ["mailto:admin@example.com"]
 challenge_strategy = "bypass"
-poll_interval_ms = 2000
-poll_timeout_secs = 300
+poll_interval = "2s"
+poll_timeout = "5m"
 ```
 
 ### Several relaying endpoints
@@ -272,13 +272,13 @@ for) or `http01` (serve the challenge file from this server's own root router,
 which requires a reverse proxy in front of it and cannot prove a wildcard). Any
 other value is a startup error.
 
-**`poll_interval_ms`** (`Integer`) — *Default: `2000` | Env: `ACME_PROXY_SIGNER__RELAY__POLL_INTERVAL_MS`*
+**`poll_interval`** (`Duration`) — *Default: `"2s"` | Env: `ACME_PROXY_SIGNER__RELAY__POLL_INTERVAL`*
 
 How often to poll an upstream order/authorization while it resolves.
 
-**`poll_timeout_secs`** (`Integer`) — *Default: `300` | Env: `ACME_PROXY_SIGNER__RELAY__POLL_TIMEOUT_SECS`*
+**`poll_timeout`** (`Duration`) — *Default: `"5m"` | Env: `ACME_PROXY_SIGNER__RELAY__POLL_TIMEOUT`*
 
-Total budget (in seconds) for one upstream issuance before the local order is
+Total budget for one upstream issuance before the local order is
 marked invalid.
 
 ### `[signer.relay.dns01]`
@@ -352,17 +352,17 @@ order and, at a public CA, counts against its failed-validation limit.
 **`mode`** (`String`) — *Default: `"none"` | Env: `ACME_PROXY_SIGNER__RELAY__DNS01__PROPAGATION__MODE`*
 
 `none` triggers the challenge right after the update succeeds, which is right
-when the update server is itself what the CA asks. `delay` sleeps `delay_secs`
+when the update server is itself what the CA asks. `delay` sleeps `delay`
 first, for a provider that accepts an update before serving it (a DNS API behind
 an RFC 2136 bridge) or secondaries that lag their primary. Any other value is a
 startup error.
 
-**`delay_secs`** (`u64`) — *Default: `30` | Env: `ACME_PROXY_SIGNER__RELAY__DNS01__PROPAGATION__DELAY_SECS`*
+**`delay`** (`Duration`) — *Default: `"30s"` | Env: `ACME_PROXY_SIGNER__RELAY__DNS01__PROPAGATION__DELAY`*
 
 Seconds to wait under `delay`; ignored under `none`. Zero is refused (use
-`none`), and so is a value not less than `poll_timeout_secs`, which bounds the
+`none`), and so is a value not less than `poll_timeout`, which bounds the
 whole relay attempt. The delay runs once for **each name** in the order, so a
-multi-name order needs `poll_timeout_secs` above the delay times the number of
+multi-name order needs `poll_timeout` above the delay times the number of
 names plus the time the upstream takes.
 
 The wait is a fixed delay rather than a poll of a public resolver on purpose. A

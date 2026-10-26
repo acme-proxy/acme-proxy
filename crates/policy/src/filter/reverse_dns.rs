@@ -54,7 +54,7 @@ pub struct Settings {
     pub deny: Vec<String>,
     pub allow_regex: Vec<String>,
     pub deny_regex: Vec<String>,
-    pub timeout_ms: u64,
+    pub timeout: acme_proxy_core::config::ConfigDuration,
 }
 
 impl Default for Settings {
@@ -65,7 +65,7 @@ impl Default for Settings {
             deny: Vec::new(),
             allow_regex: Vec::new(),
             deny_regex: Vec::new(),
-            timeout_ms: 2000,
+            timeout: acme_proxy_core::config::ConfigDuration::from_millis(2000),
         }
     }
 }
@@ -114,7 +114,7 @@ impl ClientHasValidReverseDns {
             outcome = "success",
             check = name,
             require_forward_confirm = settings.require_forward_confirm,
-            timeout_ms = settings.timeout_ms,
+            timeout_ms = acme_proxy_core::logfields::millis(settings.timeout.as_std()),
         );
         Ok(check)
     }
@@ -130,7 +130,7 @@ impl ClientHasValidReverseDns {
             require_forward_confirm: settings.require_forward_confirm,
             allow: compile_matchers(&settings.allow, &settings.allow_regex, name, "allow")?,
             deny: compile_matchers(&settings.deny, &settings.deny_regex, name, "deny")?,
-            timeout: Duration::from_millis(settings.timeout_ms),
+            timeout: settings.timeout.as_std(),
         })
     }
 
@@ -498,7 +498,7 @@ mod tests {
             ..StubResolver::default()
         };
         let cfg = Settings {
-            timeout_ms: 10,
+            timeout: acme_proxy_core::config::ConfigDuration::from_millis(10),
             ..Settings::default()
         };
         assert_internal(
@@ -561,7 +561,7 @@ mod tests {
             &Settings {
                 require_forward_confirm: true,
                 allow_regex: vec![r"host\.example\.com".to_string()],
-                timeout_ms: 1234,
+                timeout: acme_proxy_core::config::ConfigDuration::from_millis(1234),
                 ..Settings::default()
             },
             Arc::new(StubResolver::default()),

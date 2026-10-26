@@ -60,8 +60,9 @@ async fn get(app: &Router, path: &str) -> Response {
 fn admission_config(max_concurrent: usize, wait_ms: u64, timeout_ms: u64) -> Config {
     let mut config = Config::default();
     config.server.max_concurrent_requests = max_concurrent;
-    config.server.admission_wait_ms = wait_ms;
-    config.server.request_timeout_ms = timeout_ms;
+    config.server.admission_wait = acme_proxy_core::config::ConfigDuration::from_millis(wait_ms);
+    config.server.request_timeout =
+        acme_proxy_core::config::ConfigDuration::from_millis(timeout_ms);
     config
 }
 

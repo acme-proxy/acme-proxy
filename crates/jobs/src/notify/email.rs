@@ -7,7 +7,6 @@
 //! retried.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use lettre::message::Mailbox;
@@ -84,7 +83,7 @@ impl EmailNotifier {
         };
         builder = builder
             .port(cfg.smtp_port)
-            .timeout(Some(Duration::from_millis(cfg.timeout_ms)));
+            .timeout(Some(cfg.timeout.as_std()));
         if !cfg.smtp_username.is_empty() {
             builder = builder.credentials(Credentials::new(
                 cfg.smtp_username.clone(),
@@ -263,7 +262,7 @@ mod tests {
             smtp_host: "127.0.0.1".to_string(),
             smtp_port: 1,
             smtp_security: "none".to_string(),
-            timeout_ms: 2000,
+            timeout: acme_proxy_core::config::ConfigDuration::from_millis(2000),
             ..cfg()
         };
         let notifier =
@@ -340,7 +339,7 @@ mod tests {
             smtp_host: "127.0.0.1".to_string(),
             smtp_port: 1,
             smtp_security: "none".to_string(),
-            timeout_ms: 2000,
+            timeout: acme_proxy_core::config::ConfigDuration::from_millis(2000),
             ..cfg()
         };
         let notifier =
@@ -380,7 +379,7 @@ mod tests {
             smtp_host: "127.0.0.1".to_string(),
             smtp_port: 1,
             smtp_security: "none".to_string(),
-            timeout_ms: 2000,
+            timeout: acme_proxy_core::config::ConfigDuration::from_millis(2000),
             ..cfg()
         };
         let notifier =
@@ -440,7 +439,7 @@ mod tests {
             smtp_host: "127.0.0.1".to_string(),
             smtp_port: 1,
             smtp_security: "none".to_string(),
-            timeout_ms: 2000,
+            timeout: acme_proxy_core::config::ConfigDuration::from_millis(2000),
             ..cfg()
         };
         let notifier =

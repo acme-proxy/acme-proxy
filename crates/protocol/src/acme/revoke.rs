@@ -719,7 +719,7 @@ pub fn signer_revoke_spec(
 }
 
 /// How long a request waits for a revocation it queued: its own deadline,
-/// `server.request_timeout_ms`, less a second to answer in — so a slow worker
+/// `server.request_timeout`, less a second to answer in — so a slow worker
 /// is told as [`RevokeError::Pending`] rather than cut off as a timeout that
 /// says nothing about the job still running.
 #[must_use]
@@ -739,7 +739,7 @@ pub enum JobSettled {
 }
 
 /// How often [`await_job`] reads the row. A worker in another process picks a
-/// row up within `jobs.poll_interval_ms`, so reading faster than this would
+/// row up within `jobs.poll_interval`, so reading faster than this would
 /// only cost queries.
 const AWAIT_PACE: Duration = Duration::from_millis(100);
 
@@ -991,10 +991,10 @@ mod tests {
         max_attempts: u32,
     ) -> (JobQueue, tokio::sync::watch::Sender<bool>) {
         let config = acme_proxy_core::config::JobsConfig {
-            poll_interval_ms: 10,
+            poll_interval: acme_proxy_core::config::ConfigDuration::from_millis(10),
             max_attempts,
-            retry_base_seconds: 0,
-            retry_max_seconds: 0,
+            retry_base: acme_proxy_core::config::ConfigDuration::from_secs(0),
+            retry_max: acme_proxy_core::config::ConfigDuration::from_secs(0),
             ..acme_proxy_core::config::JobsConfig::default()
         };
         let queue = JobQueue::new(database.clone(), &config);

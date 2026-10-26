@@ -18,7 +18,7 @@ custom_enabled = ["ticket-creator"]
 
 [notify.custom.ticket-creator]
 script_path = "/etc/acme-proxy/scripts/ticket-creator.sh"
-timeout_ms = 10000
+timeout = "10s"
 args = []
 events = ["certificate_issued", "certificate_revoked"]
 ```
@@ -40,7 +40,7 @@ One process is spawned per enabled script per event.
 
 Path to the executable. Required.
 
-**`timeout_ms`** (`Integer`) — *Default: `5000` | Env: `ACME_PROXY_NOTIFY__CUSTOM__<NAME>__TIMEOUT_MS`*
+**`timeout`** (`Duration`) — *Default: `"5s"` | Env: `ACME_PROXY_NOTIFY__CUSTOM__<NAME>__TIMEOUT`*
 
 Maximum execution time. A script still running when this expires is killed.
 

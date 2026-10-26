@@ -207,7 +207,7 @@
 //!     registry.register(Arc::new(notify::NotifyJob::new(notifiers)))?;
 //!     registry.register(Arc::new(jobs::SweepJob::nonces(
 //!         database.clone(),
-//!         std::time::Duration::from_secs(config.nonce.ttl_seconds),
+//!         config.nonce.ttl.as_std(),
 //!     )))?;
 //!     let (_shutdown, shutdown_rx) = tokio::sync::watch::channel(false);
 //!     jobs::spawn_runner(job_queue, Arc::new(registry), &config.jobs, shutdown_rx);

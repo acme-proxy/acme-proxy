@@ -11,7 +11,7 @@ TLS itself via the highly secure `rustls` crate.
 Terminating TLS in async frameworks requires care to avoid denial-of-service
 vectors. In `acme-proxy`, **handshakes run off the accept path**. When a TCP
 connection arrives, a background task spawns the TLS handshake into a bounded
-channel. The handshake is strictly bounded by `handshake_timeout_ms`. If this
+channel. The handshake is strictly bounded by `handshake_timeout`. If this
 were done inline, a single stalled client (e.g., a Slowloris attack) could block
 every other connection for the length of the timeout.
 
@@ -43,7 +43,7 @@ cert_path = "server.pem"
 key_path  = "server.key"
 
 # Budget for one TLS handshake
-handshake_timeout_ms = 10000
+handshake_timeout = "10s"
 ```
 
 If `cert_path` or `key_path` files are missing on disk at startup, `acme-proxy`

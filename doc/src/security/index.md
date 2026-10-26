@@ -112,7 +112,7 @@ Two properties make it evidence rather than logging:
   [Database Schema](../dev/database.md#the-audit-trail-has-no-foreign-keys-deliberately).
 - **Nothing in the web admin can erase it.** The panel's audit surface is
   read-only; pruning is `audit cleanup` on the host, or the
-  `audit.retention_days` sweep. A stolen session that could erase the trail
+  `audit.retention` sweep. A stolen session that could erase the trail
   would make the trail prove nothing.
 
 See [Audit Trail](../operations/audit.md).
@@ -144,7 +144,7 @@ after them because no client can steer it:
   Every connection is TLS verified against the public roots plus `ca_cert_path`
   (plain `http://` and `ldap://` are refused off loopback), a discovery
   document's endpoints must be `https`, no redirect is followed, and each call
-  has the provider's `timeout_ms`.
+  has the provider's `timeout`.
 
 ## What is out of scope
 

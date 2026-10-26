@@ -26,7 +26,7 @@ ignored entry.
 Every other event describes a single subject at the moment it changed; this one
 is a digest sent on a schedule, listing the certificates on one endpoint that
 expire inside a configured window. It sends nothing until
-[`notify.expiry.lead_days`](#expiry-digest) is set, so leaving it in an
+[`notify.expiry.lead`](#expiry-digest) is set, so leaving it in an
 `events` list costs nothing.
 
 `account_certificates_expiring` is that digest addressed to an account rather
@@ -100,7 +100,7 @@ Directory searched for template overrides. Lookup is **per file**, so overriding
 one message (say `email/certificate_issued.body.j2`) leaves every other message
 at its compiled-in default. Empty means defaults only.
 
-Each backend additionally takes its own `events` list and `timeout_ms`; see the
+Each backend additionally takes its own `events` list and `timeout`; see the
 backend pages.
 
 ### Expiry digest
@@ -125,14 +125,19 @@ account** covering **all** of the same names. Both are deliberately narrow. A
 certificate wrongly marked as already renewed is one an operator skips over
 while it lapses; one wrongly left unmarked is a line of noise.
 
-**`expiry.lead_days`** (`Integer`) — *Default: `0` | Env: `ACME_PROXY_NOTIFY__EXPIRY__LEAD_DAYS`*
+**`expiry.lead`** (`Duration`) — *Default: `"0s"` | Env: `ACME_PROXY_NOTIFY__EXPIRY__LEAD`*
 
-How far ahead to look. **`0` is off** — the sweep is never scheduled at all,
-the same shape `audit.retention_days` and `jobs.retention_days` use.
+How far ahead to look. **`"0s"` is off** — the sweep is never scheduled at all,
+the same shape `audit.retention` and `jobs.retention` use. Keep it well under
+the certificates' lifetime: with [short-lived
+certificates](../signers/local_ca.md#short-lived-certificates) a lead of days
+lists every live one. The message counts in whole days, rounded up, so `"12h"`
+reads "within 1 day".
 
-**`expiry.interval_days`** (`Integer`) — *Default: `7` | Env: `ACME_PROXY_NOTIFY__EXPIRY__INTERVAL_DAYS`*
+**`expiry.interval`** (`Duration`) — *Default: `"7d"` | Env: `ACME_PROXY_NOTIFY__EXPIRY__INTERVAL`*
 
-How often the digest is sent. There is deliberately no per-certificate rate
+How often the digest is sent, at most once a day (a shorter value is raised to
+`"1d"`). There is deliberately no per-certificate rate
 limit beside it: the digest is the rate limit. A digest with nothing to report
 is not sent, so the absence of a message is what "everything is renewed" looks
 like.
@@ -143,7 +148,7 @@ The most certificates one message lists. The number that matched is carried
 whole regardless, so a truncated digest still says how many it did not name.
 
 The schedule is a row in the durable job queue rather than a timer, so it
-survives a restart: a server restarting more often than `interval_days` still
+survives a restart: a server restarting more often than `interval` still
 sends its digest on time instead of resetting the clock each start.
 
 #### Addressed to the account
@@ -168,7 +173,7 @@ with three differences:
 
 Mail each account its own digest. It needs `email` in `notify.enabled`. Setting
 it without `email` is a startup error, because nothing else can deliver the
-mail. It also does nothing while `expiry.lead_days` is `0`.
+mail. It also does nothing while `expiry.lead` is `0`.
 
 **`expiry.contact_domains`** (`List of Strings`) — *Default: `[]` | Env: `ACME_PROXY_NOTIFY__EXPIRY__CONTACT_DOMAINS`*
 

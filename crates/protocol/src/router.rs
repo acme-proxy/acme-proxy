@@ -225,8 +225,8 @@ pub fn build_app(
         .layer(middleware::from_fn_with_state(
             middlewares::admission::Admission::new(
                 server.max_concurrent_requests,
-                server.admission_wait_ms,
-                server.request_timeout_ms,
+                server.admission_wait.as_millis(),
+                server.request_timeout.as_millis(),
             ),
             middlewares::admission::admission_middleware,
         ))

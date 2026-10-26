@@ -4,8 +4,8 @@
 //! runner performs the outbound check. Validation reaches out to an address the
 //! *client* named — over DNS, HTTP or TLS, to a host that may simply not answer
 //! — so running it inside the request held an admission permit for the length of
-//! `challenge.timeout_ms` and coupled that budget to
-//! `server.request_timeout_ms`. RFC 8555 §7.1.6 already has the state this
+//! `challenge.timeout` and coupled that budget to
+//! `server.request_timeout`. RFC 8555 §7.1.6 already has the state this
 //! needs: a challenge "transitions to the `processing` state when the client
 //! responds to the challenge", and §8.2 pairs that with a `Retry-After`.
 //!
@@ -257,7 +257,7 @@ impl JobHandler for ChallengeValidateJob {
         }
     }
 
-    /// One attempt may take a whole `challenge.timeout_ms`.
+    /// One attempt may take a whole `challenge.timeout`.
     ///
     /// Which endpoint's is not knowable here — the row names a challenge, and
     /// walking it up to its order is a database read this synchronous hook

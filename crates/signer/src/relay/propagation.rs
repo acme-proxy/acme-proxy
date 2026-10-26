@@ -44,7 +44,7 @@ pub(super) enum Propagation {
 impl Propagation {
     /// Builds `[signer.relay.dns01.propagation]`, refusing what cannot work.
     ///
-    /// `poll_timeout` is `signer.relay.poll_timeout_secs`, which is the relay
+    /// `poll_timeout` is `signer.relay.poll_timeout`, which is the relay
     /// job's lease and so the only bound on a whole attempt: a delay as long as
     /// that would have every attempt killed mid-sleep, the record never
     /// validated and the order retried until its deadline. The delay runs once
@@ -57,20 +57,22 @@ impl Propagation {
         match cfg.mode.trim().to_ascii_lowercase().as_str() {
             "none" => Ok(Self::None),
             "delay" => {
-                if cfg.delay_secs == 0 {
+                if cfg.delay.is_zero() {
                     anyhow::bail!(
-                        "signer.relay.dns01.propagation.delay_secs is 0: use mode = \"none\" \
+                        "signer.relay.dns01.propagation.delay is zero: use mode = \"none\" \
                          to trigger right after the update"
                     );
                 }
-                let delay = Duration::from_secs(cfg.delay_secs);
+                let delay = cfg.delay.as_std();
                 if delay >= poll_timeout {
                     anyhow::bail!(
-                        "signer.relay.dns01.propagation.delay_secs ({}) must be less than \
-                         signer.relay.poll_timeout_secs ({}), which bounds the whole relay \
+                        "signer.relay.dns01.propagation.delay (\"{}\") must be less than \
+                         signer.relay.poll_timeout (\"{}\"), which bounds the whole relay \
                          attempt",
-                        cfg.delay_secs,
-                        poll_timeout.as_secs()
+                        cfg.delay,
+                        acme_proxy_core::config::ConfigDuration::from_millis(
+                            u64::try_from(poll_timeout.as_millis()).unwrap_or(u64::MAX)
+                        )
                     );
                 }
                 Ok(Self::Delay(delay))
@@ -107,7 +109,7 @@ mod tests {
     fn config(mode: &str, delay_secs: u64) -> Dns01PropagationConfig {
         Dns01PropagationConfig {
             mode: mode.to_string(),
-            delay_secs,
+            delay: acme_proxy_core::config::ConfigDuration::from_secs(delay_secs),
         }
     }
 
@@ -121,7 +123,7 @@ mod tests {
         );
     }
 
-    /// `delay_secs` means nothing under `none`, so a zero there is not an
+    /// `delay` means nothing under `none`, so a zero there is not an
     /// error — only the mode that reads it validates it.
     #[test]
     fn none_ignores_the_delay() {
@@ -144,14 +146,14 @@ mod tests {
     fn every_unworkable_setting_is_refused_by_name() {
         for (cfg, expected) in [
             (config("sometimes", 30), "propagation.mode: sometimes"),
-            (config("delay", 0), "propagation.delay_secs is 0"),
+            (config("delay", 0), "propagation.delay is zero"),
             (
                 config("delay", 300),
-                "must be less than signer.relay.poll_timeout_secs",
+                "must be less than signer.relay.poll_timeout",
             ),
             (
                 config("delay", 301),
-                "must be less than signer.relay.poll_timeout_secs",
+                "must be less than signer.relay.poll_timeout",
             ),
         ] {
             let error = Propagation::from_config(&cfg, BUDGET)

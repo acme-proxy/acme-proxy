@@ -272,7 +272,7 @@ impl AuditEntry {
     ///
     /// The only statement in the crate that removes an audit row, and it takes
     /// an absolute cutoff rather than a duration so the CLI's `--older-than`
-    /// and the `audit.retention_days` sweep run the identical delete.
+    /// and the `audit.retention` sweep run the identical delete.
     pub async fn cleanup(cutoff: i64, database: &Database) -> Result<u64, sqlx::Error> {
         let deleted = crate::sql::query("DELETE FROM audit_log WHERE created_at < ?;")
             .bind(cutoff)
@@ -328,15 +328,24 @@ impl AuditEntry {
     }
 }
 
-/// The `created_at` below which an audit row is past `retention_days`.
+/// The `created_at` below which a row is older than `age`.
 ///
 /// One function so `acme-proxy audit cleanup --older-than` and the
-/// `audit.retention_days` sweep delete the identical set — a CLI that computed
-/// its own cutoff would eventually disagree with the timer by a rounding rule.
+/// `audit.retention` sweep delete the identical set — a CLI that computed its
+/// own cutoff would eventually disagree with the timer by a rounding rule.
+#[must_use]
+pub fn cutoff_before(age: std::time::Duration) -> i64 {
+    let seconds = i64::try_from(age.as_secs()).unwrap_or(i64::MAX);
+    crate::nonce::now_secs().saturating_sub(seconds)
+}
+
+/// [`cutoff_before`] for an age in whole days, which is how the CLI's
+/// `--older-than` and `--since` flags take it.
 #[must_use]
 pub fn audit_cutoff(days: u64) -> i64 {
-    let seconds = i64::try_from(days.saturating_mul(24 * 60 * 60)).unwrap_or(i64::MAX);
-    crate::nonce::now_secs().saturating_sub(seconds)
+    cutoff_before(std::time::Duration::from_secs(
+        days.saturating_mul(24 * 60 * 60),
+    ))
 }
 
 #[cfg(test)]
@@ -756,7 +765,7 @@ mod tests {
     }
 
     /// One cutoff function, so `audit cleanup --older-than` and the
-    /// `audit.retention_days` sweep delete the identical set.
+    /// `audit.retention` sweep delete the identical set.
     #[test]
     fn the_audit_cutoff_is_days_before_now_and_saturates_rather_than_overflowing() {
         let now = crate::nonce::now_secs();

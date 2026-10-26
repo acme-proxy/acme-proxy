@@ -41,7 +41,7 @@ pub use renewal_info::*;
 /// One value, because it answers one question — "how long does the work this
 /// server just queued usually take?" — and two copies of it would drift apart
 /// while still meaning the same thing. Deliberately small: a validation runs
-/// within `challenge.timeout_ms` of being triggered and a local signing is
+/// within `challenge.timeout` of being triggered and a local signing is
 /// immediate, so the answer is usually there by the time a client asks. A
 /// relay's upstream may take longer, but its own pacing is invisible from
 /// here, and an over-long hint would stall the common case.

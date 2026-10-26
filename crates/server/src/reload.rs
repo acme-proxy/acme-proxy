@@ -534,8 +534,11 @@ mod frozen_tests {
                 .is_ok()
         );
         assert!(
-            refuse(|_, endpoints| endpoints[0].sections.signer.local_ca.leaf_validity_days = 30)
-                .is_ok()
+            refuse(
+                |_, endpoints| endpoints[0].sections.signer.local_ca.leaf_validity =
+                    acme_proxy_core::config::ConfigDuration::from_days(30)
+            )
+            .is_ok()
         );
 
         // And the two that were frozen only because the signers cached them.
@@ -566,7 +569,7 @@ mod frozen_tests {
     /// Every `[jobs]` key reloads, where six of the seven used to be refused.
     ///
     /// They reach the runner by three different routes and the test drives all
-    /// three deliberately: `retention_days` through a rebuilt `SweepJob` in the
+    /// three deliberately: `retention` through a rebuilt `SweepJob` in the
     /// new registry, `max_attempts` through the atomic on `JobQueue`, and the
     /// other five through the config cell the loop re-reads each pass.
     ///
@@ -577,13 +580,32 @@ mod frozen_tests {
     #[test]
     fn every_jobs_key_is_reloadable() {
         for mutate in [
-            |c: &mut Config| c.jobs.poll_interval_ms += 1,
+            |c: &mut Config| {
+                c.jobs.poll_interval = acme_proxy_core::config::ConfigDuration::from_millis(
+                    c.jobs.poll_interval.as_millis() + 1,
+                )
+            },
             |c: &mut Config| c.jobs.max_concurrent += 1,
             |c: &mut Config| c.jobs.max_attempts += 1,
-            |c: &mut Config| c.jobs.retry_base_seconds += 1,
-            |c: &mut Config| c.jobs.retry_max_seconds += 1,
-            |c: &mut Config| c.jobs.lease_seconds += 1,
-            |c: &mut Config| c.jobs.retention_days += 1,
+            |c: &mut Config| {
+                c.jobs.retry_base = acme_proxy_core::config::ConfigDuration::from_secs(
+                    c.jobs.retry_base.as_secs() + 1,
+                )
+            },
+            |c: &mut Config| {
+                c.jobs.retry_max = acme_proxy_core::config::ConfigDuration::from_secs(
+                    c.jobs.retry_max.as_secs() + 1,
+                )
+            },
+            |c: &mut Config| {
+                c.jobs.lease =
+                    acme_proxy_core::config::ConfigDuration::from_secs(c.jobs.lease.as_secs() + 1)
+            },
+            |c: &mut Config| {
+                c.jobs.retention = acme_proxy_core::config::ConfigDuration::from_days(
+                    c.jobs.retention.as_secs() / 86_400 + 1,
+                )
+            },
         ] {
             assert!(
                 refuse(|config, _| mutate(config)).is_ok(),

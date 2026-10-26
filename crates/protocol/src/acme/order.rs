@@ -392,7 +392,7 @@ impl OrderService<'_> {
         };
 
         let expires = now_secs()
-            .saturating_add(i64::try_from(endpoint.order.validity_seconds).unwrap_or(i64::MAX));
+            .saturating_add(i64::try_from(endpoint.order.validity.as_secs()).unwrap_or(i64::MAX));
 
         // The reverse lookup runs here rather than at the top of the handler: every
         // refusal above (malformed name, wildcard without dns-01, `alreadyReplaced`)

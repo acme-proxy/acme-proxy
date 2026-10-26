@@ -424,7 +424,7 @@ instead of failing it. When an order is stuck, this is where to look.
   `certificate_issue_failed` audit row is written naming you. This is the
   operator-side way to stop a relayed issuance that will never complete.
 - **`jobs run-now`** makes a job eligible immediately — it is picked up within
-  `jobs.poll_interval_ms` (it does not wake the runner). On a `ready` job it
+  `jobs.poll_interval` (it does not wake the runner). On a `ready` job it
   just pulls `run_at` forward; on a `failed` job it grants **exactly one more
   attempt** (`attempts` is set to `max_attempts - 1`), not a fresh budget,
   because a full reset is what turns a permanently failing job into an infinite
@@ -449,7 +449,7 @@ and run-now behind an `operator`-or-higher session.
   recorded rather than rendering it empty.
 - `audit cleanup` is the **only command in this binary that destroys audit
   history**, so it is confirm-gated and its prompt names the row count.
-  `audit.retention_days` runs the same sweep daily.
+  `audit.retention` runs the same sweep daily.
 
 The web admin can read this trail but not prune it — see
 [Audit Trail](audit.md).
@@ -615,7 +615,7 @@ run".
 
 `nonce cleanup` deletes expired nonces. The server already sweeps them on an
 interval for the life of the process, so this is mainly a debugging tool.
-`--ttl-seconds` defaults to the configured `nonce.ttl_seconds`.
+`--ttl-seconds` defaults to the configured `nonce.ttl`.
 
 `nonce count` reports the table size and the window a nonce is fresh for — the
 terminal's spelling of `GET /api/nonces`, answering the same

@@ -6,6 +6,8 @@
 
 use serde::Deserialize;
 
+use super::ConfigDuration;
+
 /// Governs the `jobs` table and the one runner that drains it.
 ///
 /// Process-wide, so deliberately absent from `ENDPOINT_SECTIONS`: there is one
@@ -34,13 +36,13 @@ pub struct JobsConfig {
     /// Bounds only *scheduled* work — a backoff coming due, a periodic job
     /// firing. An enqueue wakes the runner directly, so a relay queued by
     /// `finalize` starts immediately whatever this says, which is what keeps the
-    /// client's own polling from waiting on a tick. Milliseconds rather than
-    /// seconds so a test can drive it below one.
+    /// client's own polling from waiting on a tick. A test drives it below a
+    /// second (`"5ms"`).
     ///
     /// A reload of this one takes effect *at once* rather than after one last
     /// sleep at the old value — lowering it is something an operator does because
     /// something is waiting now.
-    pub poll_interval_ms: u64,
+    pub poll_interval: ConfigDuration,
     /// How many jobs may run at once.
     ///
     /// This was `MAX_CONCURRENT_RELAYS`, a constant inside the `relay` backend,
@@ -73,18 +75,18 @@ pub struct JobsConfig {
     /// Longer than any single upstream round trip, so a retry is not simply the
     /// same failure again, and short enough that a blip clears inside one
     /// client poll cycle.
-    pub retry_base_seconds: u64,
+    pub retry_base: ConfigDuration,
     /// The ceiling the doubling stops at.
     ///
-    /// An hour sits well under the default order lifetime (`order.validity_seconds`,
+    /// An hour sits well under the default order lifetime (`order.validity`,
     /// seven days), which keeps a job's deadline the binding constraint rather
     /// than this: a day-long outage should not schedule the next attempt days
     /// out.
-    pub retry_max_seconds: u64,
+    pub retry_max: ConfigDuration,
     /// The default budget for one attempt, and therefore how long a claim is
     /// held before another runner may take the row.
     ///
-    /// Matches `signer.relay.poll_timeout_secs`'s own default, the longest job
+    /// Matches `signer.relay.poll_timeout`'s own default, the longest job
     /// this crate has. A handler needing a different one says so itself, so this
     /// is the floor for everything that does not care.
     ///
@@ -92,27 +94,27 @@ pub struct JobsConfig {
     /// running keeps the budget and the backoff it was claimed under, because
     /// moving an attempt's deadline out from under it mid-flight is how a job
     /// gets reclaimed as crashed while it is still working.
-    pub lease_seconds: u64,
-    /// Delete settled job rows older than this many days.
+    pub lease: ConfigDuration,
+    /// Delete settled job rows older than this.
     ///
-    /// Unlike `audit.retention_days`, this defaults to a *non-zero* value: a
+    /// Unlike `audit.retention`, this defaults to a *non-zero* value: a
     /// finished job is a receipt, not evidence, and the trail that has to be
     /// complete is `audit_log`'s. A week outlives a weekend, which is the span
     /// that matters for reading why an issuance failed. `0` keeps everything for
     /// ever and stops the sweep from being scheduled at all.
-    pub retention_days: u64,
+    pub retention: ConfigDuration,
 }
 
 impl Default for JobsConfig {
     fn default() -> Self {
         Self {
-            poll_interval_ms: 1_000,
+            poll_interval: ConfigDuration::from_millis(1_000),
             max_concurrent: 8,
             max_attempts: 5,
-            retry_base_seconds: 30,
-            retry_max_seconds: 3_600,
-            lease_seconds: 300,
-            retention_days: 7,
+            retry_base: ConfigDuration::from_secs(30),
+            retry_max: ConfigDuration::from_secs(3_600),
+            lease: ConfigDuration::from_secs(300),
+            retention: ConfigDuration::from_days(7),
         }
     }
 }

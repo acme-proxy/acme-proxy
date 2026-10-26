@@ -206,8 +206,8 @@ impl RelaySigner {
         }
 
         let poll = PollConfig {
-            interval: Duration::from_millis(cfg.poll_interval_ms),
-            timeout: Duration::from_secs(cfg.poll_timeout_secs),
+            interval: cfg.poll_interval.as_std(),
+            timeout: cfg.poll_timeout.as_std(),
         };
 
         // Before provisioning, which may reach the upstream: a wait that cannot
@@ -533,7 +533,7 @@ impl RelayInfo {
                  to relay to"
             );
         }
-        let timeout = Duration::from_secs(cfg.poll_timeout_secs);
+        let timeout = cfg.poll_timeout.as_std();
         let http01 = (cfg.challenge_strategy == "http01").then(|| {
             Arc::new(http01::DbTokenStore::new(
                 parts.database.clone(),

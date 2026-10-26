@@ -208,6 +208,9 @@ impl Config {
             .add_source(environment)
             .build()?;
 
+        let table: ::config::Map<String, ::config::Value> = built.clone().try_deserialize()?;
+        let root = ::config::Value::new(None, ::config::ValueKind::Table(table));
+        refuse_unit_suffixed_keys(&root, "")?;
         let mut config: Config = built.clone().try_deserialize()?;
         config.raw = Some(built);
         Ok(config)
@@ -316,6 +319,73 @@ impl Config {
 }
 
 /// A value's table, or an empty one for anything else (including absent).
+/// Every key that held a length of time as a bare number with its unit in the
+/// name, and the [`ConfigDuration`] key that replaced it.
+const UNIT_SUFFIXED_KEYS: &[(&str, &str)] = &[
+    ("admission_wait_ms", "admission_wait"),
+    ("delay_secs", "delay"),
+    ("handshake_timeout_ms", "handshake_timeout"),
+    ("interval_days", "interval"),
+    ("lead_days", "lead"),
+    ("leaf_validity_days", "leaf_validity"),
+    ("lease_seconds", "lease"),
+    ("login_window_seconds", "login_window"),
+    ("poll_interval_ms", "poll_interval"),
+    ("poll_timeout_secs", "poll_timeout"),
+    ("request_timeout_ms", "request_timeout"),
+    ("retention_days", "retention"),
+    ("retry_base_seconds", "retry_base"),
+    ("retry_max_seconds", "retry_max"),
+    ("reverse_dns_timeout_ms", "reverse_dns_timeout"),
+    ("session_idle_timeout_seconds", "session_idle_timeout"),
+    ("session_ttl_seconds", "session_ttl"),
+    ("timeout_ms", "timeout"),
+    ("ttl_seconds", "ttl"),
+    ("validity_seconds", "validity"),
+];
+
+/// Refuses, by name, any key [`UNIT_SUFFIXED_KEYS`] retired — at the top level,
+/// inside an `[endpoints.<name>]` overlay, or inside an operator-named entry
+/// such as `[filter.custom.<name>]`.
+///
+/// Walked over the raw sources rather than declared as dead fields: serde
+/// drops an unknown key without a word, so the refusal must look at what was
+/// written, and one walk covers every nesting a key can appear at. The message
+/// carries the value converted, so the fix can be pasted.
+fn refuse_unit_suffixed_keys(
+    value: &::config::Value,
+    path: &str,
+) -> Result<(), ::config::ConfigError> {
+    let ::config::ValueKind::Table(table) = &value.kind else {
+        return Ok(());
+    };
+    for (key, child) in table {
+        let here = if path.is_empty() {
+            key.clone()
+        } else {
+            format!("{path}.{key}")
+        };
+        if let Some((_, renamed)) = UNIT_SUFFIXED_KEYS.iter().find(|(old, _)| old == key) {
+            let unit = match key.rsplit('_').next() {
+                Some("ms") => "ms",
+                Some("days") => "d",
+                _ => "s",
+            };
+            let example = child
+                .clone()
+                .into_uint()
+                .map_or_else(|_| format!("30{unit}"), |number| format!("{number}{unit}"));
+            let new_path = format!("{}{renamed}", here.strip_suffix(key.as_str()).unwrap_or(""));
+            return Err(::config::ConfigError::Message(format!(
+                "`{here}` was renamed to `{new_path}`, which takes a duration with its \
+                 unit: `{renamed} = \"{example}\"`"
+            )));
+        }
+        refuse_unit_suffixed_keys(child, &here)?;
+    }
+    Ok(())
+}
+
 fn as_table(value: ::config::Value) -> ::config::Map<String, ::config::Value> {
     match value.kind {
         ::config::ValueKind::Table(table) => table,
@@ -388,6 +458,134 @@ mod tests {
         Config::load().expect("the configuration must load")
     }
 
+    /// [`load_toml`] for a configuration that must be refused, with `env` set
+    /// beside it.
+    fn load_toml_error(body: &str, env: &[(&str, &str)]) -> String {
+        let file = TempConfig::new(body);
+        let path = file.path();
+        let mut vars = vec![("ACME_PROXY_CONFIG", path.as_str())];
+        vars.extend_from_slice(env);
+        let _guard = EnvGuard::new(&vars);
+        Config::load()
+            .expect_err("the configuration must be refused")
+            .to_string()
+    }
+
+    /// A unit-suffixed key is refused by name wherever it is written, with the
+    /// value converted into its replacement so the fix can be pasted.
+    #[test]
+    fn a_unit_suffixed_key_is_refused_by_name_at_every_depth() {
+        for (body, env, old, replacement) in [
+            (
+                "[order]\nvalidity_seconds = 3600\n",
+                &[][..],
+                "`order.validity_seconds`",
+                "`validity = \"3600s\"`",
+            ),
+            (
+                "[endpoints.le.signer.local_ca]\nleaf_validity_days = 7\n",
+                &[],
+                "`endpoints.le.signer.local_ca.leaf_validity_days`",
+                "`leaf_validity = \"7d\"`",
+            ),
+            (
+                "[filter.custom.gate]\ntimeout_ms = 250\n",
+                &[],
+                "`filter.custom.gate.timeout_ms`",
+                "`timeout = \"250ms\"`",
+            ),
+            (
+                "",
+                &[("ACME_PROXY_JOBS__LEASE_SECONDS", "60")],
+                "`jobs.lease_seconds`",
+                "`lease = \"60s\"`",
+            ),
+        ] {
+            let error = load_toml_error(body, env);
+            assert!(error.contains(old), "{error}");
+            assert!(error.contains(replacement), "{error}");
+        }
+    }
+
+    /// A duration is written with its unit, from a file and from the
+    /// environment, and an endpoint overriding one keeps the global section's
+    /// other keys — strings overlay key by key the way numbers did.
+    #[test]
+    fn durations_load_with_their_unit_and_overlay_per_endpoint() {
+        let file = TempConfig::new(
+            r#"
+            [order]
+            validity = "2h"
+            retention = "3d"
+
+            [endpoints.short.order]
+            validity = "30m"
+
+            [endpoints.long]
+            "#,
+        );
+        let path = file.path();
+        let _guard = EnvGuard::new(&[
+            ("ACME_PROXY_CONFIG", &path),
+            ("ACME_PROXY_NONCE__TTL", "90s"),
+        ]);
+        let config = Config::load().unwrap();
+        assert_eq!(config.nonce.ttl, ConfigDuration::from_secs(90));
+
+        let endpoints = config.resolve_endpoints().unwrap();
+        let order = |name: &str| {
+            endpoints
+                .iter()
+                .find(|endpoint| endpoint.name == name)
+                .unwrap()
+                .sections
+                .order
+                .clone()
+        };
+        assert_eq!(order("short").validity, ConfigDuration::from_mins(30));
+        assert_eq!(order("short").retention, ConfigDuration::from_days(3));
+        assert_eq!(order("long").validity, ConfigDuration::from_hours(2));
+    }
+
+    /// A bare number has no unit, from the environment too, where
+    /// `try_parsing` has already turned it into an integer.
+    #[test]
+    fn a_bare_number_is_refused_for_a_duration() {
+        let error = load_toml_error("[order]\nvalidity = 3600\n", &[]);
+        assert!(error.contains("bare number has no unit"), "{error}");
+        let error = load_toml_error("", &[("ACME_PROXY_NONCE__TTL", "300")]);
+        assert!(error.contains("bare number has no unit"), "{error}");
+    }
+
+    /// Every length of time is a [`ConfigDuration`]: a field named for its unit
+    /// is the shape this replaced, and one coming back would bring the
+    /// ambiguity with it.
+    #[test]
+    fn no_configuration_field_carries_a_unit_in_its_name() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/config/types");
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let source = std::fs::read_to_string(&path).unwrap();
+            for line in source.lines() {
+                let Some(name) = line
+                    .trim_start()
+                    .strip_prefix("pub ")
+                    .and_then(|rest| rest.split_once(':'))
+                    .map(|(name, _)| name)
+                else {
+                    continue;
+                };
+                assert!(
+                    !["_ms", "_secs", "_seconds", "_days"]
+                        .iter()
+                        .any(|unit| name.ends_with(unit)),
+                    "{}: `{name}` should be a ConfigDuration named without its unit",
+                    path.display()
+                );
+            }
+        }
+    }
+
     /// The removed `[filter]` sub-tables have to land somewhere, or the
     /// `config` crate drops them and `filter::build` never sees them to refuse.
     #[test]
@@ -451,7 +649,7 @@ mod tests {
             [challenge]
             enabled = ["dns-01"]
             bypass = true
-            timeout_ms = 1234
+            timeout = "1234ms"
 
             [endpoints.strict]
             challenge.bypass = false
@@ -466,7 +664,7 @@ mod tests {
             vec!["dns-01"],
             "the rest of the section is inherited, not reset to the default"
         );
-        assert_eq!(challenge.timeout_ms, 1234);
+        assert_eq!(challenge.timeout.as_millis(), 1234);
     }
 
     /// `ipam` is per-endpoint, which is the whole reason it is a section rather
@@ -478,7 +676,7 @@ mod tests {
             r#"
             [ipam]
             backend = "netbox"
-            timeout_ms = 1234
+            timeout = "1234ms"
 
             [ipam.netbox]
             url = "https://netbox.example.com"
@@ -508,7 +706,7 @@ mod tests {
         assert_eq!(by_name("internal").backend, "phpipam");
         // …and overriding the one key keeps the rest of the global section,
         // both the sibling tables and the budget.
-        assert_eq!(by_name("internal").timeout_ms, 1234);
+        assert_eq!(by_name("internal").timeout.as_millis(), 1234);
         assert_eq!(by_name("internal").phpipam.url, "https://ipam.example.com");
         assert_eq!(by_name("internal").netbox.url, "https://netbox.example.com");
     }
@@ -730,7 +928,7 @@ mod tests {
             ("ACME_PROXY_ADMIN__ENABLED", "true"),
             ("ACME_PROXY_ADMIN__BIND_ADDRESS", "127.0.0.1:9999"),
             ("ACME_PROXY_ADMIN__BASE_URL", "https://admin.example.com"),
-            ("ACME_PROXY_ADMIN__SESSION_TTL_SECONDS", "60"),
+            ("ACME_PROXY_ADMIN__SESSION_TTL", "60s"),
             ("ACME_PROXY_ADMIN__LOGIN_MAX_ATTEMPTS", "1"),
             ("ACME_PROXY_ADMIN__REQUIRE_MFA", "true"),
             ("ACME_PROXY_ADMIN__PAGE_SIZE_MAX", "10"),
@@ -742,7 +940,7 @@ mod tests {
         assert!(config.admin.enabled);
         assert_eq!(config.admin.bind_address, "127.0.0.1:9999");
         assert_eq!(config.admin.base_url, "https://admin.example.com");
-        assert_eq!(config.admin.session_ttl_seconds, 60);
+        assert_eq!(config.admin.session_ttl.as_secs(), 60);
         assert_eq!(config.admin.login_max_attempts, 1);
         assert!(config.admin.require_mfa);
         assert_eq!(config.admin.page_size_max, 10);
@@ -754,8 +952,8 @@ mod tests {
             AdminConfig::default().tls.key_path
         );
         assert_eq!(
-            config.admin.session_idle_timeout_seconds,
-            AdminConfig::default().session_idle_timeout_seconds
+            config.admin.session_idle_timeout.as_secs(),
+            AdminConfig::default().session_idle_timeout.as_secs()
         );
     }
 
@@ -1023,34 +1221,37 @@ mod tests {
         assert!(!config.server.tls.enabled);
         assert_eq!(config.server.tls.cert_path, "server.pem");
         assert_eq!(config.server.tls.key_path, "server.key");
-        assert_eq!(config.server.tls.handshake_timeout_ms, 10_000);
-        assert_eq!(config.nonce.ttl_seconds, 300);
-        assert_eq!(config.jobs.poll_interval_ms, 1_000);
+        assert_eq!(config.server.tls.handshake_timeout.as_millis(), 10_000);
+        assert_eq!(config.nonce.ttl.as_secs(), 300);
+        assert_eq!(config.jobs.poll_interval.as_millis(), 1_000);
         assert_eq!(config.jobs.max_concurrent, 8);
         assert_eq!(config.jobs.max_attempts, 5);
-        assert_eq!(config.jobs.retry_base_seconds, 30);
-        assert_eq!(config.jobs.retry_max_seconds, 3_600);
-        assert_eq!(config.jobs.lease_seconds, 300);
-        // Non-zero unlike `audit.retention_days`: a finished job is a receipt,
+        assert_eq!(config.jobs.retry_base.as_secs(), 30);
+        assert_eq!(config.jobs.retry_max.as_secs(), 3_600);
+        assert_eq!(config.jobs.lease.as_secs(), 300);
+        // Non-zero unlike `audit.retention`: a finished job is a receipt,
         // not evidence.
-        assert_eq!(config.jobs.retention_days, 7);
+        assert_eq!(config.jobs.retention, ConfigDuration::from_days(7));
         assert_eq!(config.logging.filter, "acme_proxy=info");
         assert!(!config.logging.json_format);
         assert_eq!(config.logging.target, "stdout");
         assert!(config.logging.ansi);
         assert_eq!(config.logging.span_events, "none");
         assert!(!config.logging.flatten_event);
-        assert_eq!(config.order.validity_seconds, 604800);
+        assert_eq!(config.order.validity.as_secs(), 604800);
         assert_eq!(config.signer.backend, "local_ca");
         assert_eq!(config.signer.local_ca.cert_path, "ca.pem");
         assert_eq!(config.signer.local_ca.key_path, "ca.key");
         assert_eq!(config.signer.local_ca.key_type, "ecdsa-p256");
-        assert_eq!(config.signer.local_ca.leaf_validity_days, 90);
+        assert_eq!(
+            config.signer.local_ca.leaf_validity,
+            ConfigDuration::from_days(90)
+        );
         assert_eq!(config.challenge.enabled, vec!["http-01".to_string()]);
         // A CA that issues without proving control is not a safe out-of-the-box
         // posture; see `ChallengeConfig::bypass`.
         assert!(!config.challenge.bypass);
-        assert_eq!(config.challenge.timeout_ms, 5000);
+        assert_eq!(config.challenge.timeout.as_millis(), 5000);
         assert_eq!(config.challenge.http_01.port, 80);
         assert_eq!(config.challenge.http_01.https_port, 443);
         assert!(config.challenge.http_01.follow_redirects);
@@ -1078,8 +1279,8 @@ mod tests {
         assert!(config.notify.custom_enabled.is_empty());
         assert!(config.notify.custom.is_empty());
         assert_eq!(config.notify.template_dir, "");
-        assert_eq!(config.notify.expiry.lead_days, 0);
-        assert_eq!(config.notify.expiry.interval_days, 7);
+        assert!(config.notify.expiry.lead.is_zero());
+        assert_eq!(config.notify.expiry.interval, ConfigDuration::from_days(7));
         assert_eq!(config.notify.expiry.max_entries, 50);
         assert!(!config.notify.expiry.contact);
         assert!(config.notify.expiry.contact_domains.is_empty());
@@ -1121,15 +1322,21 @@ mod tests {
         assert_eq!(loaded.server.tls.cert_path, direct.server.tls.cert_path);
         assert_eq!(loaded.server.tls.key_path, direct.server.tls.key_path);
         assert_eq!(
-            loaded.server.tls.handshake_timeout_ms,
-            direct.server.tls.handshake_timeout_ms
+            loaded.server.tls.handshake_timeout.as_millis(),
+            direct.server.tls.handshake_timeout.as_millis()
         );
-        assert_eq!(loaded.nonce.ttl_seconds, direct.nonce.ttl_seconds);
-        assert_eq!(loaded.order.validity_seconds, direct.order.validity_seconds);
+        assert_eq!(loaded.nonce.ttl.as_secs(), direct.nonce.ttl.as_secs());
+        assert_eq!(
+            loaded.order.validity.as_secs(),
+            direct.order.validity.as_secs()
+        );
         assert_eq!(loaded.signer.backend, direct.signer.backend);
         assert_eq!(loaded.challenge.enabled, direct.challenge.enabled);
         assert_eq!(loaded.challenge.bypass, direct.challenge.bypass);
-        assert_eq!(loaded.challenge.timeout_ms, direct.challenge.timeout_ms);
+        assert_eq!(
+            loaded.challenge.timeout.as_millis(),
+            direct.challenge.timeout.as_millis()
+        );
         assert_eq!(loaded.challenge.http_01.port, direct.challenge.http_01.port);
         assert_eq!(loaded.filter.rules, direct.filter.rules);
         assert_eq!(loaded.filter.default, direct.filter.default);
@@ -1179,12 +1386,12 @@ mod tests {
             defaults.server.max_concurrent_requests
         );
         assert_eq!(
-            example.server.admission_wait_ms,
-            defaults.server.admission_wait_ms
+            example.server.admission_wait.as_millis(),
+            defaults.server.admission_wait.as_millis()
         );
         assert_eq!(
-            example.server.request_timeout_ms,
-            defaults.server.request_timeout_ms
+            example.server.request_timeout.as_millis(),
+            defaults.server.request_timeout.as_millis()
         );
         assert_eq!(
             example.server.max_body_bytes,
@@ -1194,27 +1401,27 @@ mod tests {
         assert_eq!(example.server.tls.cert_path, defaults.server.tls.cert_path);
         assert_eq!(example.server.tls.key_path, defaults.server.tls.key_path);
         assert_eq!(
-            example.server.tls.handshake_timeout_ms,
-            defaults.server.tls.handshake_timeout_ms
+            example.server.tls.handshake_timeout.as_millis(),
+            defaults.server.tls.handshake_timeout.as_millis()
         );
         assert_eq!(example.admin.enabled, defaults.admin.enabled);
         assert_eq!(example.admin.bind_address, defaults.admin.bind_address);
         assert_eq!(example.admin.base_url, defaults.admin.base_url);
         assert_eq!(
-            example.admin.session_ttl_seconds,
-            defaults.admin.session_ttl_seconds
+            example.admin.session_ttl.as_secs(),
+            defaults.admin.session_ttl.as_secs()
         );
         assert_eq!(
-            example.admin.session_idle_timeout_seconds,
-            defaults.admin.session_idle_timeout_seconds
+            example.admin.session_idle_timeout.as_secs(),
+            defaults.admin.session_idle_timeout.as_secs()
         );
         assert_eq!(
             example.admin.login_max_attempts,
             defaults.admin.login_max_attempts
         );
         assert_eq!(
-            example.admin.login_window_seconds,
-            defaults.admin.login_window_seconds
+            example.admin.login_window.as_secs(),
+            defaults.admin.login_window.as_secs()
         );
         assert_eq!(example.admin.require_mfa, defaults.admin.require_mfa);
         assert_eq!(example.admin.max_body_bytes, defaults.admin.max_body_bytes);
@@ -1224,32 +1431,32 @@ mod tests {
         assert_eq!(example.admin.tls.cert_path, defaults.admin.tls.cert_path);
         assert_eq!(example.admin.tls.key_path, defaults.admin.tls.key_path);
         assert_eq!(
-            example.admin.tls.handshake_timeout_ms,
-            defaults.admin.tls.handshake_timeout_ms
+            example.admin.tls.handshake_timeout.as_millis(),
+            defaults.admin.tls.handshake_timeout.as_millis()
         );
-        assert_eq!(example.nonce.ttl_seconds, defaults.nonce.ttl_seconds);
+        assert_eq!(example.nonce.ttl.as_secs(), defaults.nonce.ttl.as_secs());
         assert_eq!(example.audit.reverse_dns, defaults.audit.reverse_dns);
         assert_eq!(
-            example.audit.reverse_dns_timeout_ms,
-            defaults.audit.reverse_dns_timeout_ms
+            example.audit.reverse_dns_timeout.as_millis(),
+            defaults.audit.reverse_dns_timeout.as_millis()
         );
-        assert_eq!(example.audit.retention_days, defaults.audit.retention_days);
+        assert_eq!(example.audit.retention, defaults.audit.retention);
         assert_eq!(
-            example.jobs.poll_interval_ms,
-            defaults.jobs.poll_interval_ms
+            example.jobs.poll_interval.as_millis(),
+            defaults.jobs.poll_interval.as_millis()
         );
         assert_eq!(example.jobs.max_concurrent, defaults.jobs.max_concurrent);
         assert_eq!(example.jobs.max_attempts, defaults.jobs.max_attempts);
         assert_eq!(
-            example.jobs.retry_base_seconds,
-            defaults.jobs.retry_base_seconds
+            example.jobs.retry_base.as_secs(),
+            defaults.jobs.retry_base.as_secs()
         );
         assert_eq!(
-            example.jobs.retry_max_seconds,
-            defaults.jobs.retry_max_seconds
+            example.jobs.retry_max.as_secs(),
+            defaults.jobs.retry_max.as_secs()
         );
-        assert_eq!(example.jobs.lease_seconds, defaults.jobs.lease_seconds);
-        assert_eq!(example.jobs.retention_days, defaults.jobs.retention_days);
+        assert_eq!(example.jobs.lease.as_secs(), defaults.jobs.lease.as_secs());
+        assert_eq!(example.jobs.retention, defaults.jobs.retention);
         assert_eq!(example.logging.filter, defaults.logging.filter);
         assert_eq!(example.logging.json_format, defaults.logging.json_format);
         assert_eq!(example.logging.target, defaults.logging.target);
@@ -1260,14 +1467,14 @@ mod tests {
             defaults.logging.flatten_event
         );
         assert_eq!(
-            example.order.validity_seconds,
-            defaults.order.validity_seconds
+            example.order.validity.as_secs(),
+            defaults.order.validity.as_secs()
         );
         assert_eq!(
             example.order.max_identifiers,
             defaults.order.max_identifiers
         );
-        assert_eq!(example.order.retention_days, defaults.order.retention_days);
+        assert_eq!(example.order.retention, defaults.order.retention);
         assert_eq!(example.signer.backend, defaults.signer.backend);
         assert_eq!(
             example.signer.local_ca.cert_path,
@@ -1282,8 +1489,8 @@ mod tests {
             defaults.signer.local_ca.key_type
         );
         assert_eq!(
-            example.signer.local_ca.leaf_validity_days,
-            defaults.signer.local_ca.leaf_validity_days
+            example.signer.local_ca.leaf_validity,
+            defaults.signer.local_ca.leaf_validity
         );
         assert_eq!(
             example.signer.local_ca.crl_distribution_points,
@@ -1319,7 +1526,10 @@ mod tests {
         );
         assert_eq!(example.challenge.enabled, defaults.challenge.enabled);
         assert_eq!(example.challenge.bypass, defaults.challenge.bypass);
-        assert_eq!(example.challenge.timeout_ms, defaults.challenge.timeout_ms);
+        assert_eq!(
+            example.challenge.timeout.as_millis(),
+            defaults.challenge.timeout.as_millis()
+        );
         assert_eq!(
             example.challenge.http_01.port,
             defaults.challenge.http_01.port
@@ -1355,7 +1565,10 @@ mod tests {
         assert!(example.filter.check.is_empty());
         assert!(example.filter.rule.is_empty());
         assert_eq!(example.ipam.backend, defaults.ipam.backend);
-        assert_eq!(example.ipam.timeout_ms, defaults.ipam.timeout_ms);
+        assert_eq!(
+            example.ipam.timeout.as_millis(),
+            defaults.ipam.timeout.as_millis()
+        );
         assert_eq!(example.ipam.netbox.url, defaults.ipam.netbox.url);
         assert_eq!(example.ipam.netbox.token, defaults.ipam.netbox.token);
         assert_eq!(
@@ -1430,7 +1643,7 @@ mod tests {
 
         assert_eq!(config.server.base_url, "https://acme.example.test");
         assert_eq!(config.server.bind_address, "[::]:3000");
-        assert_eq!(config.nonce.ttl_seconds, 300);
+        assert_eq!(config.nonce.ttl.as_secs(), 300);
     }
 
     #[test]
@@ -1463,14 +1676,14 @@ mod tests {
         let _guard = EnvGuard::new(&[
             ("ACME_PROXY_SERVER__TLS__ENABLED", "true"),
             ("ACME_PROXY_SERVER__TLS__CERT_PATH", "/etc/acme/tls.pem"),
-            ("ACME_PROXY_SERVER__TLS__HANDSHAKE_TIMEOUT_MS", "2500"),
+            ("ACME_PROXY_SERVER__TLS__HANDSHAKE_TIMEOUT", "2500ms"),
         ]);
 
         let config = Config::load().expect("load should succeed with nested env overrides");
 
         assert!(config.server.tls.enabled);
         assert_eq!(config.server.tls.cert_path, "/etc/acme/tls.pem");
-        assert_eq!(config.server.tls.handshake_timeout_ms, 2500);
+        assert_eq!(config.server.tls.handshake_timeout.as_millis(), 2500);
         assert_eq!(config.server.tls.key_path, "server.key");
         assert_eq!(config.server.bind_address, "[::]:3000");
     }

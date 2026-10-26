@@ -909,7 +909,7 @@ async fn a_job_held_by_a_dead_worker_is_reclaimed() {
     let order_id = claimed_order(&database, &queue).await;
 
     // A worker claims the job and dies holding it: a lease that has already
-    // run out, as `jobs.lease_seconds` later would leave it.
+    // run out, as `jobs.lease` later would leave it.
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()

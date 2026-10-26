@@ -971,7 +971,7 @@ pub async fn cancel_job(
         // An in-flight relay job: abandon the order it was driving. Its
         // `dedup_key` is the local order id.
         //
-        // The order row may be gone — `order.retention_days` sweeps expired
+        // The order row may be gone — `order.retention` sweeps expired
         // orders — and then there is nothing to abandon and nothing to say
         // about one. That case falls through to the plain administrative row
         // below rather than reporting an abandonment that did not happen.
@@ -1086,7 +1086,7 @@ pub async fn confirm_cancel_job(
 /// attempt (`attempts` set to `max_attempts - 1`). Refused on
 /// `running`/`done`/`cancelled`.
 ///
-/// The runner picks the change up within `jobs.poll_interval_ms`: this writes
+/// The runner picks the change up within `jobs.poll_interval`: this writes
 /// the row and does not wake anything. Nudging the queue would be the panel's
 /// `JobQueue` to do, and this layer is below it — the CLI, which has no runner
 /// at all, calls the same function.

@@ -108,7 +108,7 @@ interpolates.
 - `endpoint` (String)
 - `generated_at` (Integer) - Epoch seconds; the point `days_remaining` counts
   from, so a message read days later is still self-describing
-- `lead_days` (Integer) - The window this digest covers
+- `lead` (Integer) - The window this digest covers
 - `total` (Integer) - How many certificates matched, which may be **more** than
   `certificates` holds: `notify.expiry.max_entries` bounds the list, and the
   count is what lets a truncated message say how many it did not name
@@ -132,7 +132,7 @@ has `email/` templates and no `webhook/` one.
 - `account_id` (String)
 - `recipients` (List of Strings) - the bare addresses it goes to, `mailto:`
   stripped and `notify.expiry.contact_domains` already applied
-- `generated_at`, `lead_days` - as `certificates_expiring`
+- `generated_at`, `lead` - as `certificates_expiring`
 - `total` (Integer) - how many of **this account's** certificates matched,
   before `max_entries` truncated the list
 - `certificates` (List) - this account's alone, each entry shaped as in

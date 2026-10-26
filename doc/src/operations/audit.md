@@ -64,7 +64,7 @@ database constraint, so a newer server writing a name an older one does not know
 still loads on the older one — it simply shows the raw string. The web audit
 surface stays **read-only**: a stolen session that could erase the trail would
 make the trail prove nothing, so pruning is `audit cleanup` on the host or
-`audit.retention_days` and nothing else.
+`audit.retention` and nothing else.
 
 Two boundaries worth knowing:
 
@@ -152,7 +152,7 @@ happened.
 
 ## Retention
 
-`audit.retention_days = 0` — the default — keeps everything for ever, which is
+`audit.retention = "0s"` — the default — keeps everything for ever, which is
 the right default for a trail whose value is that it is complete. Setting it
 non-zero spawns a daily sweep running the identical `DELETE` as:
 

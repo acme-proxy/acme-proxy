@@ -290,7 +290,7 @@ pub struct CertificatesExpiringData {
     /// When the sweep ran, epoch seconds — the point `days_remaining` counts
     /// from, so a message read days later is still self-describing.
     pub generated_at: i64,
-    /// The window this digest covers, `notify.expiry.lead_days`.
+    /// The window this digest covers, `notify.expiry.lead`.
     pub lead_days: u64,
     /// How many certificates matched, before `max_entries` truncated the list.
     pub total: i64,
@@ -314,7 +314,7 @@ pub struct AccountCertificatesExpiringData {
     pub recipients: Vec<String>,
     /// When the sweep ran, epoch seconds.
     pub generated_at: i64,
-    /// The window this digest covers, `notify.expiry.lead_days`.
+    /// The window this digest covers, `notify.expiry.lead`.
     pub lead_days: u64,
     /// How many of this account's certificates matched, before
     /// `max_entries` truncated the list.
@@ -2162,7 +2162,7 @@ pub(crate) mod tests {
             .map_err(|error| error.to_string())
         };
         let expiry = |domains: &[&str]| acme_proxy_core::config::ExpiryNotifyConfig {
-            lead_days: 14,
+            lead: acme_proxy_core::config::ConfigDuration::from_days(14),
             contact: true,
             contact_domains: domains.iter().map(|d| (*d).to_string()).collect(),
             ..acme_proxy_core::config::ExpiryNotifyConfig::default()

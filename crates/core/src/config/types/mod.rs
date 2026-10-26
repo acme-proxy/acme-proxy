@@ -8,6 +8,7 @@
 pub mod admin_auth;
 pub mod audit;
 pub mod challenge;
+pub mod duration;
 pub mod endpoint;
 pub mod filter;
 pub mod ipam;
@@ -21,6 +22,7 @@ pub mod signer;
 pub use admin_auth::*;
 pub use audit::*;
 pub use challenge::*;
+pub use duration::ConfigDuration;
 pub use endpoint::*;
 pub use filter::*;
 pub use ipam::*;

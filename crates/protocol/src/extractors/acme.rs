@@ -33,8 +33,6 @@
 //! its branches are driven by `tests/jws_rejections.rs` and
 //! `tests/db_failures.rs`.
 
-use std::time::Duration;
-
 use axum::extract::{FromRef, FromRequest, Request};
 use axum::http::StatusCode;
 use base64::prelude::*;
@@ -316,11 +314,11 @@ async fn consume_nonce(
     header: &ProtectedHeader,
     request_path: &str,
 ) -> Result<(), Problem> {
-    let ttl = Duration::from_secs(app.config.nonce.ttl_seconds);
+    let ttl = app.config.nonce.ttl.as_std();
     match Nonce::verify(&header.nonce, &app.database, ttl).await {
         Ok(true) => Ok(()),
         Ok(false) => {
-            // Unknown, already consumed or past `nonce.ttl_seconds` — the three
+            // Unknown, already consumed or past `nonce.ttl` — the three
             // are indistinguishable by design, since a consumed nonce is
             // deleted. This is the anti-replay refusal, so it is worth a line:
             // a client stuck replaying is a client that will never issue.

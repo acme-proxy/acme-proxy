@@ -301,7 +301,8 @@ async fn a_rebuilt_backend_serves_the_key_authorizations_already_published() {
 
     // The operator edits an unrelated key and signals.
     let mut edited = cfg;
-    edited.poll_interval_ms += 1;
+    edited.poll_interval =
+        acme_proxy_core::config::ConfigDuration::from_millis(edited.poll_interval.as_millis() + 1);
     let reloaded = build(&edited);
     assert_eq!(
         reloaded

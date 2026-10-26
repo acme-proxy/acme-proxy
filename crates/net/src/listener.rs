@@ -246,7 +246,7 @@ pub type RoleSocket = TapIo<RoleListener, fn(&mut MaybeTls)>;
 /// `initial` is the socket to serve at once, or `None` for a role that is
 /// switched off — which parks until a reload hands it one. `tls` is the mode
 /// every connection is accepted under, read fresh each time so a renewed
-/// certificate, a changed `handshake_timeout_ms` and a `tls.enabled` flip all
+/// certificate, a changed `handshake_timeout` and a `tls.enabled` flip all
 /// land on the next client without disturbing anyone already connected.
 ///
 /// The address reported by `local_addr` before anything is bound is
@@ -520,7 +520,7 @@ mod tests {
                 enabled: true,
                 cert_path: dir.join("server.pem").display().to_string(),
                 key_path: dir.join("server.key").display().to_string(),
-                handshake_timeout_ms: 5_000,
+                handshake_timeout: acme_proxy_core::config::ConfigDuration::from_millis(5_000),
             },
             ..ServerConfig::default()
         }

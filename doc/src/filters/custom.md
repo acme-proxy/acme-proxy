@@ -13,7 +13,7 @@ rules = ["scripted"]
 [filter.check.check-network]
 type        = "custom"
 script_path = "/etc/acme-proxy/filters/check-network.sh"
-timeout_ms  = 5000
+timeout     = "5s"
 pass_stdin  = true
 args        = []
 

@@ -388,7 +388,7 @@ async fn dns01_waits_the_configured_delay_before_triggering() {
 
 /// A propagation setting that cannot work stops the server, before any
 /// round trip to the upstream: an unknown mode, and a delay the attempt budget
-/// (`poll_timeout_secs`, the job's lease) could never let finish.
+/// (`poll_timeout`, the job's lease) could never let finish.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_unworkable_propagation_setting_is_a_startup_error() {
     let upstream = testsrv::start(Script::default()).await;
@@ -396,16 +396,13 @@ async fn an_unworkable_propagation_setting_is_a_startup_error() {
 
     for (mode, delay_secs, expected) in [
         ("sometimes", 30, "propagation.mode: sometimes"),
-        (
-            "delay",
-            5,
-            "must be less than signer.relay.poll_timeout_secs",
-        ),
+        ("delay", 5, "must be less than signer.relay.poll_timeout"),
     ] {
         let mut cfg = config(&upstream, &dir);
         cfg.challenge_strategy = "dns01".to_string();
         cfg.dns01.propagation.mode = mode.to_string();
-        cfg.dns01.propagation.delay_secs = delay_secs;
+        cfg.dns01.propagation.delay =
+            acme_proxy_core::config::ConfigDuration::from_secs(delay_secs);
 
         let error = startup_error(RelaySigner::from_config(
             &cfg,

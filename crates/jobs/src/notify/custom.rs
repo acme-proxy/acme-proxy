@@ -21,7 +21,8 @@ pub struct CustomScriptNotifier {
 impl CustomScriptNotifier {
     /// Validates the configuration and creates the backend.
     pub fn from_config(cfg: &CustomNotifyConfig) -> anyhow::Result<Self> {
-        let Some(hook) = ScriptHook::new(&cfg.script_path, &cfg.args, cfg.timeout_ms) else {
+        let Some(hook) = ScriptHook::new(&cfg.script_path, &cfg.args, cfg.timeout.as_millis())
+        else {
             anyhow::bail!(
                 "notify.custom is enabled but notify.custom.script_path is empty; \
                  provide a path to an executable script or remove `custom` from \
@@ -33,7 +34,7 @@ impl CustomScriptNotifier {
             event = "notify_custom_loaded",
             outcome = "success",
             script_path = %hook.path().display(),
-            timeout_ms = cfg.timeout_ms,
+            timeout_ms = acme_proxy_core::logfields::millis(cfg.timeout.as_std()),
             args = ?cfg.args,
         );
 
@@ -265,7 +266,7 @@ exit 0
         let dir = TempDir::new("notify-custom");
         let marker = dir.path().join("survived");
         let cfg = CustomNotifyConfig {
-            timeout_ms: 50,
+            timeout: acme_proxy_core::config::ConfigDuration::from_millis(50),
             ..write_script(
                 &dir,
                 "slow.sh",

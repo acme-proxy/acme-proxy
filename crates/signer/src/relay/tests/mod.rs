@@ -37,12 +37,12 @@ mod renewal;
 /// the two tests that are about it, not out of by the rest.
 fn test_jobs_config() -> acme_proxy_core::config::JobsConfig {
     acme_proxy_core::config::JobsConfig {
-        poll_interval_ms: 5,
+        poll_interval: acme_proxy_core::config::ConfigDuration::from_millis(5),
         max_attempts: 1,
-        retry_base_seconds: 0,
-        retry_max_seconds: 0,
-        lease_seconds: 5,
-        retention_days: 0,
+        retry_base: acme_proxy_core::config::ConfigDuration::from_secs(0),
+        retry_max: acme_proxy_core::config::ConfigDuration::from_secs(0),
+        lease: acme_proxy_core::config::ConfigDuration::from_secs(5),
+        retention: acme_proxy_core::config::ConfigDuration::ZERO,
         ..acme_proxy_core::config::JobsConfig::default()
     }
 }
@@ -194,8 +194,8 @@ fn config(upstream: &Upstream, dir: &TempDir) -> RelayConfig {
         account_key_path: key_path(dir),
         // Fast polling: the fake upstream answers instantly, so the
         // interval only governs how long a test waits for nothing.
-        poll_interval_ms: 5,
-        poll_timeout_secs: 5,
+        poll_interval: acme_proxy_core::config::ConfigDuration::from_millis(5),
+        poll_timeout: acme_proxy_core::config::ConfigDuration::from_secs(5),
         ..RelayConfig::default()
     }
 }

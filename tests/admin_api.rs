@@ -369,7 +369,7 @@ async fn an_expired_session_is_refused_and_swept() {
 #[tokio::test]
 async fn an_idle_session_is_refused_with_its_own_code() {
     let mut config = admin_config();
-    config.admin.session_idle_timeout_seconds = 60;
+    config.admin.session_idle_timeout = acme_proxy_core::config::ConfigDuration::from_secs(60);
     let (app, database, session) = test_admin_app_logged_in(config).await;
 
     let hash = acme_proxy_admin::webadmin::session::hash_token(&session.cookie);
@@ -438,7 +438,7 @@ async fn a_surviving_session_of_a_disabled_operator_is_refused() {
 }
 
 /// A session in use has its idle deadline moved. Without the touch, an
-/// operator working steadily would be signed out `session_idle_timeout_seconds`
+/// operator working steadily would be signed out `session_idle_timeout`
 /// after signing in, as if they had walked away.
 #[tokio::test]
 async fn a_session_in_use_is_touched_so_it_does_not_go_idle() {
@@ -3561,7 +3561,7 @@ async fn an_oversized_admin_request_body_is_refused() {
 /// than a missing feature: a panel session that could delete audit history
 /// would make the history prove nothing, since a stolen session's first act
 /// would be to use it. Pruning is `acme-proxy audit cleanup` on the host, or
-/// `audit.retention_days`.
+/// `audit.retention`.
 ///
 /// This is also why `/api/audit` contributes nothing to `mutating_endpoints()`
 /// — there is no mutating route to list.

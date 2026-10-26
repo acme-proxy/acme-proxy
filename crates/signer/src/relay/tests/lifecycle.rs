@@ -620,7 +620,7 @@ async fn a_stalled_upstream_times_out_and_invalidates_the_order() {
     let dir = TempDir::new("upstream");
     let db = database().await;
     let mut cfg = config(&upstream, &dir);
-    cfg.poll_timeout_secs = 1;
+    cfg.poll_timeout = acme_proxy_core::config::ConfigDuration::from_secs(1);
     let queue = test_queue(db.clone());
     let signer = RelaySigner::from_config(
         &cfg,

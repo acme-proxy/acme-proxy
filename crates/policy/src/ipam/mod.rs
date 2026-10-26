@@ -319,7 +319,7 @@ pub fn from_config(
         // threaded into it — the script decides for itself where it looks.
         "custom" => Arc::new(custom::CustomIpamBackend::from_config(
             &cfg.custom,
-            cfg.timeout_ms,
+            cfg.timeout.as_millis(),
         )?),
         other => anyhow::bail!(
             "unknown IPAM backend: {other} (expected `netbox`, `phpipam` or `custom`)"
@@ -330,12 +330,12 @@ pub fn from_config(
         event = "ipam_enabled",
         outcome = "success",
         backend = backend.name(),
-        timeout_ms = cfg.timeout_ms,
+        timeout_ms = acme_proxy_core::logfields::millis(cfg.timeout.as_std()),
     );
 
     Ok(Some(Arc::new(IpamRegistry::new(
         backend,
-        Duration::from_millis(cfg.timeout_ms),
+        cfg.timeout.as_std(),
     ))))
 }
 

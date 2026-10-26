@@ -51,14 +51,14 @@ an `allowed_ip` check would simply be read by nothing.
 | --- | --- | --- |
 | `allowed_ip` | `allow`, `deny` | [allowed_ip](allowed_ip.md) |
 | `path` | `allow`, `deny` | [path](path.md) |
-| `reverse_dns` | `allow`, `deny`, `allow_regex`, `deny_regex`, `require_forward_confirm`, `timeout_ms` | [reverse_dns](reverse_dns.md) |
+| `reverse_dns` | `allow`, `deny`, `allow_regex`, `deny_regex`, `require_forward_confirm`, `timeout` | [reverse_dns](reverse_dns.md) |
 | `identifiers` | `allow`, `deny`, `allow_regex`, `deny_regex`, `allowed_types`, `allow_wildcards` | [identifiers](identifiers.md) |
 | `eab` | `allow`, `deny`, `allow_regex`, `deny_regex`, `kids`, `require_active` | [eab](eab.md) |
 | `ipam` | *(none — configured by the `[ipam]` section)* | [ipam](../ipam/index.md) |
-| `custom` | `script_path`, `timeout_ms`, `pass_stdin`, `args` | [custom](custom.md) |
+| `custom` | `script_path`, `timeout`, `pass_stdin`, `args` | [custom](custom.md) |
 
 Defaults, where a type has one: `require_forward_confirm = true`,
-`timeout_ms = 2000` for `reverse_dns` and `5000` for `custom`,
+`timeout = "2s"` for `reverse_dns` and `5000` for `custom`,
 `pass_stdin = true`, `allow_wildcards = false`, `require_active = false`,
 `allowed_types = ["dns", "cn"]`.
 

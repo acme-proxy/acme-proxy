@@ -124,7 +124,7 @@ server's worker.
   the order revoked in one transaction, then queues a
   `local_ca_crl_regenerate` job and prints its id. The order reads revoked at
   once. The server's job runner signs the new CRL, usually within
-  `jobs.poll_interval_ms`, and with no server running the CRL catches up when
+  `jobs.poll_interval`, and with no server running the CRL catches up when
   one starts. A CA that no server has started with yet is refused: its
   revocation state is imported the first time a server meets it.
 - **`relay` / `custom`:** revoking means asking the upstream CA or running the

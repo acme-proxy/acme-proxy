@@ -5,6 +5,8 @@
 
 use serde::Deserialize;
 
+use super::ConfigDuration;
+
 use super::string_list;
 
 /// Which inventory answers "which names does this address own?", and how long
@@ -23,7 +25,7 @@ pub struct IpamConfig {
     /// answer it. Applied by the registry rather than by each backend, so a
     /// backend added later cannot forget it. This runs inline in `newOrder`
     /// and `finalize`, so it is part of those requests' worst case.
-    pub timeout_ms: u64,
+    pub timeout: ConfigDuration,
     pub netbox: NetboxConfig,
     pub phpipam: PhpIpamConfig,
     pub custom: CustomIpamConfig,
@@ -33,7 +35,7 @@ impl Default for IpamConfig {
     fn default() -> Self {
         Self {
             backend: String::new(),
-            timeout_ms: 5000,
+            timeout: ConfigDuration::from_millis(5000),
             netbox: NetboxConfig::default(),
             phpipam: PhpIpamConfig::default(),
             custom: CustomIpamConfig::default(),
@@ -173,7 +175,7 @@ impl Default for PhpIpamConfig {
 ///
 /// The one backend with no URL, no credential and no `sources`: the script is
 /// the inventory, and it decides for itself where its answer comes from. It
-/// also takes no `timeout_ms` of its own — [`IpamConfig::timeout_ms`] is the
+/// also takes no `timeout` of its own — [`IpamConfig::timeout`] is the
 /// budget the whole lookup runs under, and a second one here would contradict
 /// the "one budget however many requests it takes" rule the other two follow.
 #[derive(Debug, Clone, Default, Deserialize)]

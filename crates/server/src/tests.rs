@@ -612,12 +612,12 @@ async fn a_shutdown_waits_for_the_runner_to_release_its_leases() {
             base_url = "http://localhost:3000"
 
             [jobs]
-            poll_interval_ms = 10
+            poll_interval = "10ms"
 
             [endpoints.default]
             signer.backend = "custom"
             signer.custom.script_path = "{script}"
-            signer.custom.timeout_ms = 60000
+            signer.custom.timeout = "60000ms"
             "#,
             script = script.display(),
         ),
@@ -754,8 +754,8 @@ async fn a_generation_registers_the_sweeps_its_configuration_asks_for() {
     let dir = temp_dir();
     for retention_days in [0, 30] {
         let mut config = config_in(dir.path(), false);
-        config.audit.retention_days = retention_days;
-        config.jobs.retention_days = retention_days;
+        config.audit.retention = acme_proxy_core::config::ConfigDuration::from_days(retention_days);
+        config.jobs.retention = acme_proxy_core::config::ConfigDuration::from_days(retention_days);
         let config = Arc::new(config);
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         let queue = acme_proxy_jobs::jobs::JobQueue::new(database.clone(), &config.jobs);
@@ -780,8 +780,8 @@ async fn a_generation_registers_the_sweeps_its_configuration_asks_for() {
         let kinds = generation.job_registry.kinds();
 
         let nonces = SweepJob::nonces(database.clone(), Duration::from_secs(60)).kind();
-        let audit = SweepJob::audit(database.clone(), 1).kind();
-        let jobs = SweepJob::jobs(database.clone(), 1).kind();
+        let audit = SweepJob::audit(database.clone(), Duration::from_secs(86_400)).kind();
+        let jobs = SweepJob::jobs(database.clone(), Duration::from_secs(86_400)).kind();
         assert!(kinds.contains(&nonces), "always swept: {kinds:?}");
         for kind in [audit, jobs] {
             assert_eq!(

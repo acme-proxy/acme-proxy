@@ -68,7 +68,7 @@ pub(super) async fn supervise_reloads(
         // time it is built for an account with no `kid` sidecar yet, on a scoped
         // OS thread it then *joins*. Mounting a relay endpoint by `SIGHUP` would
         // otherwise park a runtime worker for as long as
-        // `signer.relay.poll_timeout_secs` allows — five minutes by default —
+        // `signer.relay.poll_timeout` allows — five minutes by default —
         // with every connection that worker was polling parked behind it. The
         // publish phase stays on this task, where its lack of an await point is
         // what makes a generation unobservable half-applied.

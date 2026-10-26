@@ -90,11 +90,11 @@ on certificates no longer being issued (the suggested alerts in
   nothing.
 - **A worker dies.** Work it had not claimed is taken by the other workers on
   their next poll (at most
-  [`jobs.poll_interval_ms`](../configuration/reference.md#jobs)).
+  [`jobs.poll_interval`](../configuration/reference.md#jobs)).
   A job it was running stays claimed until its lease runs out, at most
-  [`jobs.lease_seconds`](../configuration/reference.md#jobs) (300 seconds by
+  [`jobs.lease`](../configuration/reference.md#jobs) (300 seconds by
   default), or a handler's own lease. A relay job's lease is the relay's
-  [`poll_timeout_secs`](../signers/relay.md). The next worker's pass then
+  [`poll_timeout`](../signers/relay.md). The next worker's pass then
   returns the job to the queue and runs it. A client polling that order sees
   `processing` for as long as that takes.
 - **A job queued by one process** is picked up by a worker in another process

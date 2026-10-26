@@ -67,7 +67,7 @@ endpoint.
   on, replacing `ca.pem`/`ca.key` without `endpoint issuer accept` stops every
   worker, by design. That is a breaking change for anyone who rotated a CA by
   swapping files.
-- A job a dead worker held waits for its lease to run out (`jobs.lease_seconds`,
+- A job a dead worker held waits for its lease to run out (`jobs.lease`,
   or a handler's own lease) before another worker takes it. There is no lease
   heartbeat yet, because the lease is also the attempt's timeout and
   decoupling the two is its own change.

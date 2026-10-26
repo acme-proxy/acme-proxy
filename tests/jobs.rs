@@ -88,8 +88,8 @@ impl JobHandler for Counting {
 
 fn fast_config() -> JobsConfig {
     JobsConfig {
-        poll_interval_ms: 5,
-        lease_seconds: 60,
+        poll_interval: acme_proxy_core::config::ConfigDuration::from_millis(5),
+        lease: acme_proxy_core::config::ConfigDuration::from_secs(60),
         ..JobsConfig::default()
     }
 }

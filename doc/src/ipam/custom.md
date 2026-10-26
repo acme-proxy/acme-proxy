@@ -65,7 +65,7 @@ exit status is the only channel left to say the second one in. So it gets a
 code of its own, exactly as the custom signer's `badCSR` does.
 
 Every *other* non-zero exit stays a failure, and that direction is the one that
-matters. A script that breaks, is missing, or runs past `ipam.timeout_ms`
+matters. A script that breaks, is missing, or runs past `ipam.timeout`
 produces a **server error the client can retry**, never a refusal — see
 [Denied versus Internal](index.md#denied-versus-internal). It is the same
 guarantee an unreachable NetBox gets, and it is enforced by the types rather
@@ -130,7 +130,7 @@ setting that does not exist.
 ## What it costs
 
 One forked process per lookup, inside `newOrder` and again at `finalize`.
-`ipam.timeout_ms` is the budget, and it is also what kills the child at the
+`ipam.timeout` is the budget, and it is also what kills the child at the
 deadline; there is deliberately no second timeout here.
 
 Note that `acme-proxy filter explain` really runs the policy, so it **executes
@@ -157,7 +157,7 @@ command, and it is reported in its side-effects list.
 ```toml
 [ipam]
 backend = "custom"
-timeout_ms = 5000
+timeout = "5s"
 
 [ipam.custom]
 script_path = "/etc/acme-proxy/ipam/lookup.sh"
@@ -177,6 +177,6 @@ Path to the executable answering the lookup. Empty while `ipam.backend` is
 Fixed arguments passed before the script is told anything about the request.
 One script can serve several deployments by branching on them.
 
-There is deliberately **no `timeout_ms`** here.
-[`ipam.timeout_ms`](index.md#reference) is the budget the whole lookup runs
+There is deliberately **no `timeout`** here.
+[`ipam.timeout`](index.md#reference) is the budget the whole lookup runs
 under, and a second one would contradict the rule the other backends follow.

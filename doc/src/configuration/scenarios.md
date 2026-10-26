@@ -31,8 +31,8 @@ directory_url = "https://acme-v02.api.letsencrypt.org/directory"
 account_key_path = "le_upstream.key"
 contact = ["mailto:admin@company.com"]
 challenge_strategy = "dns01"
-poll_interval_ms = 2000
-poll_timeout_secs = 300
+poll_interval = "2s"
+poll_timeout = "5m"
 
 [signer.relay.dns01]
 provider = "rfc2136"
@@ -83,8 +83,8 @@ contact = ["mailto:admin@company.com"]
 # configuration. The responder is a route on this server's own root router;
 # acme-proxy does NOT open a second listener or bind port 80.
 challenge_strategy = "http01"
-poll_interval_ms = 2000
-poll_timeout_secs = 300
+poll_interval = "2s"
+poll_timeout = "5m"
 
 [challenge]
 # Local clients still prove control to the proxy independently.
@@ -143,7 +143,7 @@ enabled = ["ipam"]
 
 [ipam]
 backend = "netbox"
-timeout_ms = 5000
+timeout = "5s"
 
 [ipam.netbox]
 url = "https://netbox.internal.company.com"

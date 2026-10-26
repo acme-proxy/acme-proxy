@@ -42,10 +42,10 @@
 //! Validation runs in the job runner, not in the request:
 //! `POST /chall/{id}` claims the challenge, queues a `challenge_validate` row
 //! and answers `processing` (RFC 8555 §7.1.6). [`ChallengeRegistry::validate`]
-//! still wraps every attempt in `challenge.timeout_ms`, because the target is
+//! still wraps every attempt in `challenge.timeout`, because the target is
 //! an address the *client* named and a wedged one would otherwise hold a job
 //! slot — and a `SQLite` connection — indefinitely. What the budget no longer
-//! bounds is an HTTP request, which is why `server.request_timeout_ms` is no
+//! bounds is an HTTP request, which is why `server.request_timeout` is no
 //! longer required to exceed it. See `acme::validate`.
 
 use std::sync::Arc;
@@ -293,7 +293,7 @@ impl ChallengeRegistry {
         &self.enabled
     }
 
-    /// The budget one validation attempt gets (`challenge.timeout_ms`).
+    /// The budget one validation attempt gets (`challenge.timeout`).
     ///
     /// Read by `acme::validate::ChallengeValidateJob` to size its lease: the
     /// runner must not reclaim a row while the attempt holding it is still
@@ -438,7 +438,7 @@ pub fn from_config(
     // that part still waits for the `!cfg.bypass` branch below.
     let addr = resolver_addr(dns)?;
 
-    let timeout = Duration::from_millis(cfg.timeout_ms);
+    let timeout = cfg.timeout.as_std();
 
     if cfg.bypass {
         // Worth being noisy about, for the same reason `filter_disabled` is:
@@ -484,7 +484,7 @@ pub fn from_config(
         event = "challenge_validation_enabled",
         outcome = "success",
         enabled = ?cfg.enabled,
-        timeout_ms = cfg.timeout_ms,
+        timeout_ms = acme_proxy_core::logfields::millis(cfg.timeout.as_std()),
     );
 
     Ok(Arc::new(
