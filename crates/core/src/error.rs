@@ -83,6 +83,14 @@ pub struct Problem {
     ext: Option<Box<ProblemExtensions>>,
 }
 
+/// Metadata for an optional server-side refusal audit. It is attached to the
+/// response extension map, never sent as an HTTP header or body member.
+#[derive(Debug, Clone)]
+pub struct ProblemAuditInfo {
+    pub typ: &'static str,
+    pub detail: Cow<'static, str>,
+}
+
 impl std::fmt::Display for Problem {
     /// The type and the detail, which is what an operator needs when a problem
     /// travels inside another error rather than out to a client.
@@ -490,14 +498,20 @@ impl Problem {
 
 impl IntoResponse for Problem {
     fn into_response(self) -> Response {
+        let info = ProblemAuditInfo {
+            typ: self.typ,
+            detail: self.detail.clone(),
+        };
         let body = Json(self.to_value());
 
-        (
+        let mut response = (
             self.status,
             [(header::CONTENT_TYPE, "application/problem+json")],
             body,
         )
-            .into_response()
+            .into_response();
+        response.extensions_mut().insert(info);
+        response
     }
 }
 

@@ -86,7 +86,14 @@ pub async fn get_index(
     .await?;
     let (_, refusals) = AuditEntry::search(
         &AuditQuery {
-            outcome: Some("failure".to_string()),
+            // With request-level auditing on, a CA operation failure and its
+            // refused HTTP response can each have a row. Count responses here.
+            event: state
+                .config
+                .audit
+                .record_refusals
+                .then(|| "acme_request_refused".to_string()),
+            outcome: (!state.config.audit.record_refusals).then(|| "failure".to_string()),
             since: Some(acme_proxy_store::nonce::now_secs().saturating_sub(24 * 60 * 60)),
             limit: 1,
             ..AuditQuery::default()
@@ -114,6 +121,10 @@ pub async fn get_index(
         }),
     );
     context.insert("any_bypass".to_string(), Value::Bool(any_bypass));
+    context.insert(
+        "refusal_audit_enabled".to_string(),
+        Value::Bool(state.config.audit.record_refusals),
+    );
     context.insert("profiles".to_string(), Value::Array(profiles));
 
     // The overview is a whole page or nothing: there is no fragment of it worth

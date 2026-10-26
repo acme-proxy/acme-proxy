@@ -1409,6 +1409,14 @@ mod tests {
     }
 
     #[test]
+    fn refusal_audit_is_opt_in_and_loads_from_environment() {
+        assert!(!Config::default().audit.record_refusals);
+        let _guard = EnvGuard::new(&[("ACME_PROXY_AUDIT__RECORD_REFUSALS", "true")]);
+        let config = Config::load().expect("audit refusal override must load");
+        assert!(config.audit.record_refusals);
+    }
+
+    #[test]
     fn load_applies_dns_resolver_env_override() {
         let _guard = EnvGuard::new(&[("ACME_PROXY_DNS__RESOLVER", "10.60.0.2:53")]);
         let config = Config::load().expect("load should succeed with a dns resolver override");

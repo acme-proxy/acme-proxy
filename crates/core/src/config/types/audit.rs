@@ -13,13 +13,15 @@ use serde::Deserialize;
 /// things at different endpoints of the same CA would be the wrong shape for
 /// the question it exists to answer.
 ///
-/// There is no `enabled` key. Recording who asked the CA to sign something is
-/// not a feature of this server, it is what a CA does; the only thing an
-/// operator can turn off here is the reverse lookup, because that one costs a
-/// network round trip and has estates where it can never succeed.
+/// There is no `enabled` key: certificate and administrative actions are always
+/// recorded. Refused ACME responses can additionally be recorded on request.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct AuditConfig {
+    /// Persist an audit row for each refused ACME response, including failures
+    /// before an account or order exists. Off by default because unauthenticated
+    /// traffic can make the audit table grow as fast as requests arrive.
+    pub record_refusals: bool,
     /// Resolve a PTR record for the client's address and freeze it into the row.
     ///
     /// On by default. Turn it off on an estate with no usable reverse zone: the
@@ -45,6 +47,7 @@ pub struct AuditConfig {
 impl Default for AuditConfig {
     fn default() -> Self {
         Self {
+            record_refusals: false,
             reverse_dns: true,
             reverse_dns_timeout_ms: 2_000,
             retention_days: 0,
