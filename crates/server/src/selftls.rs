@@ -364,7 +364,7 @@ impl SelfTlsJob {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acme_proxy_core::config::{RelayConfig, Rfc2136Config};
+    use acme_proxy_core::config::{CloudflareConfig, RelayConfig, Rfc2136Config};
     use acme_proxy_core::testutil::TempDir;
     use acme_proxy_signer::relay::RelaySigner;
     use acme_proxy_signer::relay::testsrv;
@@ -453,6 +453,20 @@ mod tests {
         signer.relay.dns01.rfc2136.tsig_key_name = "acme-key."
         signer.relay.dns01.rfc2136.tsig_key_secret = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
         signer.relay.dns01.rfc2136.tsig_algorithm = "hmac-sha256"
+    "#;
+
+    /// The same profile publishing through Cloudflare's DNS API instead of a
+    /// TSIG-signed update: the shape a deployment whose zone lives there writes.
+    const ONE_CLOUDFLARE: &str = r#"
+        [profiles.default]
+        signer.backend = "relay"
+        signer.relay.directory_url = "https://ca.invalid/directory"
+        signer.relay.account_key_path = "/tmp/acme-proxy-self-tls-cf-key.key"
+        signer.relay.challenge_strategy = "dns01"
+        signer.relay.dns01.provider = "cloudflare"
+        signer.relay.dns01.cloudflare.api_token = "test-token"
+        signer.relay.dns01.cloudflare.zone = "example.com"
+        signer.relay.dns01.cloudflare.zone_id = "0123456789abcdef0123456789abcdef"
     "#;
 
     /// The same profile twice, distinguishable only by name — which is exactly why
@@ -615,6 +629,46 @@ mod tests {
         // whether or not `propagation.mode` turns it on: a lease is only ever a
         // ceiling, and a too-generous one costs a stalled row's reclaim, nothing more.
         assert_eq!(plan.lease, Duration::from_secs(390));
+    }
+
+    /// Which provider a `dns01` profile publishes through is that profile's own
+    /// business: the toggle resolves over a Cloudflare profile exactly as it does
+    /// over a TSIG key, because what it holds is an updater, not a provider.
+    /// Pinned because the day this resolution reaches for `dns01.rfc2136` is the
+    /// day a Cloudflare-hosted zone cannot obtain a certificate for its own
+    /// hostname.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_cloudflare_profile_resolves_like_any_other() {
+        let dir = TempDir::new("self-tls-cloudflare");
+        let upstream = testsrv::start(testsrv::Script::default()).await;
+        let relay = backend(&dir, &upstream, |config| {
+            config.challenge_strategy = "dns01".to_string();
+            config.dns01.provider = "cloudflare".to_string();
+            config.dns01.cloudflare = CloudflareConfig {
+                api_token: "test-token".to_string(),
+                zone: "example.com".to_string(),
+                zone_id: "0123456789abcdef0123456789abcdef".to_string(),
+            };
+        })
+        .await;
+        assert!(
+            relay.can_prove_control(),
+            "the provider is not the question"
+        );
+
+        let Answer::Planned(plan) = resolve_against(
+            &toggle(
+                &dir,
+                true,
+                "",
+                &format!("https://{HOST}:3000"),
+                ONE_CLOUDFLARE,
+            ),
+            &[("default".to_string(), relay)],
+        ) else {
+            panic!("a dns01 profile proves control whatever provider it names");
+        };
+        assert_eq!(plan.domain, HOST);
     }
 
     /// A profile that is a relay but answers `bypass` (or `http01`) upstream is

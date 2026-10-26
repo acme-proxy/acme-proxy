@@ -95,6 +95,24 @@ migrated configuration before restarting.
 
 ### Added
 
+- **`signer.relay.dns01.provider = "cloudflare"`** publishes the upstream
+  `dns-01` TXT record through Cloudflare's DNS API, for a zone Cloudflare's own
+  nameservers serve. They take no RFC 2136 update, so until now a zone there
+  needed something speaking `nsupdate` on one side and the API on the other. The
+  credential is a scoped API token needing `Zone / DNS / Edit` on the zone, and
+  the three keys are `[signer.relay.dns01.cloudflare]`'s `api_token`, `zone` and
+  `zone_id`; every record name is checked against that zone before a request is
+  sent, the same test `rfc2136` applies. Records are still appended and retracted
+  **by value** — Cloudflare identifies a record by an id, so a retraction lists
+  the name and deletes the ids whose content matches, leaving another order's
+  value at it alone. A POST refused because the record exists already counts as
+  published once this server's own value is found there, so a retry whose
+  response was lost in transit fails nothing. This provider is an ordinary
+  outbound HTTPS client, so `dns.resolver` and `[proxy]` reach it where the RFC
+  2136 updates never did; set `propagation.mode = "delay"`, because the API
+  accepting a record is not the edges serving it. Both providers are documented
+  on the book's Relay page.
+
 - **Expiry reminders addressed to the account's own contact** (#10). With
   `notify.expiry.contact = true`, each expiry pass also mails every account
   holding something in the window its own digest: one message per account,

@@ -1,38 +1,19 @@
-//! Publishing the `_acme-challenge` TXT record the *upstream* CA asks for.
+//! RFC 2136 dynamic update, authenticated with a TSIG key: the default
+//! [`DnsUpdater`], and the one that binds this server to no vendor.
 //!
-//! ## Why this exists at all
+//! Works against any authoritative server that implements RFC 2136 — BIND,
+//! PowerDNS, Knot, CoreDNS with the `update` plugin — rather than against one
+//! cloud vendor's API. A zone served by an API that takes no DNS update (one
+//! on Cloudflare's nameservers, say) is the case
+//! [`cloudflare`](super::cloudflare) exists for.
 //!
-//! Everywhere else in this codebase DNS is read-only: the `dns-01` validator
-//! looks a TXT record up to check a client's claim. This module writes one,
-//! and it is the only part of the server that does.
-//!
-//! The reason is the asymmetry at the heart of the proxy. When the upstream is
-//! a real CA, it issues its own `dns-01` challenge, and the key authorization
-//! it expects is computed from **this proxy's** account thumbprint at that
-//! upstream — not the end client's. The two are different accounts on
-//! different servers, so the original client *cannot* answer it even in
-//! principle: only this server knows the right value. That is what makes the
-//! relay a second, independent proof of domain control rather than a
-//! pass-through, and why it needs the ability to write DNS.
-//!
-//! ## The record's content is not defined here
-//!
-//! [`acme_proxy_net::challenge::dns_01`] owns both the record name and the digest
-//! computation, and this module calls into it. Restating either would risk the
-//! publisher and the validator drifting into a record this server accepts but
-//! a real CA rejects.
-//!
-//! ## Alias mode
-//!
-//! With `challenge_alias` set, every record goes to `_acme-challenge.<alias>`
-//! and the operator CNAMEs each `_acme-challenge.<identifier>` there, so one
-//! update key over one alias zone serves names in any number of zones. The
-//! alias is configured, never discovered by following the CNAME: this server's
-//! resolver need not see what the CA sees (split horizon, an internal
-//! recursor), and publishing at the wrong name makes the upstream
-//! authorization `invalid` for good. Every authorization sharing one name is
-//! safe for the reason a wildcard and its base already are: [`DnsUpdater`]
-//! appends and retracts by value.
+//! An update is a DNS packet, not an HTTP request, and two consequences are
+//! worth knowing before comparing the two providers: this one dials its
+//! configured `server` directly rather than through the generation's
+//! `dns.resolver` and `[proxy]`, and what it gets back is the update server's
+//! answer about *accepting* the record, which is why
+//! `signer.relay.dns01.propagation` exists to decide whether to wait before
+//! asking the CA to look.
 
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -48,29 +29,7 @@ use tracing::debug;
 
 use acme_proxy_core::config::Rfc2136Config;
 
-/// Publishes and retracts the TXT records an upstream `dns-01` challenge needs.
-///
-/// A trait rather than a concrete type so the orchestration in [`super`] can be
-/// tested against a stub — the same seam `ChallengeValidator`'s `HttpFetcher`
-/// and `Resolver` draw — and so a future provider (a cloud DNS API) slots in
-/// without touching the relay.
-#[async_trait]
-pub trait DnsUpdater: Send + Sync {
-    /// Publishes a TXT record at `name` holding `value`.
-    ///
-    /// Additive: an order for `example.com` and `*.example.com` produces two
-    /// authorizations whose records live at the same name with different
-    /// values, and both must be present at once.
-    async fn upsert_txt(&self, name: &str, value: &str) -> Result<(), String>;
-
-    /// Retracts a previously published record: only `value`, so any other value
-    /// at `name` — another authorization's, or another order's for the same
-    /// name — survives. Retracting a value that is not there is not an error.
-    ///
-    /// Best-effort: the relay logs a failure and carries on, because a leftover
-    /// challenge record is untidy rather than harmful.
-    async fn delete_txt(&self, name: &str, value: &str) -> Result<(), String>;
-}
+use super::DnsUpdater;
 
 /// RFC 2136 dynamic DNS update, authenticated with TSIG.
 ///
@@ -157,16 +116,10 @@ impl Rfc2136Updater {
 
     /// Parses `name` and refuses it unless it lies inside the configured zone.
     ///
-    /// The one zone test, shared by every update and by the startup check on
-    /// `challenge_alias`, so the two cannot disagree about what is inside.
+    /// Delegates to [`super::check_in_zone`], the one zone test both providers
+    /// share.
     pub fn check_in_zone(&self, name: &str) -> Result<Name, String> {
-        let name =
-            Name::from_utf8(name).map_err(|error| format!("{name} is not a DNS name: {error}"))?;
-        // The server would answer NOTZONE anyway; refusing here says why.
-        if !self.zone.zone_of(&name) {
-            return Err(format!("{name} is outside the zone {}", self.zone));
-        }
-        Ok(name)
+        super::check_in_zone(&self.zone, name)
     }
 
     /// One TXT record, as the update messages want it.
@@ -356,35 +309,6 @@ impl DnsUpdater for Rfc2136Updater {
     }
 }
 
-/// Turns `signer.relay.dns01.challenge_alias` into the absolute record name
-/// every challenge is published at, or `None` when alias mode is off.
-///
-/// The value is a domain, not a record name: `_acme-challenge.` is prepended by
-/// the same [`acme_proxy_net::challenge::dns_01::record_name`] the unaliased
-/// path uses. A value already carrying that label is refused rather than
-/// doubled, and so is a wildcard, which no CNAME can point at.
-pub fn alias_record_name(alias: &str) -> anyhow::Result<Option<String>> {
-    let alias = alias.trim();
-    if alias.is_empty() {
-        return Ok(None);
-    }
-    let bare = alias.trim_end_matches('.');
-    if bare.starts_with('*') {
-        anyhow::bail!("signer.relay.dns01.challenge_alias ({alias}) cannot be a wildcard");
-    }
-    if bare.to_ascii_lowercase().starts_with("_acme-challenge.") {
-        anyhow::bail!(
-            "signer.relay.dns01.challenge_alias ({alias}) is a domain: drop the leading \
-             _acme-challenge., which is added to it"
-        );
-    }
-    let name = format!("{}.", acme_proxy_net::challenge::dns_01::record_name(bare));
-    Name::from_utf8(&name).map_err(|error| {
-        anyhow::anyhow!("signer.relay.dns01.challenge_alias ({alias}) is not a DNS name: {error}")
-    })?;
-    Ok(Some(name))
-}
-
 /// Maps the configured algorithm name to hickory's enum. Only the HMAC-SHA2
 /// family is offered: HMAC-MD5 is still widely configured but is not something
 /// to add a fresh deployment to.
@@ -530,36 +454,6 @@ mod tests {
                 .txt_record("_acme-challenge.WWW.Example.ORG.", "value")
                 .is_ok()
         );
-    }
-
-    /// The alias is a domain: `_acme-challenge.` is added once, the result is
-    /// absolute with or without a trailing dot, and empty means "off".
-    #[test]
-    fn an_alias_becomes_one_absolute_record_name() {
-        assert_eq!(alias_record_name("").unwrap(), None);
-        assert_eq!(alias_record_name("  ").unwrap(), None);
-        for alias in ["acme-alias.net", "acme-alias.net.", " acme-alias.net. "] {
-            assert_eq!(
-                alias_record_name(alias).unwrap().as_deref(),
-                Some("_acme-challenge.acme-alias.net."),
-                "{alias:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn an_unusable_alias_is_refused_by_key_name() {
-        for (alias, expected) in [
-            ("*.acme-alias.net", "wildcard"),
-            ("_ACME-Challenge.acme-alias.net.", "drop the leading"),
-            ("not a dns name", "not a DNS name"),
-        ] {
-            let error = alias_record_name(alias).unwrap_err().to_string();
-            assert!(
-                error.contains("challenge_alias") && error.contains(expected),
-                "{alias:?}: {error}"
-            );
-        }
     }
 
     /// The zone test the startup check on the alias shares with every update.

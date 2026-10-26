@@ -188,9 +188,10 @@ Order this server's **own** listener certificate from the upstream CA of one of
 its profiles, instead of serving a self-signed one that every client has to be
 told to trust. The name is the host of `server.base_url`; an address is refused,
 because `dns-01` proves names. Control is proved with that profile's
-[`dns01`](../signers/relay.md#dns01-rfc-2136-tsig) updater, so the profile has
-to relay with `challenge_strategy = "dns01"` and the host has to be inside the
-zone that updater can write. Renewal is automatic, 30 days before expiry.
+[`dns01`](../signers/relay.md#signerrelaydns01) updater, whichever provider it
+names: the profile has to relay with `challenge_strategy = "dns01"`, and the
+host has to be inside the zone that updater can write. Renewal is automatic, 30
+days before expiry.
 
 Enabling it hands both files above to the server. A chain that a CA issued and
 that is not near expiry is left alone until it is; a generated placeholder is
@@ -659,8 +660,10 @@ The forward proxy every outbound HTTP client dials through: the upstream CA the
 tunnel, since it is TLS rather than HTTP.
 
 Not everything outbound. SMTP (`notify.email`) and the RFC 2136 updates
-`signer.relay.dns01` makes are not HTTP and keep dialling directly; an estate
-whose egress is proxy-only needs a separate route for those two.
+`signer.relay.dns01` writes through its `rfc2136` provider are not HTTP and keep
+dialling directly; an estate whose egress is proxy-only needs a separate route
+for those two. The same strategy's `cloudflare` provider *is* HTTP, and dials
+through this table like the upstream CA does.
 
 Every key is empty by default, which means no proxy at all. There is no
 `enabled` key — the presence of a URL is the switch.
