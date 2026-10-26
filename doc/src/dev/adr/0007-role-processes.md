@@ -41,7 +41,7 @@ the binaries, where one database and one job queue already do the job.
   - **`SignerBackend`**, the write side: issue and revoke. Only the worker
     builds it, in `Assembly::build_parts`.
 
-  `Profile` has no backend field at all. The job handlers take their backend
+  `Endpoint` has no backend field at all. The job handlers take their backend
   from `GenerationParts::signers`.
 - **The worker stores each CA's first CRL before it serves**
   (`store_first_crls`, at startup and before publishing a reload), since the

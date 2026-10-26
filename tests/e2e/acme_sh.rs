@@ -183,7 +183,7 @@ async fn test_acme_sh_revoke() {
             --ecc
 
         # The CRL the server publishes must now name it. `{0}` is the
-        # directory URL, and `/crl` is its sibling under the profile router.
+        # directory URL, and `/crl` is its sibling under the endpoint router.
         SERIAL=$(openssl x509 -in /tmp/cert.pem -noout -serial | cut -d= -f2)
         curl -fsS "$(dirname {0})/crl" -o /tmp/ca.crl
         openssl crl -inform DER -in /tmp/ca.crl -noout -text > /tmp/crl.txt

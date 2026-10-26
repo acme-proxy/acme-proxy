@@ -45,15 +45,15 @@ pub async fn post_new_order(
     );
     let AppState {
         database,
-        profile,
+        endpoint,
         audit,
         ..
     } = state;
-    let base = &profile.base_url;
+    let base = &endpoint.base_url;
     let orders = OrderService {
         database: &database,
         audit: &audit,
-        profile: &profile,
+        endpoint: &endpoint,
     };
 
     let (order, authz_ids) = orders
@@ -84,11 +84,11 @@ pub async fn post_order(
         order_id = %id
     );
     let AppState {
-        database, profile, ..
+        database, endpoint, ..
     } = state;
-    let base = &profile.base_url;
+    let base = &endpoint.base_url;
 
-    let account = signer_account(account, &profile.name, &pubkey, &database).await?;
+    let account = signer_account(account, &endpoint.name, &pubkey, &database).await?;
     let order = load_owned_order(&id, &account, &database).await?;
     let authz_ids = order_authz_ids(order.id, &database).await?;
     Ok(order_response(&order, base, &authz_ids))
@@ -131,19 +131,19 @@ pub async fn post_finalize(
     );
     let AppState {
         database,
-        profile,
+        endpoint,
         audit,
         jobs,
         ..
     } = state;
-    let base = &profile.base_url;
+    let base = &endpoint.base_url;
     let orders = OrderService {
         database: &database,
         audit: &audit,
-        profile: &profile,
+        endpoint: &endpoint,
     };
 
-    let account = signer_account(account, &profile.name, &pubkey, &database).await?;
+    let account = signer_account(account, &endpoint.name, &pubkey, &database).await?;
     let order = load_owned_order(&id, &account, &database).await?;
     let order = orders
         .finalize(

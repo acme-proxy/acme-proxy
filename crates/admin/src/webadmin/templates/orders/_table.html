@@ -6,7 +6,7 @@
       <thead>
         <tr>
           <th>Order</th>
-          <th>Profile</th>
+          <th>Endpoint</th>
           <th>Status</th>
           <th>Identifiers</th>
           <th>Created</th>
@@ -21,7 +21,7 @@
         {% for order in page.items %}
           <tr>
             <td class="id-cell"><a href="/ui/orders/{{ order.id }}" title="{{ order.id }}"><code>{{ order.id }}</code></a></td>
-            <td><code>{{ order.profile }}</code></td>
+            <td><code>{{ order.endpoint }}</code></td>
             <td>
               <span class="badge {{ order.status }}">{{ order.status }}</span>
               {#- Revocation is orthogonal to the order state machine: RFC 8555

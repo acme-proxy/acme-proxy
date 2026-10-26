@@ -50,7 +50,7 @@ Static arguments passed to the script on every invocation.
 
 **`events`** (`Array`) — *Default: every event | Env: `ACME_PROXY_NOTIFY__CUSTOM__<NAME>__EVENTS`*
 
-Which events this script reacts to. Valid names are `profile_mounted`,
+Which events this script reacts to. Valid names are `endpoint_mounted`,
 `account_created`, `account_deactivated`, `certificate_issued`,
 `certificate_revoked`, `challenge_failed`, `certificates_expiring`. An
 unrecognised name is a startup error.
@@ -82,21 +82,21 @@ empty string rather than omitted, so a script can read them unconditionally.
 | Variable | Value |
 | --- | --- |
 | `ACME_NOTIFY_HOOK` | The event name, e.g. `certificate_issued`. |
-| `ACME_NOTIFY_PROFILE` | The profile the event occurred in. |
-| `ACME_NOTIFY_CLIENT_IP` | The ACME client's address; empty when no request was in scope (e.g. `profile_mounted`, or an asynchronous relay completion). |
+| `ACME_NOTIFY_ENDPOINT` | The endpoint the event occurred in. |
+| `ACME_NOTIFY_CLIENT_IP` | The ACME client's address; empty when no request was in scope (e.g. `endpoint_mounted`, or an asynchronous relay completion). |
 | `ACME_NOTIFY_ACCOUNT_ID` | The account, when the event has one. |
 | `ACME_NOTIFY_ORDER_ID` | The order, when the event has one. |
 | `ACME_NOTIFY_CERT_SERIAL` | The certificate serial, on `certificate_issued` / `certificate_revoked`. |
 | `ACME_NOTIFY_IDENTIFIERS` | Comma-joined identifier values. Only populated for `certificate_issued`. |
 
 On `certificates_expiring` every variable but `ACME_NOTIFY_HOOK` and
-`ACME_NOTIFY_PROFILE` is **empty**, and that is not an omission: a digest is
+`ACME_NOTIFY_ENDPOINT` is **empty**, and that is not an omission: a digest is
 about a list of certificates spanning however many accounts, so there is no one
 account, order or serial for a variable to hold. Read the list from the JSON on
 stdin, which is the channel that carries structure.
 
 On `admin_sign_in` / `admin_credential_changed` the only populated variables
-are `ACME_NOTIFY_HOOK`, `ACME_NOTIFY_PROFILE` (`__admin__`) and
+are `ACME_NOTIFY_HOOK`, `ACME_NOTIFY_ENDPOINT` (`__admin__`) and
 `ACME_NOTIFY_CLIENT_IP` (the web-admin client's address). The `username`,
 `recipient`, `outcome` / `change`, `by_self` and `user_agent` are on the stdin
 JSON — an operator is not an ACME subject, so it has no account or order id.
@@ -117,7 +117,7 @@ event's own fields plus a `"hook"` key naming the event — the same data the
 ```json
 {
   "hook": "certificate_issued",
-  "profile": "default",
+  "endpoint": "default",
   "order_id": "…",
   "account_id": "…",
   "cert_serial": "…",

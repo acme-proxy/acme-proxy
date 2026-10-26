@@ -87,7 +87,7 @@ impl Default for EmailNotifyConfig {
 /// `[notify.expiry]` — the periodic digest of certificates approaching expiry
 /// (see `notify::expiry`).
 ///
-/// One message per profile per `interval_days`, listing what lapses inside
+/// One message per endpoint per `interval_days`, listing what lapses inside
 /// `lead_days`, and **not** one message per certificate: a renewal is a new
 /// order, so the certificate it replaced still expires on schedule and a
 /// per-certificate reminder would tell an operator about every certificate the
@@ -228,10 +228,10 @@ impl Default for CustomNotifyConfig {
 ///
 /// `admin_sign_in` and `admin_credential_changed` are the web-admin operator
 /// security events (ASVS V6.3.5 / V6.3.7). They fire only on the process-wide
-/// `[admin.notify]` dispatcher, never on a profile's, so listing either in a
-/// per-profile backend's `events` costs nothing.
+/// `[admin.notify]` dispatcher, never on an endpoint's, so listing either in a
+/// per-endpoint backend's `events` costs nothing.
 pub const ALL_NOTIFY_EVENTS: [&str; 10] = [
-    "profile_mounted",
+    "endpoint_mounted",
     "account_created",
     "account_deactivated",
     "certificate_issued",

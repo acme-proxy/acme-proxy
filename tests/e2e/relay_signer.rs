@@ -13,7 +13,7 @@ async fn test_relay_signer_bypass_order() {
             ),
             ("ACME_PROXY_SIGNER__RELAY__CHALLENGE_STRATEGY", "bypass"),
         ],
-        vec![("ACME_PROXY_PROFILES__DEFAULT__CA_TYPE", "local")],
+        vec![("ACME_PROXY_ENDPOINTS__DEFAULT__CA_TYPE", "local")],
     )
     .await;
 

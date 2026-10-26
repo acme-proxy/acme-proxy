@@ -222,9 +222,9 @@ pub struct LocalCaConfig {
     /// emits no extension at all.
     ///
     /// Not derived from `server.base_url`: the value is frozen into every
-    /// certificate signed while it is set, so a `base_url` change or a profile
+    /// certificate signed while it is set, so a `base_url` change or an endpoint
     /// rename would silently break certificates already issued — and the
-    /// per-profile `/crl` sits behind that profile's filter chain, which an
+    /// per-endpoint `/crl` sits behind that endpoint's filter chain, which an
     /// address-based policy will refuse to a relying party. Several entries
     /// mean one CRL reachable at several places, not several CRLs.
     ///

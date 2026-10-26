@@ -1,6 +1,6 @@
 //! `[audit]` — the CA's traceability settings.
 //!
-//! Process-wide: no profile can override it. Each key, its default and its
+//! Process-wide: no endpoint can override it. Each key, its default and its
 //! environment variable are documented once, in the book's
 //! `configuration/reference.md` under `[audit]`.
 
@@ -8,7 +8,7 @@ use serde::Deserialize;
 
 /// Governs the traceability columns and the `audit_log` table.
 ///
-/// Process-wide, so deliberately absent from `PROFILE_SECTIONS`: the retention
+/// Process-wide, so deliberately absent from `ENDPOINT_SECTIONS`: the retention
 /// sweep is one pass over one table, and an audit trail that recorded different
 /// things at different endpoints of the same CA would be the wrong shape for
 /// the question it exists to answer.

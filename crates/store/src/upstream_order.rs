@@ -243,22 +243,22 @@ impl UpstreamOrder {
     /// Rows still `processing`, oldest first — relays whose in-memory task
     /// died with the process and need one respawned at startup.
     ///
-    /// Restricted to the `profiles` the calling backend actually serves, via
-    /// the owning order's own `profile`: several endpoints may relay to
+    /// Restricted to the `endpoints` the calling backend actually serves, via
+    /// the owning order's own `endpoint`: several endpoints may relay to
     /// several different upstreams, and resuming another one's order would
-    /// drive it against the wrong CA. An empty `profiles` therefore matches
+    /// drive it against the wrong CA. An empty `endpoints` therefore matches
     /// nothing, which is the safe reading of "this backend serves nothing".
     pub async fn list_processing(
-        profiles: &[String],
+        endpoints: &[String],
         database: &Database,
     ) -> Result<Vec<UpstreamOrder>, sqlx::Error> {
-        if profiles.is_empty() {
+        if endpoints.is_empty() {
             return Ok(Vec::new());
         }
 
         // sqlx has no array binding for SQLite, so the IN list is built from
-        // one placeholder per profile — never from the values themselves.
-        let placeholders = std::iter::repeat_n("?", profiles.len())
+        // one placeholder per endpoint — never from the values themselves.
+        let placeholders = std::iter::repeat_n("?", endpoints.len())
             .collect::<Vec<_>>()
             .join(", ");
         // Bounded so a pathological backlog is not loaded into memory whole;
@@ -267,7 +267,7 @@ impl UpstreamOrder {
         let sql = format!(
             "SELECT u.* FROM upstream_orders u \
              JOIN orders o ON o.id = u.order_id \
-             WHERE u.status = 'processing' AND o.profile IN ({placeholders}) \
+             WHERE u.status = 'processing' AND o.endpoint IN ({placeholders}) \
              ORDER BY u.created_at ASC LIMIT {limit};"
         );
 
@@ -275,8 +275,8 @@ impl UpstreamOrder {
         // outright: the only runtime part of this one is the count of `?`
         // placeholders, never a value.
         let mut query = crate::sql::query(sqlx::AssertSqlSafe(sql));
-        for profile in profiles {
-            query = query.bind(profile);
+        for endpoint in endpoints {
+            query = query.bind(endpoint);
         }
         let rows = query.fetch_all(database).await?;
         rows.into_iter().map(UpstreamOrder::from_row).collect()
@@ -309,7 +309,7 @@ pub struct UpstreamOrderRow {
     pub user_agent: Option<String>,
     pub request_id: Option<String>,
     // --- joined from `orders` ---
-    pub profile: String,
+    pub endpoint: String,
     pub account_id: Uuid,
     pub identifiers: Vec<Identifier>,
     pub local_status: OrderStatus,
@@ -324,7 +324,7 @@ impl UpstreamOrderRow {
     const COLUMNS: &'static str = "u.order_id, u.upstream_order_url, u.upstream_finalize_url, \
          u.upstream_certificate_url, u.status, u.error, u.created_at, u.updated_at, \
          u.client_ip, u.client_ptr, u.user_agent, u.request_id, \
-         o.profile, o.account_id, o.identifiers, o.status AS local_status, \
+         o.endpoint, o.account_id, o.identifiers, o.status AS local_status, \
          o.expires AS local_expires";
 
     fn from_joined_row(row: Row) -> Result<Self, sqlx::Error> {
@@ -345,7 +345,7 @@ impl UpstreamOrderRow {
             client_ptr: row.try_get("client_ptr")?,
             user_agent: row.try_get("user_agent")?,
             request_id: row.try_get("request_id")?,
-            profile: row.try_get("profile")?,
+            endpoint: row.try_get("endpoint")?,
             account_id: row.try_get("account_id")?,
             identifiers,
             local_status: status::from_column(row.try_get::<String>("local_status")?.as_str())?,
@@ -368,10 +368,10 @@ impl UpstreamOrderRow {
 
 /// The filters and page window [`UpstreamOrder::search`] applies. `status` is a
 /// [`UpstreamOrderStatus`] because both front ends refuse an unknown value by
-/// name; `profile` is a free `String`, matched over the joined `orders.profile`.
+/// name; `endpoint` is a free `String`, matched over the joined `orders.endpoint`.
 #[derive(Debug, Clone, Default)]
 pub struct UpstreamOrderQuery {
-    pub profile: Option<String>,
+    pub endpoint: Option<String>,
     pub status: Option<UpstreamOrderStatus>,
     pub limit: i64,
     pub offset: i64,
@@ -385,7 +385,7 @@ impl UpstreamOrderQuery {
             builder,
             crate::query::WHERE,
             &[
-                ("o.profile = ", self.profile.as_deref()),
+                ("o.endpoint = ", self.endpoint.as_deref()),
                 ("u.status = ", self.status.map(UpstreamOrderStatus::as_str)),
             ],
         );
@@ -394,15 +394,15 @@ impl UpstreamOrderQuery {
 
 impl UpstreamOrder {
     /// One page of upstream orders matching `query`, plus the total the same
-    /// predicates match unpaged — the operator surface's cross-profile listing.
+    /// predicates match unpaged — the operator surface's cross-endpoint listing.
     ///
     /// An `INNER JOIN` to `orders`: `order_id` is a foreign key with
     /// `ON DELETE CASCADE`, so a row with no local order cannot exist, and the
     /// join is what carries the identifiers and local status a mapping row does
     /// not. **Not** [`Self::list_processing`], which is `processing`-only,
-    /// `LIMIT 500`, oldest-first and profile-list-scoped for restart recovery.
+    /// `LIMIT 500`, oldest-first and endpoint-list-scoped for restart recovery.
     ///
-    /// The one index on this table is `(status)`; `o.profile` and the
+    /// The one index on this table is `(status)`; `o.endpoint` and the
     /// `ORDER BY` scan. The table is bounded by the cascade from `orders`
     /// (`order.retention_days`), so this is the `Order::find_expiring` tradeoff
     /// again — a dedicated index is a future migration if a deployment says so.
@@ -413,7 +413,7 @@ impl UpstreamOrder {
         debug!(
             event = "db_upstream_order_search_started",
             outcome = "progress",
-            profile = ?query.profile,
+            endpoint = ?query.endpoint,
             status = ?query.status,
             limit = query.limit,
             offset = query.offset,
@@ -743,9 +743,9 @@ mod tests {
 
     use crate::status::{OrderStatus, UpstreamOrderStatus};
 
-    async fn order_on(profile: &str, names: &[&str], database: &Database) -> Order {
+    async fn order_on(endpoint: &str, names: &[&str], database: &Database) -> Order {
         let (account, _) = Account::find_or_create(
-            profile,
+            endpoint,
             &acme_proxy_core::random::random_bytes::<16>(),
             Vec::new(),
             &ClientContext::default(),
@@ -754,7 +754,7 @@ mod tests {
         .await
         .unwrap();
         Order::create(
-            profile,
+            endpoint,
             account.id,
             names.iter().map(|n| Identifier::dns(*n)).collect(),
             now_secs() + 3600,
@@ -792,7 +792,7 @@ mod tests {
         assert_eq!(total, 1);
         let row = &rows[0];
         assert_eq!(row.order_id, ord.id);
-        assert_eq!(row.profile, "default");
+        assert_eq!(row.endpoint, "default");
         assert_eq!(row.local_status, OrderStatus::Pending);
         let names: Vec<&str> = row.identifiers.iter().map(|i| i.value.as_str()).collect();
         assert_eq!(names, vec!["a.example.com", "b.example.com"]);
@@ -801,7 +801,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn search_filters_profile_and_status_together_and_pages() {
+    async fn search_filters_endpoint_and_status_together_and_pages() {
         let db = database().await;
         let a = order_on("default", &["a.example.com"], &db).await;
         let b = order_on("default", &["b.example.com"], &db).await;
@@ -821,10 +821,10 @@ mod tests {
             .await
             .unwrap();
 
-        // Profile narrows page and total together.
+        // Endpoint narrows page and total together.
         let (rows, total) = UpstreamOrder::search(
             &UpstreamOrderQuery {
-                profile: Some("default".to_string()),
+                endpoint: Some("default".to_string()),
                 limit: 50,
                 ..UpstreamOrderQuery::default()
             },
@@ -835,10 +835,10 @@ mod tests {
         assert_eq!(total, 2);
         assert_eq!(rows.len(), 2);
 
-        // Profile + status together.
+        // Endpoint + status together.
         let (rows, total) = UpstreamOrder::search(
             &UpstreamOrderQuery {
-                profile: Some("default".to_string()),
+                endpoint: Some("default".to_string()),
                 status: Some(UpstreamOrderStatus::Invalid),
                 limit: 50,
                 offset: 0,
@@ -851,10 +851,10 @@ mod tests {
         assert_eq!(rows[0].order_id, b.id);
         assert_eq!(rows[0].error.as_deref(), Some("upstream said no"));
 
-        // A hostile profile value is bound, not interpolated.
+        // A hostile endpoint value is bound, not interpolated.
         let (rows, total) = UpstreamOrder::search(
             &UpstreamOrderQuery {
-                profile: Some("' OR 1=1 --".to_string()),
+                endpoint: Some("' OR 1=1 --".to_string()),
                 limit: 50,
                 ..UpstreamOrderQuery::default()
             },

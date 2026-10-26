@@ -13,7 +13,7 @@ state, and queued background work keeps its place. What changes is what the
 server does with the *next* request — and, if you moved a listener, on which
 port it answers it.
 
-A reload is a rebuild and a swap, not a patch. Both routers, every profile's
+A reload is a rebuild and a swap, not a patch. Both routers, every endpoint's
 filter chain and challenge registry, the notification backends, the job
 registry and both TLS acceptors are constructed fresh from the file on disk —
 and only once every one of them has succeeded is any of it published.
@@ -60,8 +60,8 @@ restart to apply it
 
 Everything else reloads. That was not always true, and the four keys that came
 off this table most recently are worth knowing about because they are the ones
-an operator is most likely to remember as frozen: the set of enabled profiles,
-each profile's `[signer]` section, `dns.resolver` and `[proxy]`. See
+an operator is most likely to remember as frozen: the set of enabled endpoints,
+each endpoint's `[signer]` section, `dns.resolver` and `[proxy]`. See
 [Adding and removing endpoints](#adding-and-removing-endpoints) below.
 
 ## What a reload does change
@@ -100,11 +100,12 @@ reference](../configuration/reference.md).
 
 ## Adding and removing endpoints
 
-Add a `[profiles.<name>]` section and signal, and that endpoint starts serving:
+Add an `[endpoints.<name>]` section and signal, and that endpoint starts
+serving:
 
 ```text
-server_config_reloaded generation=2 profiles=["le", "staging"]
-profile_mounted profile=staging directory=https://ca.example/profile/staging/directory
+server_config_reloaded generation=2 endpoints=["le", "staging"]
+endpoint_mounted endpoint=staging directory=https://ca.example/endpoint/staging/directory
 ```
 
 Remove it and signal again, and it stops. Endpoints that were already running
@@ -114,7 +115,7 @@ restart.
 
 Three things to know.
 
-**`profile_mounted` fires only for an endpoint that was not there before.** It
+**`endpoint_mounted` fires only for an endpoint that was not there before.** It
 is a lifecycle event, delivered to whichever `[notify]` backends are configured,
 so re-firing it for every endpoint on every `SIGHUP` would make the notification
 surface noisiest in exactly the config-managed deployments that would least want
@@ -122,10 +123,10 @@ it.
 
 **Unmounting keeps the data.** The accounts and orders belonging to that
 endpoint stay in the database and come back exactly as they were if you mount it
-again — the profile name is what they are keyed on. Setting `enabled = false` is
-the same thing as removing the section.
+again — the endpoint name is what they are keyed on. Setting `enabled = false`
+is the same thing as removing the section.
 
-**Drain a `relay` endpoint before removing it.** Unmounting the last profile a
+**Drain a `relay` endpoint before removing it.** Unmounting the last endpoint a
 relaying backend serves takes its job handler with it, so any issuance still
 waiting on the upstream has nothing left to finish it. Those rows sit in the
 queue until the endpoint is mounted again, and the orders behind them expire.
@@ -133,7 +134,7 @@ Nothing else is affected, and no other backend has background work to lose.
 
 ## Editing a signer
 
-A profile's `[signer]` section reloads, including the one an endpoint is
+An endpoint's `[signer]` section reloads, including the one an endpoint is
 actively issuing with. The obvious worry — that a rebuilt local CA would forget
 what it had revoked — does not arise: revocations and the CRL live in the
 database, which the running CA and its replacement both read, so a revocation
@@ -252,7 +253,7 @@ configuration it just applied — `challenge_validation_bypassed`,
 `filter_disabled`, `tls_disabled` and the rest. That is deliberate: they are
 written to stay visible for as long as the condition holds.
 
-**`profile_mounted` does not repeat.** It is a lifecycle notification meaning
+**`endpoint_mounted` does not repeat.** It is a lifecycle notification meaning
 "this endpoint came up", delivered to whichever `[notify]` backends are
 configured. Firing it on every reload would make the notification surface
 noisiest in exactly the config-managed deployments that would least want it.

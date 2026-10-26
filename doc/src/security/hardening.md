@@ -32,7 +32,7 @@ decision from you are marked **decide**.
       to get subtly wrong than a list.
       → [CLI](../operations/cli.md#access-policy)
 - [ ] **`/crl` and `/ca.pem` are still reachable** if any check is
-      address-based. Both are served by the profile router, so an allowlist
+      address-based. Both are served by the endpoint router, so an allowlist
       covers them too — and neither the relying parties that fetch the CRL nor
       the hosts that have yet to install the root are the ACME clients you
       allowlisted.

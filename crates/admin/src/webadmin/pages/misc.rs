@@ -1,4 +1,4 @@
-//! `/ui/`, `/ui/profiles` and `/ui/nonces` — the overview and the two small
+//! `/ui/`, `/ui/endpoints` and `/ui/nonces` — the overview and the two small
 //! surfaces.
 
 use axum::extract::State;
@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use crate::webadmin::AdminState;
 use crate::webadmin::handlers::Caller;
-use crate::webadmin::handlers::misc::{apply_cleanup_nonces, profile_rows};
+use crate::webadmin::handlers::misc::{apply_cleanup_nonces, endpoint_rows};
 use crate::webadmin::pages::auth::{PageSession, PageSessionWrite};
 use crate::webadmin::pages::error::PageError;
 use crate::webadmin::pages::{chrome, flash, respond, respond_fragment};
@@ -74,7 +74,7 @@ pub async fn get_index(
     // with the list the tile opens rather than with a filter it does not set.
     let (_, expiring_soon, _) = acme_proxy_store::expiring::list_expiring(
         &acme_proxy_store::expiring::ExpiringQuery {
-            profile: None,
+            endpoint: None,
             account: None,
             before: acme_proxy_store::expiring::expiring_horizon(ATTENTION_EXPIRY_DAYS),
             include_superseded: true,
@@ -94,10 +94,10 @@ pub async fn get_index(
         &state.database,
     )
     .await?;
-    let profiles = profile_rows(&state);
-    let any_bypass = profiles
+    let endpoints = endpoint_rows(&state);
+    let any_bypass = endpoints
         .iter()
-        .any(|profile| profile["challengeBypass"] == Value::Bool(true));
+        .any(|endpoint| endpoint["challengeBypass"] == Value::Bool(true));
 
     let mut context = chrome(&session, "index", "Overview");
     context.insert(
@@ -114,34 +114,34 @@ pub async fn get_index(
         }),
     );
     context.insert("any_bypass".to_string(), Value::Bool(any_bypass));
-    context.insert("profiles".to_string(), Value::Array(profiles));
+    context.insert("endpoints".to_string(), Value::Array(endpoints));
 
     // The overview is a whole page or nothing: there is no fragment of it worth
     // swapping on its own.
     respond(&state, false, "index.html", "index.html", context)
 }
 
-/// `GET /ui/profiles` — the endpoints this process is serving.
-pub async fn list_profiles(
+/// `GET /ui/endpoints` — the endpoints this process is serving.
+pub async fn list_endpoints(
     State(state): State<AdminState>,
     session: PageSession,
 ) -> Result<Html<String>, PageError> {
-    let profiles = profile_rows(&state);
+    let endpoints = endpoint_rows(&state);
     // Computed here rather than filtered in the template: a warning this
     // load-bearing should be a value a Rust test can assert on.
-    let any_bypass = profiles
+    let any_bypass = endpoints
         .iter()
-        .any(|profile| profile["challengeBypass"] == Value::Bool(true));
+        .any(|endpoint| endpoint["challengeBypass"] == Value::Bool(true));
 
-    let mut context = chrome(&session, "profiles", "Profiles");
-    context.insert("profiles".to_string(), Value::Array(profiles));
+    let mut context = chrome(&session, "endpoints", "Endpoints");
+    context.insert("endpoints".to_string(), Value::Array(endpoints));
     context.insert("any_bypass".to_string(), Value::Bool(any_bypass));
 
     respond(
         &state,
         false,
-        "profiles/list.html",
-        "profiles/_table.html",
+        "endpoints/list.html",
+        "endpoints/_table.html",
         context,
     )
 }

@@ -1,4 +1,4 @@
-//! `[profiles.<name>]` — the per-endpoint overlay, plus `[eab]`.
+//! `[endpoints.<name>]` — the per-endpoint overlay, plus `[eab]`.
 //!
 //! Re-exported flat from [`super`], so nothing outside this directory names
 //! the submodule.
@@ -12,21 +12,21 @@ use super::notify::NotifyConfig;
 use super::server::{MetaConfig, OrderConfig};
 use super::signer::SignerConfig;
 
-/// One ACME endpoint's configuration: the eight sections a profile may carry,
+/// One ACME endpoint's configuration: the eight sections an endpoint may carry,
 /// plus the marker that declares it.
 ///
-/// Every field is optional in the file — what a profile does not say, it
-/// inherits from the matching global section (see `Config::resolve_profiles`),
-/// key by key. So `[profiles.le]` alone is a complete profile, identical to the
+/// Every field is optional in the file — what an endpoint does not say, it
+/// inherits from the matching global section (see `Config::resolve_endpoints`),
+/// key by key. So `[endpoints.le]` alone is a complete endpoint, identical to the
 /// global configuration but served under its own URL prefix.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
-pub struct ProfileSections {
-    /// Whether to mount this profile at all. Defaults to `true`: a profile
+pub struct EndpointSections {
+    /// Whether to mount this endpoint at all. Defaults to `true`: an endpoint
     /// exists because it is written down. It is a bool rather than a bare
     /// marker for two reasons — an operator can park an endpoint without
-    /// deleting its configuration, and an environment-only profile needs at
-    /// least one key to exist at all (`ACME_PROXY_PROFILES__LE__ENABLED=true`).
+    /// deleting its configuration, and an environment-only endpoint needs at
+    /// least one key to exist at all (`ACME_PROXY_ENDPOINTS__LE__ENABLED=true`).
     pub enabled: bool,
     pub signer: SignerConfig,
     pub filter: FilterConfig,
@@ -38,7 +38,7 @@ pub struct ProfileSections {
     pub meta: MetaConfig,
 }
 
-impl Default for ProfileSections {
+impl Default for EndpointSections {
     fn default() -> Self {
         Self {
             enabled: true,
@@ -53,12 +53,12 @@ impl Default for ProfileSections {
         }
     }
 }
-/// A named, fully resolved profile: its name (which is also its URL segment,
-/// `/profile/<name>`) and the sections it ended up with after inheritance.
+/// A named, fully resolved endpoint: its name (which is also its URL segment,
+/// `/endpoint/<name>`) and the sections it ended up with after inheritance.
 #[derive(Debug, Clone)]
-pub struct ProfileConfig {
+pub struct EndpointConfig {
     pub name: String,
-    pub sections: ProfileSections,
+    pub sections: EndpointSections,
 }
 /// External Account Binding (RFC 8555 §7.3.4) requirement.
 #[derive(Debug, Clone, Deserialize, Default)]

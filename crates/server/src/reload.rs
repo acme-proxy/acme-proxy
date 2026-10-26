@@ -1,6 +1,6 @@
 //! Replacing a running configuration without restarting the process.
 //!
-//! `serve_on_with` builds everything exactly once — profiles, deduplicated
+//! `serve_on_with` builds everything exactly once — endpoints, deduplicated
 //! signer backends, filter chains, challenge registries, both routers — so until
 //! this module existed, every configuration change was a process restart. For
 //! the keys operators actually touch (a `[filter]` rule, an `[ipam]` token, a
@@ -43,7 +43,7 @@
 //!   reaches for mid-incident (slow a retry storm, widen a lease, raise
 //!   concurrency), which made them the worst possible thing to charge a restart
 //!   for. See [`acme_proxy_jobs::jobs::runner`].
-//! - **The profile set, each profile's `[signer]`, and `[dns]`/`[proxy]`** — the
+//! - **The endpoint set, each endpoint's `[signer]`, and `[dns]`/`[proxy]`** — the
 //!   last four and the hardest, because a signer backend used to own state with
 //!   no durable home: a `LocalCa`'s revocation ledger and a relay's `http-01`
 //!   token store. Both now live in the database, which the outgoing and the
@@ -52,7 +52,7 @@
 //!   reads, and a challenge fetch in flight is answered from the same rows. A
 //!   backend whose configuration did not move is **reused verbatim** rather
 //!   than rebuilt. Mounting and unmounting an endpoint fell out of it for free,
-//!   that having been the whole of what made the profile set unmovable, and
+//!   that having been the whole of what made the endpoint set unmovable, and
 //!   `[dns]`/`[proxy]` fell out too: they were frozen only because the signers
 //!   cached them at construction, which is now a reason to *rebuild* a signer
 //!   (they are part of its identity key) rather than to refuse the edit.
@@ -70,23 +70,23 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tower::Service;
 
 use acme_proxy_core::config::Config;
-use acme_proxy_core::config::ProfileConfig;
+use acme_proxy_core::config::EndpointConfig;
 
 /// One resolved configuration, as the frozen-key check sees it.
 ///
-/// Two fields rather than one because the per-profile view is not derivable
-/// from a `Config` without work that can fail: `resolve_profiles` overlays the
-/// global sections onto each profile key by key and returns a `Result`. Pairing
+/// Two fields rather than one because the per-endpoint view is not derivable
+/// from a `Config` without work that can fail: `resolve_endpoints` overlays the
+/// global sections onto each endpoint key by key and returns a `Result`. Pairing
 /// them means a projection below is an infallible read.
 ///
-/// `profiles` has no reader in [`FROZEN`] any more — the two entries that used
-/// it both came off when the profile set and each profile's `[signer]` became
+/// `endpoints` has no reader in [`FROZEN`] any more — the two entries that used
+/// it both came off when the endpoint set and each endpoint's `[signer]` became
 /// reloadable. It stays because the pairing is the *shape* of a resolved
 /// configuration and the next entry to be added may well need it, and because
 /// the alternative is a caller assembling the pair again the moment one does.
 pub struct Applied<'a> {
     pub config: &'a Config,
-    pub profiles: &'a [ProfileConfig],
+    pub endpoints: &'a [EndpointConfig],
 }
 
 /// The keys a running process cannot change, and how to read each one.
@@ -112,7 +112,7 @@ pub struct Applied<'a> {
 ///   handle (`server::logging`).
 /// - **All seven `[jobs]` keys**, once the runner stopped snapshotting its
 ///   pacing at spawn ([`acme_proxy_jobs::jobs::runner`]).
-/// - **`profiles`, `profiles.*.signer`, `dns.resolver` and `proxy`** — the last
+/// - **`endpoints`, `endpoints.*.signer`, `dns.resolver` and `proxy`** — the last
 ///   four, and the ones this table existed for. They were frozen *by ownership*:
 ///   a signer backend held in-memory state with no durable home, so two
 ///   generations over one set of files would disagree, and `[dns]`/`[proxy]`
@@ -122,7 +122,7 @@ pub struct Applied<'a> {
 ///   did is rebuilt over the same revocations and tokens the outgoing one
 ///   wrote. Mounting and unmounting an endpoint fell out of the same change,
 ///   since building or dropping a backend was the whole of what made the
-///   profile set unmovable.
+///   endpoint set unmovable.
 ///
 /// The `[signer]` section is also why this table used to render two of its
 /// entries through a digest: both reached a credential (a proxy URL's
@@ -208,7 +208,7 @@ pub struct ReloadReport {
     /// The highest-value field in here: it is what a test waits on and what an
     /// operator greps to answer "did my SIGHUP land?".
     pub generation: u64,
-    pub profiles: Vec<String>,
+    pub endpoints: Vec<String>,
     pub job_kinds: Vec<&'static str>,
     /// Whether that listener is speaking TLS **after** this reload — not
     /// whether its certificate changed. A generation always rebuilds both
@@ -422,35 +422,35 @@ mod channel_tests {
 #[cfg(test)]
 mod frozen_tests {
     use super::*;
-    use acme_proxy_core::config::ProfileSections;
+    use acme_proxy_core::config::EndpointSections;
 
-    fn profile(name: &str) -> ProfileConfig {
-        ProfileConfig {
+    fn endpoint(name: &str) -> EndpointConfig {
+        EndpointConfig {
             name: name.to_string(),
-            sections: ProfileSections::default(),
+            sections: EndpointSections::default(),
         }
     }
 
     /// The shape every case below uses: a configuration and its resolved
-    /// profiles, mutated by the case and compared against an untouched pair.
+    /// endpoints, mutated by the case and compared against an untouched pair.
     fn refuse(
-        mutate: impl FnOnce(&mut Config, &mut Vec<ProfileConfig>),
+        mutate: impl FnOnce(&mut Config, &mut Vec<EndpointConfig>),
     ) -> Result<(), ReloadError> {
         let applied = Config::default();
-        let applied_profiles = vec![profile("le")];
+        let applied_endpoints = vec![endpoint("le")];
 
         let mut proposed = Config::default();
-        let mut proposed_profiles = vec![profile("le")];
-        mutate(&mut proposed, &mut proposed_profiles);
+        let mut proposed_endpoints = vec![endpoint("le")];
+        mutate(&mut proposed, &mut proposed_endpoints);
 
         check_frozen(
             &Applied {
                 config: &applied,
-                profiles: &applied_profiles,
+                endpoints: &applied_endpoints,
             },
             &Applied {
                 config: &proposed,
-                profiles: &proposed_profiles,
+                endpoints: &proposed_endpoints,
             },
         )
     }
@@ -474,15 +474,15 @@ mod frozen_tests {
     #[test]
     fn every_frozen_key_is_refused_by_its_own_name() {
         #[allow(clippy::type_complexity)]
-        let cases: Vec<(&str, Box<dyn Fn(&mut Config, &mut Vec<ProfileConfig>)>)> = vec![(
+        let cases: Vec<(&str, Box<dyn Fn(&mut Config, &mut Vec<EndpointConfig>)>)> = vec![(
             "database.url",
-            Box::new(|c: &mut Config, _: &mut Vec<ProfileConfig>| {
+            Box::new(|c: &mut Config, _: &mut Vec<EndpointConfig>| {
                 c.database.url = "sqlite://other.db".to_string();
             }),
         )];
 
         for (key, mutate) in &cases {
-            let refused = refused_key(refuse(|config, profiles| mutate(config, profiles)));
+            let refused = refused_key(refuse(|config, endpoints| mutate(config, endpoints)));
             assert_eq!(
                 &refused.as_str(),
                 key,
@@ -521,20 +521,20 @@ mod frozen_tests {
     /// module's own suite, which drives a real revocation across a rebuild.
     /// This one only proves the refusal is gone.
     #[test]
-    fn the_profile_set_its_signers_and_the_egress_all_reload() {
-        // A profile mounted, and a profile renamed at the same count.
-        assert!(refuse(|_, profiles| profiles.push(profile("staging"))).is_ok());
-        assert!(refuse(|_, profiles| profiles[0].name = "staging".to_string()).is_ok());
-        assert!(refuse(|_, profiles| profiles.clear()).is_ok());
+    fn the_endpoint_set_its_signers_and_the_egress_all_reload() {
+        // An endpoint mounted, and an endpoint renamed at the same count.
+        assert!(refuse(|_, endpoints| endpoints.push(endpoint("staging"))).is_ok());
+        assert!(refuse(|_, endpoints| endpoints[0].name = "staging".to_string()).is_ok());
+        assert!(refuse(|_, endpoints| endpoints.clear()).is_ok());
 
         // A resolved `[signer]` moved — the change a naive implementation
         // confused with the global one, and the one the seam exists for.
         assert!(
-            refuse(|_, profiles| profiles[0].sections.signer.backend = "custom".to_string())
+            refuse(|_, endpoints| endpoints[0].sections.signer.backend = "custom".to_string())
                 .is_ok()
         );
         assert!(
-            refuse(|_, profiles| profiles[0].sections.signer.local_ca.leaf_validity_days = 30)
+            refuse(|_, endpoints| endpoints[0].sections.signer.local_ca.leaf_validity_days = 30)
                 .is_ok()
         );
 
@@ -547,17 +547,17 @@ mod frozen_tests {
     /// reason has inverted, and the inversion is worth pinning.
     ///
     /// It used to be allowed because `merged_sections` overlays it per key, so a
-    /// change every profile overrides is a genuine no-op that must not be
+    /// change every endpoint overrides is a genuine no-op that must not be
     /// refused. It is now allowed because **nothing about `[signer]` is refused
-    /// at all**: a change that does reach a profile's resolved section rebuilds
-    /// that profile's backend instead of stopping the reload.
+    /// at all**: a change that does reach an endpoint's resolved section rebuilds
+    /// that endpoint's backend instead of stopping the reload.
     #[test]
     fn nothing_about_the_signer_sections_is_refused_any_more() {
         assert!(refuse(|config, _| config.signer.backend = "custom".to_string()).is_ok());
         assert!(
-            refuse(|config, profiles| {
+            refuse(|config, endpoints| {
                 config.signer.backend = "custom".to_string();
-                profiles[0].sections.signer.backend = "custom".to_string();
+                endpoints[0].sections.signer.backend = "custom".to_string();
             })
             .is_ok()
         );

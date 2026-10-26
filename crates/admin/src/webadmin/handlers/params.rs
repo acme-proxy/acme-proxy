@@ -2,12 +2,12 @@
 //! "any" option is not a filter for the empty string.**
 //!
 //! An HTML `<select>` inside a submitted form always contributes its `name`, so
-//! `<option value="">every profile</option>` arrives as `profile=` rather than
+//! `<option value="">every endpoint</option>` arrives as `endpoint=` rather than
 //! as an omitted key, and `serde_urlencoded` deserializes that into `Some("")`.
-//! Every predicate builder below then honours it — `AND profile = ''` matches
+//! Every predicate builder below then honours it — `AND endpoint = ''` matches
 //! no row, and a `status=` reaches [`acme_proxy_store::status`], which refuses an
 //! unknown spelling by name and turns the page into a `400`. The CLI never sees
-//! this shape at all: clap yields `None` for an omitted `--profile`, which is
+//! this shape at all: clap yields `None` for an omitted `--endpoint`, which is
 //! why `order list --expiring-in` was right where `/ui/expiring` was empty.
 //!
 //! Normalizing here rather than in the model layer is deliberate. This is the
@@ -78,7 +78,7 @@ mod tests {
     #[derive(Debug, Deserialize)]
     struct Filters {
         #[serde(default, deserialize_with = "empty_is_absent")]
-        profile: Option<String>,
+        endpoint: Option<String>,
     }
 
     #[derive(Debug, Deserialize)]
@@ -123,20 +123,20 @@ mod tests {
         Query::<Filters>::try_from_uri(&uri)
             .expect("the query string parses")
             .0
-            .profile
+            .endpoint
     }
 
     /// The reported bug, at the layer that decides it: the spellings a
-    /// `<select>` on "every profile" can produce all mean *no filter*, and a
+    /// `<select>` on "every endpoint" can produce all mean *no filter*, and a
     /// real name still survives — trimmed, since a text input can carry a
     /// space the operator cannot see.
     #[test]
     fn a_blank_filter_is_absent_and_a_named_one_survives_trimmed() {
         assert_eq!(parse(""), None, "an omitted key is the unfiltered load");
-        assert_eq!(parse("?profile="), None, "what the form actually submits");
-        assert_eq!(parse("?profile=%20%20"), None, "spaces are still blank");
-        assert_eq!(parse("?profile=le"), Some("le".to_string()));
-        assert_eq!(parse("?profile=%20le%20"), Some("le".to_string()));
+        assert_eq!(parse("?endpoint="), None, "what the form actually submits");
+        assert_eq!(parse("?endpoint=%20%20"), None, "spaces are still blank");
+        assert_eq!(parse("?endpoint=le"), Some("le".to_string()));
+        assert_eq!(parse("?endpoint=%20le%20"), Some("le".to_string()));
     }
 
     /// The `&str` half, which the EAB write form calls directly.

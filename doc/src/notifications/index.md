@@ -7,13 +7,13 @@ server, and web-admin operators on security events on their own account.
 
 | Event | Fired when |
 | --- | --- |
-| `profile_mounted` | A profile is initialized at startup. |
+| `endpoint_mounted` | An endpoint is initialized at startup. |
 | `account_created` | A client registers a new account. |
 | `account_deactivated` | An account is deactivated. |
 | `certificate_issued` | An order is finalized and a certificate is minted. |
 | `certificate_revoked` | A certificate is revoked, via the ACME API or the admin CLI. |
 | `challenge_failed` | A domain-control validation attempt fails. |
-| `certificates_expiring` | The periodic expiry digest, one per profile. |
+| `certificates_expiring` | The periodic expiry digest, one per endpoint. |
 | `account_certificates_expiring` | The same digest cut per account, mailed to that account's own `contact`. Email only. |
 | `admin_sign_in` | A web-admin sign-in from an unfamiliar address, a refused second factor after a correct password, or a lockout. |
 | `admin_credential_changed` | A web-admin operator's password or second factor changed. |
@@ -24,7 +24,7 @@ ignored entry.
 
 `certificates_expiring` is the one that is not a thing that just happened.
 Every other event describes a single subject at the moment it changed; this one
-is a digest sent on a schedule, listing the certificates on one profile that
+is a digest sent on a schedule, listing the certificates on one endpoint that
 expire inside a configured window. It sends nothing until
 [`notify.expiry.lead_days`](#expiry-digest) is set, so leaving it in an
 `events` list costs nothing.
@@ -39,8 +39,8 @@ channel.
 `admin_sign_in` and `admin_credential_changed` are the [web-admin
 operator](../operations/webadmin.md#security-notifications) security events
 (ASVS V6.3.5 / V6.3.7). They fire **only** on the process-wide `[admin.notify]`
-dispatcher — never on a profile's `[notify]` — so listing either in a
-per-profile backend's `events` costs nothing. Their email goes to the affected
+dispatcher — never on an endpoint's `[notify]` — so listing either in a
+per-endpoint backend's `events` costs nothing. Their email goes to the affected
 operator's own address rather than to `notify.email.to`.
 
 ## Backends
@@ -108,7 +108,7 @@ backend pages.
 A certificate approaching its notAfter is the one thing the events above cannot
 report: nothing *happens* when a certificate is a fortnight from expiring. The
 `[notify.expiry]` table adds a periodic sweep that looks, and sends **one
-message per profile** listing what it found.
+message per endpoint** listing what it found.
 
 Deliberately not one message per certificate. A renewal is a *new* order, so
 the certificate it replaced still reaches its own expiry on schedule — a

@@ -125,7 +125,7 @@ mod tests {
             vec!["acme-proxy", "audit", "list"],
             vec!["acme-proxy", "jobs", "list"],
             vec!["acme-proxy", "eab", "list"],
-            vec!["acme-proxy", "profile", "list"],
+            vec!["acme-proxy", "endpoint", "list"],
             vec!["acme-proxy", "admin", "user", "list"],
             // Reads every row of the source and writes none of the schema:
             // the target is migrated by `acme-proxy migrate` against it, not

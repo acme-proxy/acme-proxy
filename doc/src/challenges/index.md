@@ -31,8 +31,8 @@ bypass = false
 timeout_ms = 5000
 ```
 
-`[challenge]` is a **per-profile** section: each endpoint can offer a different
-set of types. See [Profiles & Routing](../core/profiles.md).
+`[challenge]` is a **per-endpoint** section: each endpoint can offer a different
+set of types. See [Endpoints & Routing](../core/endpoints.md).
 
 ### Reference
 
@@ -55,7 +55,7 @@ Budget for one validation attempt, applied at the registry level whatever the
 type. It bounds a job attempt in the runner, not a request — see
 [Validation runs in the job queue](#validation-runs-in-the-job-queue) — and it
 must stay below `server.request_timeout_ms`, which
-`server::profile::build_all` refuses to start otherwise.
+`server::endpoint::build_all` refuses to start otherwise.
 
 **`max_in_flight_per_account`** (`Integer`) — *Default: `32` | Env:
 `ACME_PROXY_CHALLENGE__MAX_IN_FLIGHT_PER_ACCOUNT`*
@@ -184,7 +184,7 @@ Three consequences:
 
 A validation is attempted **once**: a check that ran records its verdict, pass
 or fail. The job is retried only when the attempt could not happen at all — the
-database was unreachable, or the endpoint's profile is not mounted by the
+database was unreachable, or the endpoint's endpoint is not mounted by the
 process that picked the row up.
 
 ## Both outcomes are `200`

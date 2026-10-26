@@ -4,7 +4,7 @@
 so a full deployment never needs a separate tool to manage its state: accounts,
 orders, the audit trail, the job queue, nonces, EAB credentials, the upstream
 account, the web admin's operators and sessions, and the database itself
-(`migrate`, `init`, `transfer`). `profile` and `filter` read the configuration
+(`migrate`, `init`, `transfer`). `endpoint` and `filter` read the configuration
 back as the server would build it.
 
 ## Invoking it
@@ -50,7 +50,7 @@ date.
 
 **`acme-proxy init`** migrates and then generates whatever first-run material
 the configuration calls for — the local CA key and certificate, an upstream
-account for a `relay` profile, a self-signed TLS certificate. It is the one
+account for a `relay` endpoint, a self-signed TLS certificate. It is the one
 command that *creates* key material, so a split deployment runs it once, as the
 uid that should own those files, before starting anything.
 
@@ -275,15 +275,15 @@ Read it without installing anything with `acme-proxy man | man -l -`.
 
 | Command | Flags |
 | --- | --- |
-| `account list` | `--profile <name>`, `--eab-kid <kid>`, `--limit <n>`, `--offset <n>`, `--json` |
+| `account list` | `--endpoint <name>`, `--eab-kid <kid>`, `--limit <n>`, `--offset <n>`, `--json` |
 | `account show <id>` | `--json` |
 | `account update-contact <id>` | `--contact <uri>` (repeatable) |
 | `account deactivate <id>` | — |
 | `account delete <id>` | *(prompts)* |
 
-- `account list --profile` restricts the listing to one ACME endpoint. Without
-  it, accounts from every profile are listed — the admin CLI is deliberately
-  unscoped by default, unlike the request path, which always scopes by profile.
+- `account list --endpoint` restricts the listing to one ACME endpoint. Without
+  it, accounts from every endpoint are listed — the admin CLI is deliberately
+  unscoped by default, unlike the request path, which always scopes by endpoint.
   The listing is **newest first** and paged; see [Paging](#paging) below.
 - `account list --eab-kid` lists the accounts one EAB credential registered —
   what to look at before `eab delete`.
@@ -309,7 +309,7 @@ Read it without installing anything with `acme-proxy man | man -l -`.
 
 | Command | Flags |
 | --- | --- |
-| `order list` | `--profile <name>`, `--account-id <id>`, `--status <status>`, `--identifier <name>`, `--identifier-contains <text>`, `--cert-serial <hex>`, `--expiring-in <days>`, `--hide-superseded`, `--limit <n>`, `--offset <n>`, `--json` |
+| `order list` | `--endpoint <name>`, `--account-id <id>`, `--status <status>`, `--identifier <name>`, `--identifier-contains <text>`, `--cert-serial <hex>`, `--expiring-in <days>`, `--hide-superseded`, `--limit <n>`, `--offset <n>`, `--json` |
 | `order show <id>` | `--json` |
 | `order chain <id>` | — |
 | `order delete <id>` | *(prompts)* |
@@ -382,7 +382,7 @@ Read it without installing anything with `acme-proxy man | man -l -`.
 
   `--reason` is the RFC 5280 reason code: `0`–`6` or `8`–`10`, since `7` is
   unused; any other value is refused. Omitted, the revocation carries no
-  reason. For a `relay` or `custom` profile the revocation is queued for the
+  reason. For a `relay` or `custom` endpoint the revocation is queued for the
   running server, and `--wait` is how many seconds the command waits for it to
   land before returning (default 30); `--wait 0` queues it and returns at once.
   A local CA's revocation is recorded immediately and does not wait.
@@ -437,7 +437,7 @@ and run-now behind an `operator`-or-higher session.
 
 | Command | Flags |
 | --- | --- |
-| `audit list` | `--profile <name>`, `--account-id <id>`, `--order-id <id>`, `--cert-serial <hex>`, `--event <e>`, `--outcome success\|failure`, `--since-days <n>`, `--limit <n>`, `--offset <n>`, `--json` |
+| `audit list` | `--endpoint <name>`, `--account-id <id>`, `--order-id <id>`, `--cert-serial <hex>`, `--event <e>`, `--outcome success\|failure`, `--since-days <n>`, `--limit <n>`, `--offset <n>`, `--json` |
 | `audit show <id>` | `--json` |
 | `audit cleanup` | `--older-than <days>` *(prompts)* |
 
@@ -516,11 +516,11 @@ shell on the host.
 
 | Command | Flags |
 | --- | --- |
-| `filter show` | `--profile <name>`, `--json` |
-| `filter explain` | `--profile <name>`, `--client-ip <ip>`, `--identifier <name>` (repeatable), `--path <p>` (default `/newOrder`), `--account-id <id>` (default `explain`), `--json` |
+| `filter show` | `--endpoint <name>`, `--json` |
+| `filter explain` | `--endpoint <name>`, `--client-ip <ip>`, `--identifier <name>` (repeatable), `--path <p>` (default `/newOrder`), `--account-id <id>` (default `explain`), `--json` |
 
-`--profile` may be omitted only when exactly one profile exists, the same rule
-`upstream show` follows: `[filter]` is per-profile, so acting on "the policy"
+`--endpoint` may be omitted only when exactly one endpoint exists, the same rule
+`upstream show` follows: `[filter]` is per-endpoint, so acting on "the policy"
 without saying which one would be acting on nothing.
 
 `filter show` prints the resolved policy — every check with its type and the
@@ -537,7 +537,7 @@ host run `acme-proxy migrate` before them:
 
 ```console
 $ acme-proxy filter show
-profile: default
+endpoint: default
 default: deny (when a rule was applicable and none matched)
 
 checks
@@ -557,7 +557,7 @@ ends cannot come to describe one policy differently:
 
 ```json
 {
-  "profile": "le",
+  "endpoint": "le",
   "active": true,
   "defaultEffect": "deny",
   "warning": null,
@@ -631,12 +631,12 @@ request rate times the TTL; one far above that says the reaper is not running.
 Values are never listed, on either surface: a nonce is a bearer credential
 until it is consumed, so a listing would put live ones on a screen.
 
-## Profiles
+## Endpoints
 
 | Command | Flags |
 | --- | --- |
-| `profile list` | `--json` |
-| `profile issuer accept <name>` | — |
+| `endpoint list` | `--json` |
+| `endpoint issuer accept <name>` | — |
 
 The ACME endpoints this configuration mounts, name-sorted, each with the two
 facts that decide whether it is safe to expose and then its directory URL —
@@ -644,39 +644,39 @@ last, because it is the only field here with no bounded width, and any column
 after it would be ragged:
 
 ```console
-$ acme-proxy profile list
-internal              challenges=bypassed   eab=off  https://ca.example.com/profile/internal/directory
-le                    challenges=validated  eab=on   https://ca.example.com/profile/le/directory
+$ acme-proxy endpoint list
+internal              challenges=bypassed   eab=off  https://ca.example.com/endpoint/internal/directory
+le                    challenges=validated  eab=on   https://ca.example.com/endpoint/le/directory
 ```
 
 `challenges=bypassed` is painted as a warning, because it is one: an endpoint
 that marks a challenge `valid` without checking anything is an open CA wherever
-`[filter]` is empty. A profile parked with `enabled = false` is absent, which is
-the honest answer to "what does this mount".
+`[filter]` is empty. An endpoint parked with `enabled = false` is absent, which
+is the honest answer to "what does this mount".
 
 Like `filter show`, this **builds** the answer the way startup does rather than
 reading a file back, so a configuration `serve` would refuse is refused here
 too — which makes it a pre-restart check as well as a listing. The panel's
-`GET /api/profiles` and `/ui/profiles` render the identical document from the
-*mounted* profiles instead, so between an edit and its `SIGHUP` the two
+`GET /api/endpoints` and `/ui/endpoints` render the identical document from the
+*mounted* endpoints instead, so between an edit and its `SIGHUP` the two
 legitimately disagree, and only this one can be pointed at a configuration the
 server would not start on.
 
-`profile issuer accept <name>` is the **deliberate change of a `local_ca`
-profile's CA**. The database records which CA each profile issues from, and a
+`endpoint issuer accept <name>` is the **deliberate change of a `local_ca`
+endpoint's CA**. The database records which CA each endpoint issues from, and a
 worker whose CA is not that one refuses to start, as does one with no CA at all
 once one is recorded (see [Local CA → One CA per
-profile](../signers/local_ca.md#one-ca-per-profile)). After replacing `ca.pem`
+endpoint](../signers/local_ca.md#one-ca-per-endpoint)). After replacing `ca.pem`
 and `ca.key` on purpose, run this once: it reads the configured certificate,
 shows the issuer recorded before and the one it will record, and asks. It
-writes a `profile_issuer_accepted` row to the [audit trail](audit.md). It reads
-the certificate only, never the key, so any uid that can read `ca.pem` may run
-it.
+writes an `endpoint_issuer_accepted` row to the [audit trail](audit.md). It
+reads the certificate only, never the key, so any uid that can read `ca.pem` may
+run it.
 
 ```console
-$ acme-proxy profile issuer accept default
-Profile `default`: record CA 3f1c… (from `/var/lib/acme-proxy/ca.pem`) in place of 9a07…? Every worker will then refuse the old CA. [y/N] y
-Profile `default` now issues from CA 3f1c….
+$ acme-proxy endpoint issuer accept default
+Endpoint `default`: record CA 3f1c… (from `/var/lib/acme-proxy/ca.pem`) in place of 9a07…? Every worker will then refuse the old CA. [y/N] y
+Endpoint `default` now issues from CA 3f1c….
 ```
 
 ## Upstream account management
@@ -685,16 +685,16 @@ Only relevant with `signer.backend = "relay"`.
 
 | Command | Flags |
 | --- | --- |
-| `upstream show` | `--profile <name>`, `--json` |
-| `upstream register` | `--profile <name>`, `--eab-kid <kid>`, `--eab-hmac-key-file <path>` |
-| `upstream order list` | `--profile <name>`, `--status <s>`, `--limit <n>`, `--offset <n>`, `--json` |
+| `upstream show` | `--endpoint <name>`, `--json` |
+| `upstream register` | `--endpoint <name>`, `--eab-kid <kid>`, `--eab-hmac-key-file <path>` |
+| `upstream order list` | `--endpoint <name>`, `--status <s>`, `--limit <n>`, `--offset <n>`, `--json` |
 | `upstream order show <local-order-id>` | `--json` |
 
-**`--profile` is required for `show`/`register` whenever the configuration
-defines more than one profile.** `[signer]` is a per-profile section, so acting
-on "the upstream" without saying which one would be acting on nothing. It may be
-omitted only when exactly one profile exists. `upstream order list` takes
-`--profile` as an ordinary filter and is cross-profile without it.
+**`--endpoint` is required for `show`/`register` whenever the configuration
+defines more than one endpoint.** `[signer]` is a per-endpoint section, so
+acting on "the upstream" without saying which one would be acting on nothing. It
+may be omitted only when exactly one endpoint exists. `upstream order list`
+takes `--endpoint` as an ordinary filter and is cross-endpoint without it.
 
 `upstream register` performs this proxy's own `newAccount` at the upstream CA
 and stores the resulting account URL beside `account_key_path` with a `.kid`
@@ -720,7 +720,7 @@ which abandons the local order too. The panel twins are
 
 | Command | Flags |
 | --- | --- |
-| `eab create` | `--label <text>`, `--profile <name>`, `--json` |
+| `eab create` | `--label <text>`, `--endpoint <name>`, `--json` |
 | `eab list` | `--limit <n>`, `--offset <n>`, `--json` |
 | `eab show <kid>` | `--json` |
 | `eab revoke <kid>` | — |
@@ -728,8 +728,8 @@ which abandons the local order too. The panel twins are
 
 - `eab create` prints the generated HMAC secret **once**. It is stored but never
   shown again, so a lost secret is replaced, not recovered.
-- `--profile` binds the credential to one endpoint. Omitted, the credential is
-  accepted at *every* profile — which is what an unscoped credential means, and
+- `--endpoint` binds the credential to one endpoint. Omitted, the credential is
+  accepted at *every* endpoint — which is what an unscoped credential means, and
   is usually not what you want in a multi-tenant deployment.
 - `eab revoke` takes effect immediately, with no restart: credentials are read
   from the live database on every `newAccount`.

@@ -18,8 +18,8 @@ pub enum Subject {
     EabCredential,
     Operator,
     Session,
-    /// A profile, named rather than numbered.
-    Profile,
+    /// An endpoint, named rather than numbered.
+    Endpoint,
 }
 
 impl Subject {
@@ -33,7 +33,7 @@ impl Subject {
             Self::EabCredential => "EAB credential",
             Self::Operator => "operator",
             Self::Session => "session",
-            Self::Profile => return format!("no profile named `{id}` is mounted"),
+            Self::Endpoint => return format!("no endpoint named `{id}` is mounted"),
         };
         format!("no such {noun}: {id}")
     }
@@ -51,8 +51,8 @@ mod tests {
             "no such EAB credential: kid-9"
         );
         assert_eq!(
-            Subject::Profile.missing("le"),
-            "no profile named `le` is mounted"
+            Subject::Endpoint.missing("le"),
+            "no endpoint named `le` is mounted"
         );
     }
 }

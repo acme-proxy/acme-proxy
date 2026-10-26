@@ -214,7 +214,7 @@ pub struct ChallengeRegistry {
     bypass: bool,
     timeout: Duration,
     /// `challenge.max_in_flight_per_account`, carried here because this is what
-    /// a profile hands the service that claims a challenge. `0` is no limit.
+    /// an endpoint hands the service that claims a challenge. `0` is no limit.
     max_in_flight_per_account: u32,
 }
 
@@ -236,7 +236,7 @@ impl Default for ChallengeRegistry {
     ///
     /// This is a **test** default and deliberately no longer matches
     /// `from_config(&ChallengeConfig::default())`, which validates for real.
-    /// The server never reaches this impl — `server::profile::build_all` always goes
+    /// The server never reaches this impl — `server::endpoint::build_all` always goes
     /// through `from_config` — and a test suite that has no `http-01` responder
     /// on port 80 needs a registry that answers without one. The divergence is
     /// pinned by `the_test_default_bypasses_where_the_configured_default_does_not`
@@ -593,7 +593,7 @@ mod tests {
 
     /// `ChallengeRegistry::default()` is a test convenience and deliberately
     /// differs from the configured default now that the latter validates. The
-    /// server never reaches it — `server::profile::build_all` always goes through
+    /// server never reaches it — `server::endpoint::build_all` always goes through
     /// `from_config` — but a suite with no `http-01` responder on port 80 needs
     /// a registry that answers without one. Asserted so the difference stays a
     /// decision rather than a drift somebody discovers later.

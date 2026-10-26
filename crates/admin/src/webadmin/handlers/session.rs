@@ -538,7 +538,7 @@ async fn notify_sign_in(
     state
         .notify_security(acme_proxy_jobs::notify::NotifyEvent::AdminSignIn(
             acme_proxy_jobs::notify::AdminSignInData {
-                profile: acme_proxy_jobs::notify::ADMIN_DISPATCHER_KEY.to_string(),
+                endpoint: acme_proxy_jobs::notify::ADMIN_DISPATCHER_KEY.to_string(),
                 username: user.username.clone(),
                 recipient: user.contact_email.clone(),
                 outcome,

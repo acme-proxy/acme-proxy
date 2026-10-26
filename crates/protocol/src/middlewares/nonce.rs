@@ -42,8 +42,8 @@ const REPLAY_NONCE: HeaderName = HeaderName::from_static("replay-nonce");
 /// The nonce table already grows a row per signed request and is swept on a
 /// timer; there is no reason to also grow it per unauthenticated GET.
 ///
-/// The path here is the profile-relative one: `Router::nest` strips
-/// `/profile/<name>` before this layer sees the request, the same reason
+/// The path here is the endpoint-relative one: `Router::nest` strips
+/// `/endpoint/<name>` before this layer sees the request, the same reason
 /// `verify_jws` can reconstruct the §6.4 URL from `base_url + path`.
 fn mints_nonce(method: &Method, path: &str) -> bool {
     method == Method::POST || path == acme_proxy_core::routes::NEW_NONCE

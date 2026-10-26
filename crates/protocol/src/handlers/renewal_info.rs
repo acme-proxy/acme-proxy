@@ -84,7 +84,7 @@ pub async fn get_renewal_info(
     })?;
     let serial_hex = cert_id.serial_hex();
 
-    let order = Order::find_by_cert_serial(&state.profile.name, &serial_hex, &state.database)
+    let order = Order::find_by_cert_serial(&state.endpoint.name, &serial_hex, &state.database)
         .await
         .map_err(|error| {
             warn!(event = "renewal_info_lookup_error", outcome = "failure", error = %error);
@@ -152,7 +152,7 @@ pub async fn get_renewal_info(
         // rate limits and planned revocations. `local_ca` keeps the trait's default
         // "no opinion", and an upstream that is unreachable or has none must not
         // fail the request, so both fall through to the local computation.
-        match state.profile.signer_info.renewal_info(&leaf_der).await {
+        match state.endpoint.signer_info.renewal_info(&leaf_der).await {
             Ok(Some(window)) => window,
             Ok(None) => calculate_suggested_window(not_before, not_after, false, now),
             Err(error) => {

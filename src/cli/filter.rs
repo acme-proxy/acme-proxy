@@ -1,6 +1,6 @@
 //! `acme-proxy filter show|explain` — reading the configured access policy.
 //!
-//! Argument marshalling and profile resolution only; everything printed comes
+//! Argument marshalling and endpoint resolution only; everything printed comes
 //! from [`acme_proxy_policy::filter::explain`], which is what lets the panel serve `show`
 //! from the same renderings without moving any logic. `explain` stays here and
 //! only here; why is recorded there.
@@ -9,7 +9,7 @@ use std::net::IpAddr;
 
 use clap::Subcommand;
 
-use super::{CliError, resolve_profile};
+use super::{CliError, resolve_endpoint};
 use acme_proxy_core::config::Config;
 use acme_proxy_core::identifier::Identifier;
 use acme_proxy_core::palette::Palette;
@@ -22,11 +22,11 @@ use acme_proxy_policy::filter::explain::render_policy;
 
 #[derive(Subcommand)]
 pub enum FilterCommand {
-    /// Print the resolved access policy for a profile.
+    /// Print the resolved access policy for an endpoint.
     Show {
         /// Which endpoint's policy. Optional when exactly one is configured.
         #[arg(long)]
-        profile: Option<String>,
+        endpoint: Option<String>,
         /// Print it as JSON.
         #[arg(long)]
         json: bool,
@@ -39,7 +39,7 @@ pub enum FilterCommand {
     Explain {
         /// Which endpoint's policy. Optional when exactly one is configured.
         #[arg(long)]
-        profile: Option<String>,
+        endpoint: Option<String>,
         /// The address the request would come from.
         #[arg(long)]
         client_ip: Option<IpAddr>,
@@ -64,8 +64,8 @@ pub async fn run_filter_command(
     config: &Config,
 ) -> Result<(), CliError> {
     match command {
-        FilterCommand::Show { profile, json } => {
-            let (name, policy) = build(config, profile.as_deref())?;
+        FilterCommand::Show { endpoint, json } => {
+            let (name, policy) = build(config, endpoint.as_deref())?;
             if json {
                 print_json(&policy_json(&name, &policy))?;
             } else {
@@ -74,14 +74,14 @@ pub async fn run_filter_command(
             Ok(())
         }
         FilterCommand::Explain {
-            profile,
+            endpoint,
             client_ip,
             identifiers,
             path,
             account_id,
             json,
         } => {
-            let (name, policy) = build(config, profile.as_deref())?;
+            let (name, policy) = build(config, endpoint.as_deref())?;
             let subject = Subject {
                 client_ip,
                 account_id,
@@ -121,7 +121,7 @@ fn print_json(value: &serde_json::Value) -> Result<(), CliError> {
     Ok(())
 }
 
-/// Resolves the profile and builds its policy, exactly as startup would.
+/// Resolves the endpoint and builds its policy, exactly as startup would.
 ///
 /// Building here rather than reading the configuration back means every
 /// startup refusal — an unknown check type, a condition that will not parse, a
@@ -136,8 +136,8 @@ fn build(
     config: &Config,
     wanted: Option<&str>,
 ) -> Result<(String, acme_proxy_policy::filter::FilterPolicy), CliError> {
-    let profile = resolve_profile(config, wanted)?;
-    let sections = &profile.sections;
+    let endpoint = resolve_endpoint(config, wanted)?;
+    let sections = &endpoint.sections;
 
     let resolver = acme_proxy_net::dns::HickoryResolver::from_system_uncached()
         .map_err(|error| CliError::failed(format!("cannot build a resolver: {error}")))?;
@@ -151,7 +151,7 @@ fn build(
             std::sync::Arc::new(proxies),
         ),
     )
-    .map_err(|error| CliError::failed(format!("profile `{}`: {error}", profile.name)))?;
+    .map_err(|error| CliError::failed(format!("endpoint `{}`: {error}", endpoint.name)))?;
 
     let policy = acme_proxy_policy::filter::build::build(
         &sections.filter,
@@ -159,9 +159,9 @@ fn build(
         inventory,
         sections.eab.enabled,
     )
-    .map_err(|error| CliError::failed(format!("profile `{}`: {error}", profile.name)))?;
+    .map_err(|error| CliError::failed(format!("endpoint `{}`: {error}", endpoint.name)))?;
 
-    Ok((profile.name, policy))
+    Ok((endpoint.name, policy))
 }
 
 #[cfg(test)]
@@ -170,10 +170,10 @@ mod tests {
     use acme_proxy_core::config::ENV_LOCK;
 
     /// Loads a `Config` from TOML the way the server does, so
-    /// `resolve_profiles` has the raw sources per-key inheritance needs — the
+    /// `resolve_endpoints` has the raw sources per-key inheritance needs — the
     /// same helper shape `cli::upstream`'s tests use, and for the same reason:
     /// a `Config` deserialized directly carries no raw layer and resolves no
-    /// profiles at all.
+    /// endpoints at all.
     fn load(body: &str) -> Config {
         let _lock = ENV_LOCK
             .lock()
@@ -191,9 +191,9 @@ mod tests {
         config
     }
 
-    const ONE_PROFILE: &str = r#"
-        [profiles.default]
-        [profiles.default.filter]
+    const ONE_ENDPOINT: &str = r#"
+        [endpoints.default]
+        [endpoints.default.filter]
         rules = ["mgmt"]
         rule.mgmt.when = "net"
         rule.mgmt.then = "allow"
@@ -206,13 +206,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn show_prints_the_policy_of_the_only_profile() {
-        let config = load(ONE_PROFILE);
+    async fn show_prints_the_policy_of_the_only_endpoint() {
+        let config = load(ONE_ENDPOINT);
         assert!(
             run(
                 &config,
                 FilterCommand::Show {
-                    profile: None,
+                    endpoint: None,
                     json: false
                 }
             )
@@ -222,13 +222,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn show_accepts_the_profile_by_name() {
-        let config = load(ONE_PROFILE);
+    async fn show_accepts_the_endpoint_by_name() {
+        let config = load(ONE_ENDPOINT);
         assert!(
             run(
                 &config,
                 FilterCommand::Show {
-                    profile: Some("default".to_string()),
+                    endpoint: Some("default".to_string()),
                     json: false
                 }
             )
@@ -238,44 +238,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_unknown_profile_is_refused_by_name() {
-        let config = load(ONE_PROFILE);
+    async fn an_unknown_endpoint_is_refused_by_name() {
+        let config = load(ONE_ENDPOINT);
         let error = run(
             &config,
             FilterCommand::Show {
-                profile: Some("nope".to_string()),
+                endpoint: Some("nope".to_string()),
                 json: false,
             },
         )
         .await
         .unwrap_err();
         assert!(
-            error.message.contains("no profile named `nope`"),
+            error.message.contains("no endpoint named `nope`"),
             "{}",
             error.message
         );
     }
 
-    /// `--profile` is optional only when there is nothing to disambiguate,
+    /// `--endpoint` is optional only when there is nothing to disambiguate,
     /// matching `upstream show`.
     #[tokio::test]
-    async fn several_profiles_require_naming_one() {
+    async fn several_endpoints_require_naming_one() {
         let config = load(
             r#"
-            [profiles.a]
-            [profiles.b]
+            [endpoints.a]
+            [endpoints.b]
             "#,
         );
         let error = run(
             &config,
             FilterCommand::Show {
-                profile: None,
+                endpoint: None,
                 json: false,
             },
         )
         .await
         .unwrap_err();
-        assert!(error.message.contains("--profile"), "{}", error.message);
+        assert!(error.message.contains("--endpoint"), "{}", error.message);
     }
 
     /// The command builds the policy rather than reading it back, so every
@@ -285,8 +285,8 @@ mod tests {
     async fn a_broken_policy_is_reported_rather_than_printed() {
         let config = load(
             r#"
-            [profiles.default]
-            [profiles.default.filter]
+            [endpoints.default]
+            [endpoints.default.filter]
             rules = ["broken"]
             rule.broken.when = "net and )"
             rule.broken.then = "allow"
@@ -301,7 +301,7 @@ mod tests {
             let error = run(
                 &config,
                 FilterCommand::Show {
-                    profile: None,
+                    endpoint: None,
                     json,
                 },
             )
@@ -314,13 +314,13 @@ mod tests {
     /// `show` answers in both shapes, the way `explain` already does.
     #[tokio::test]
     async fn show_runs_in_both_output_shapes() {
-        let config = load(ONE_PROFILE);
+        let config = load(ONE_ENDPOINT);
         for json in [false, true] {
             assert!(
                 run(
                     &config,
                     FilterCommand::Show {
-                        profile: None,
+                        endpoint: None,
                         json
                     }
                 )
@@ -331,9 +331,9 @@ mod tests {
         }
     }
 
-    fn explain_of(profile: Option<String>, ip: &str, names: &[&str], json: bool) -> FilterCommand {
+    fn explain_of(endpoint: Option<String>, ip: &str, names: &[&str], json: bool) -> FilterCommand {
         FilterCommand::Explain {
-            profile,
+            endpoint,
             client_ip: Some(ip.parse().unwrap()),
             identifiers: names.iter().map(std::string::ToString::to_string).collect(),
             path: "/newOrder".to_string(),
@@ -344,7 +344,7 @@ mod tests {
 
     #[tokio::test]
     async fn explain_runs_in_both_output_shapes() {
-        let config = load(ONE_PROFILE);
+        let config = load(ONE_ENDPOINT);
         for json in [false, true] {
             assert!(
                 run(
@@ -360,7 +360,7 @@ mod tests {
 
     #[tokio::test]
     async fn explain_works_on_a_refused_address_too() {
-        let config = load(ONE_PROFILE);
+        let config = load(ONE_ENDPOINT);
         assert!(
             run(&config, explain_of(None, "203.0.113.9", &[], false))
                 .await
@@ -372,7 +372,7 @@ mod tests {
     /// is the answer, and an operator checking a fresh install should see it.
     #[tokio::test]
     async fn explain_handles_a_policy_with_no_rules() {
-        let config = load("[profiles.default]\n");
+        let config = load("[endpoints.default]\n");
         assert!(
             run(
                 &config,
@@ -385,9 +385,9 @@ mod tests {
 
     #[tokio::test]
     async fn explain_accepts_no_client_address_at_all() {
-        let config = load(ONE_PROFILE);
+        let config = load(ONE_ENDPOINT);
         let command = FilterCommand::Explain {
-            profile: None,
+            endpoint: None,
             client_ip: None,
             identifiers: Vec::new(),
             path: "/directory".to_string(),

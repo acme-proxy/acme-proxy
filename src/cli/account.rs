@@ -23,11 +23,11 @@ use acme_proxy_store::db::Database;
 
 #[derive(Subcommand)]
 pub enum AccountCommand {
-    /// List accounts, newest first, of every profile unless one is named.
+    /// List accounts, newest first, of every endpoint unless one is named.
     List {
         /// Restrict the listing to one ACME endpoint.
         #[arg(long)]
-        profile: Option<String>,
+        endpoint: Option<String>,
         /// Restrict the listing to the accounts one EAB credential bound.
         #[arg(long)]
         eab_kid: Option<String>,
@@ -80,7 +80,7 @@ pub async fn run_account_command(
 ) -> Result<(), CliError> {
     match command {
         AccountCommand::List {
-            profile,
+            endpoint,
             eab_kid,
             limit,
             offset,
@@ -88,7 +88,7 @@ pub async fn run_account_command(
         } => {
             let window = Window::resolve(limit, offset);
             let (accounts, total) = Account::search(
-                profile.as_deref(),
+                endpoint.as_deref(),
                 eab_kid.as_deref(),
                 window.limit,
                 window.offset,
@@ -130,13 +130,13 @@ pub async fn run_account_command(
         }
         AccountCommand::Deactivate { id } => {
             // Queued, not sent: the running server's worker delivers it. A
-            // configuration that mounts no profile has nothing to notify
+            // configuration that mounts no endpoint has nothing to notify
             // through, which is not a reason to refuse the deactivation.
             let notifiers = super::offline_notifiers(config, database.clone()).unwrap_or_default();
             match admin::deactivate_account(
                 &id,
                 database.clone(),
-                |profile| notifiers.get(profile).cloned(),
+                |endpoint| notifiers.get(endpoint).cloned(),
                 None,
                 &admin::trail::CliActions::new(&database),
             )
@@ -260,7 +260,7 @@ mod tests {
     }
 
     /// A successful mutation leaves one `cli`-attributed audit row carrying the
-    /// account's own id and profile; a declined delete leaves none.
+    /// account's own id and endpoint; a declined delete leaves none.
     #[tokio::test]
     async fn a_mutation_writes_an_audit_row_and_a_decline_does_not() {
         use acme_proxy_store::audit::AuditEntry;
@@ -318,7 +318,7 @@ mod tests {
         assert_eq!(rows.len(), 1, "only the deactivation is a mutation");
         assert_eq!(rows[0].event, "account_deactivated");
         assert_eq!(rows[0].actor_kind, "cli");
-        assert_eq!(rows[0].profile, "default");
+        assert_eq!(rows[0].endpoint, "default");
         assert_eq!(
             rows[0].account_id.as_deref(),
             Some(account.id.to_string().as_str())
@@ -453,7 +453,7 @@ mod tests {
         for (limit, offset, json) in [(2, 0, false), (2, 2, false), (2, 0, true), (0, -5, false)] {
             run_account_command(
                 AccountCommand::List {
-                    profile: None,
+                    endpoint: None,
                     eab_kid: None,
                     limit,
                     offset,
@@ -517,7 +517,7 @@ mod tests {
         let mut reader: &[u8] = &[];
         run_account_command(
             AccountCommand::List {
-                profile: Some("default".to_string()),
+                endpoint: Some("default".to_string()),
                 eab_kid: None,
                 limit: DEFAULT_LIMIT,
                 offset: 0,

@@ -30,10 +30,10 @@ use common::{
 /// naming the process.
 const HOST: &str = "https://acme.example.test:8443";
 
-/// The profile base URL that follows from it — `server.base_url` plus the
+/// The endpoint base URL that follows from it — `server.base_url` plus the
 /// endpoint's own mount point, which is what every advertised URL is built
 /// from and what a JWS `url` must name.
-const BASE: &str = "https://acme.example.test:8443/profile/default";
+const BASE: &str = "https://acme.example.test:8443/endpoint/default";
 
 /// A config that differs from the defaults in every value this crate asserts on.
 ///
@@ -168,7 +168,7 @@ async fn a_url_for_the_default_base_is_refused() {
 
     let n = nonce(&app).await;
     let body = signer.sign(
-        "http://localhost:3000/profile/default/newAccount",
+        "http://localhost:3000/endpoint/default/newAccount",
         &n,
         &json!({ "termsOfServiceAgreed": true }),
     );

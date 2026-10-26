@@ -19,7 +19,7 @@ question with a constant answer.
 
 ## The `/crl` and `/ca.pem` trap
 
-**Both are served by the profile router**, which means they sit behind the
+**Both are served by the endpoint router**, which means they sit behind the
 filter policy exactly like `/newOrder` does. Turn on an address-based check
 without accounting for them and two things break quietly:
 
@@ -55,13 +55,13 @@ Because `public` comes first and first match wins, both are served to anyone
 while everything else still requires the management network.
 
 Server-level routes — `GET /health`, `GET /`, and the `http-01` responder — are
-served by the **root** router, which no profile's policy ever sees. They are
+served by the **root** router, which no endpoint's policy ever sees. They are
 already unfiltered and need no entry here.
 
-## Paths are profile-stripped
+## Paths are endpoint-stripped
 
-Matching is against the path with the `/profile/<name>` prefix removed, so
-`/directory` — not `/profile/default/directory` — is the value to list, and one
+Matching is against the path with the `/endpoint/<name>` prefix removed, so
+`/directory` — not `/endpoint/default/directory` — is the value to list, and one
 check covers every endpoint the process serves.
 
 ## Globs

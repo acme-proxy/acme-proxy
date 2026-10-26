@@ -43,9 +43,9 @@ pub(crate) mod logging;
 /// The `--log-level` flag and the per-invocation decision it feeds. Re-exported
 /// for `main.rs`, which is where the subscriber is installed.
 pub use logging::{LogLevel, LoggingPlan, plan_logging};
+pub mod endpoint;
 pub mod nonce;
 pub mod order;
-pub mod profile;
 pub mod render;
 pub mod schema;
 pub mod style;
@@ -57,10 +57,10 @@ pub mod window;
 pub use account::AccountCommand;
 pub use audit::AuditCommand;
 pub use eab::EabCommand;
+pub use endpoint::EndpointCommand;
 pub use jobs::JobsCommand;
 pub use nonce::NonceCommand;
 pub use order::OrderCommand;
-pub use profile::ProfileCommand;
 pub use upstream::UpstreamCommand;
 pub use webadmin::AdminCommand;
 
@@ -174,9 +174,9 @@ pub enum Command {
         command: NonceCommand,
     },
     /// Inspect the ACME endpoints this configuration mounts.
-    Profile {
+    Endpoint {
         #[command(subcommand)]
-        command: ProfileCommand,
+        command: EndpointCommand,
     },
     /// Manage External Account Binding (EAB) credentials.
     Eab {
@@ -211,7 +211,7 @@ pub enum Command {
 }
 
 /// The notification dispatchers `serve` would build from this configuration —
-/// every profile's, plus the web admin's when `admin.enabled` — over a queue
+/// every endpoint's, plus the web admin's when `admin.enabled` — over a queue
 /// this process never drains.
 ///
 /// A dispatcher only *writes* `notify_deliver` rows; delivering them is the
@@ -225,13 +225,13 @@ pub(crate) fn offline_notifiers(
     database: Arc<Database>,
 ) -> Result<acme_proxy_jobs::notify::DispatcherMap, CliError> {
     let failed = |error: anyhow::Error| CliError::failed(format!("configuration error: {error}"));
-    let profiles = config
-        .resolve_profiles()
+    let endpoints = config
+        .resolve_endpoints()
         .map_err(|error| failed(anyhow::anyhow!(error)))?;
     let egress = acme_proxy_net::egress::Egress::from_config(config).map_err(failed)?;
     let jobs = acme_proxy_jobs::jobs::JobQueue::new(database, &config.jobs);
     let mut dispatchers =
-        acme_proxy_jobs::notify::build_registry(&profiles, egress.outbound(), &jobs)
+        acme_proxy_jobs::notify::build_registry(&endpoints, egress.outbound(), &jobs)
             .map_err(failed)?;
     if let Some(admin) = admin_dispatcher(config, &egress, &jobs).map_err(failed)? {
         dispatchers.insert(
@@ -245,7 +245,7 @@ pub(crate) fn offline_notifiers(
 /// The web admin's own dispatcher — its operators' security messages — or
 /// `None` when `[admin]` is off. One builder for [`offline_notifiers`] and for
 /// the credential messages the `admin user` commands queue, which need no
-/// profile resolved to send one.
+/// endpoint resolved to send one.
 pub(crate) fn admin_dispatcher(
     config: &Config,
     egress: &acme_proxy_net::egress::Egress,
@@ -263,32 +263,32 @@ pub(crate) fn admin_dispatcher(
     .map(Some)
 }
 
-/// Picks the profile a command acts on.
+/// Picks the endpoint a command acts on.
 ///
-/// `--profile` is optional only when the configuration defines exactly one:
-/// most per-profile sections would otherwise be acted on ambiguously, and
+/// `--endpoint` is optional only when the configuration defines exactly one:
+/// most per-endpoint sections would otherwise be acted on ambiguously, and
 /// guessing is worse than asking. Shared by `upstream` and `filter`, which had
 /// grown one copy each.
-pub(crate) fn resolve_profile(
+pub(crate) fn resolve_endpoint(
     config: &Config,
     wanted: Option<&str>,
-) -> Result<acme_proxy_core::config::ProfileConfig, CliError> {
-    let profiles = config
-        .resolve_profiles()
+) -> Result<acme_proxy_core::config::EndpointConfig, CliError> {
+    let endpoints = config
+        .resolve_endpoints()
         .map_err(|error| CliError::failed(format!("configuration error: {error}")))?;
 
     match wanted {
-        Some(name) => profiles
+        Some(name) => endpoints
             .into_iter()
-            .find(|profile| profile.name == name)
+            .find(|endpoint| endpoint.name == name)
             .ok_or_else(|| {
-                CliError::bad_request(format!("no profile named `{name}` in this configuration"))
+                CliError::bad_request(format!("no endpoint named `{name}` in this configuration"))
             }),
-        None if profiles.len() == 1 => Ok(profiles.into_iter().next().expect("length checked")),
+        None if endpoints.len() == 1 => Ok(endpoints.into_iter().next().expect("length checked")),
         None => {
-            let names: Vec<&str> = profiles.iter().map(|p| p.name.as_str()).collect();
+            let names: Vec<&str> = endpoints.iter().map(|p| p.name.as_str()).collect();
             Err(CliError::bad_request(format!(
-                "this configuration defines several profiles ({}); say which one with --profile",
+                "this configuration defines several endpoints ({}); say which one with --endpoint",
                 names.join(", ")
             )))
         }
@@ -452,8 +452,8 @@ pub async fn dispatch(
         Command::Nonce { command } => {
             nonce::run_nonce_command(command, yes, reader, config, database).await
         }
-        Command::Profile { command } => {
-            profile::run_profile_command(command, yes, palette, reader, config, database).await
+        Command::Endpoint { command } => {
+            endpoint::run_endpoint_command(command, yes, palette, reader, config, database).await
         }
         Command::Eab { command } => {
             eab::run_eab_command(command, yes, palette, reader, config, database).await
@@ -516,7 +516,7 @@ pub async fn migrate(palette: Palette, database: Arc<Database>) -> Result<(), Cl
 /// run the `worker` role refuses to generate any, so a split deployment runs
 /// this once, as the uid that should own the files, before starting anything.
 ///
-/// Building the profiles is what generates: `server::profile::build_all` constructs
+/// Building the endpoints is what generates: `server::endpoint::build_all` constructs
 /// every signer backend, and a `local_ca` with no key writes one, a `relay`
 /// with no account registers one. That is why this goes through the real
 /// builder rather than a separate generation path — there would be two
@@ -533,7 +533,7 @@ pub async fn init(
     // and the CA a first `init` generates is recorded. See
     // `acme_proxy_signer::local_ca::identity`.
     let resolved = config
-        .resolve_profiles()
+        .resolve_endpoints()
         .map_err(|error| CliError::failed(format!("configuration error: {error}")))?;
     let check = async || {
         acme_proxy_signer::local_ca::identity::check_issuers(&resolved, &database)
@@ -542,12 +542,12 @@ pub async fn init(
     };
     check().await?;
     let queue = acme_proxy_jobs::jobs::JobQueue::new(database.clone(), &config.jobs);
-    let profiles = acme_proxy_server::profile::build_all(config, database.clone(), &queue)
+    let endpoints = acme_proxy_server::endpoint::build_all(config, database.clone(), &queue)
         .map_err(|error| CliError::failed(error.to_string()))?;
     check().await?;
 
-    for profile in &profiles {
-        println!("Profile `{}` is ready.", profile.name);
+    for endpoint in &endpoints {
+        println!("Endpoint `{}` is ready.", endpoint.name);
     }
     println!("{}", palette.ok("Initialisation complete."));
     Ok(())
@@ -637,7 +637,7 @@ mod tests {
             Some(Command::Account {
                 command: AccountCommand::List {
                     json: true,
-                    profile: None,
+                    endpoint: None,
                     eab_kid: None,
                     limit: window::DEFAULT_LIMIT,
                     offset: 0
@@ -701,7 +701,7 @@ mod tests {
             cli.command,
             Some(Command::Order {
                 command: OrderCommand::List(crate::cli::order::OrderListArgs {
-                    profile: None,
+                    endpoint: None,
                     account_id: Some(a),
                     status: Some(s),
                     identifier: None,
@@ -733,7 +733,7 @@ mod tests {
                     hide_superseded: true,
                     status: None,
                     account_id: None,
-                    profile: None,
+                    endpoint: None,
                     identifier: None,
                     identifier_contains: None,
                     cert_serial: None,
@@ -792,7 +792,7 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Command::Eab {
-                command: EabCommand::Create { label: Some(l), profile: None, json: true }
+                command: EabCommand::Create { label: Some(l), endpoint: None, json: true }
             }) if l == "test-key"
         ));
 
@@ -827,11 +827,11 @@ mod tests {
             })
         ));
 
-        let cli = Cli::try_parse_from(["acme-proxy", "profile", "list"]).unwrap();
+        let cli = Cli::try_parse_from(["acme-proxy", "endpoint", "list"]).unwrap();
         assert!(matches!(
             cli.command,
-            Some(Command::Profile {
-                command: ProfileCommand::List { json: false }
+            Some(Command::Endpoint {
+                command: EndpointCommand::List { json: false }
             })
         ));
 
@@ -891,7 +891,7 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Command::Upstream {
-                command: UpstreamCommand::Register { eab_kid: Some(kid), eab_hmac_key_file: None, profile: None }
+                command: UpstreamCommand::Register { eab_kid: Some(kid), eab_hmac_key_file: None, endpoint: None }
             }) if kid == "kid-1"
         ));
 
@@ -903,7 +903,7 @@ mod tests {
                 command: UpstreamCommand::Register {
                     eab_kid: None,
                     eab_hmac_key_file: None,
-                    profile: None,
+                    endpoint: None,
                 }
             })
         ));
@@ -921,7 +921,7 @@ mod tests {
             Some(Command::Upstream {
                 command: UpstreamCommand::Show {
                     json: true,
-                    profile: None
+                    endpoint: None
                 }
             })
         ));
@@ -1179,16 +1179,16 @@ mod tests {
         assert_eq!(CliError::from("x".to_string()).kind(), CliErrorKind::Failed);
     }
 
-    /// A configuration with no resolvable profiles is the host's to fix, so
-    /// `resolve_profile` reports it as `Failed` (exit 1). The `BadRequest`
-    /// branches — an unknown `--profile`, and none given where several exist —
+    /// A configuration with no resolvable endpoints is the host's to fix, so
+    /// `resolve_endpoint` reports it as `Failed` (exit 1). The `BadRequest`
+    /// branches — an unknown `--endpoint`, and none given where several exist —
     /// are covered in `src/cli/filter.rs`, its other caller, where a
-    /// multi-profile configuration is already loadable.
+    /// multi-endpoint configuration is already loadable.
     #[test]
-    fn resolve_profile_reports_a_missing_profile_set_as_failed() {
+    fn resolve_endpoint_reports_a_missing_endpoint_set_as_failed() {
         let config = Config::default();
         assert_eq!(
-            resolve_profile(&config, None).unwrap_err().kind(),
+            resolve_endpoint(&config, None).unwrap_err().kind(),
             CliErrorKind::Failed
         );
     }
@@ -1204,7 +1204,7 @@ mod tests {
         let commands = vec![
             Command::Account {
                 command: AccountCommand::List {
-                    profile: None,
+                    endpoint: None,
                     eab_kid: None,
                     limit: window::DEFAULT_LIMIT,
                     offset: 0,
@@ -1213,7 +1213,7 @@ mod tests {
             },
             Command::Order {
                 command: OrderCommand::List(crate::cli::order::OrderListArgs {
-                    profile: None,
+                    endpoint: None,
                     account_id: None,
                     status: None,
                     identifier: None,
@@ -1254,16 +1254,16 @@ mod tests {
             Command::Completions {
                 shell: clap_complete::aot::Shell::Bash,
             },
-            // `Profile` is deliberately absent for `Upstream`'s reason below,
-            // arrived at from the other end: it resolves the profiles, and
+            // `Endpoint` is deliberately absent for `Upstream`'s reason below,
+            // arrived at from the other end: it resolves the endpoints, and
             // `Config::default()` mounts none, so it reports that rather than
-            // listing nothing. Its arm is driven from `cli::profile`'s own
+            // listing nothing. Its arm is driven from `cli::endpoint`'s own
             // tests, against a configuration that has some.
-            // `Upstream` is deliberately absent: it acts on a *profile's*
+            // `Upstream` is deliberately absent: it acts on an *endpoint's*
             // `[signer.relay]`, and this config has none, so it now
             // reports that rather than silently reading the global base
             // section nothing serves from. Covered in `cli::upstream`'s own
-            // tests, which supply a configuration with profiles.
+            // tests, which supply a configuration with endpoints.
         ];
         for command in commands {
             dispatch(
@@ -1360,6 +1360,6 @@ mod tests {
         )
         .await
         .expect_err("a server with no endpoint must not start");
-        assert!(error.to_string().contains("profile"), "{error}");
+        assert!(error.to_string().contains("endpoint"), "{error}");
     }
 }

@@ -29,7 +29,7 @@ pub fn dns_identifiers(values: &[&str]) -> Vec<acme_proxy_core::identifier::Iden
         .collect()
 }
 
-/// An account in the `default` profile, returning its id.
+/// An account in the `default` endpoint, returning its id.
 ///
 /// Three modules had grown a verbatim copy of this (`admin::ops`,
 /// `admin::render`, `crate::order`) — the same accumulation as `TempDir` and
@@ -81,7 +81,7 @@ pub async fn account_seen_from(
     .0
 }
 
-/// An unsaved order in the `default` profile, in `status`.
+/// An unsaved order in the `default` endpoint, in `status`.
 pub fn order_fixture(
     account_id: uuid::Uuid,
     status: crate::status::OrderStatus,
@@ -98,7 +98,7 @@ pub fn order_fixture(
     order
 }
 
-/// A *really issued* order on `profile`: signed by an in-memory local CA, so
+/// A *really issued* order on `endpoint`: signed by an in-memory local CA, so
 /// the stored chain parses and the RFC 9773 certID the `replaces` signal rests
 /// on can actually be derived from it.
 ///
@@ -108,7 +108,7 @@ pub fn order_fixture(
 /// [`order_fixture`], which is an unsaved row with no certificate at all.
 pub async fn issued_order(
     database: &crate::db::Database,
-    profile: &str,
+    endpoint: &str,
     account: uuid::Uuid,
     names: &[&str],
     not_after_days: i64,
@@ -119,7 +119,7 @@ pub async fn issued_order(
     const DAY: i64 = 24 * 60 * 60;
 
     let mut order = Order::create(
-        profile,
+        endpoint,
         account,
         names.iter().map(|name| Identifier::dns(*name)).collect(),
         crate::nonce::now_secs() + 3600,
@@ -203,7 +203,7 @@ pub fn audit_entry() -> crate::audit::AuditEntry {
         created_at: 1_700_000_000,
         event: "certificate_issued".to_string(),
         outcome: "success".to_string(),
-        profile: "le".to_string(),
+        endpoint: "le".to_string(),
         actor_kind: "acme".to_string(),
         actor_id: Some("acct-1".to_string()),
         account_id: Some("acct-1".to_string()),
@@ -227,7 +227,7 @@ pub fn job_fixture() -> crate::job::Job {
         id: uuid::uuid!("00000000-0000-7000-8000-00000000abcd"),
         kind: "signer_relay_issue".to_string(),
         dedup_key: "order-1".to_string(),
-        payload: serde_json::json!({ "order_id": "order-1", "profile": "le" }),
+        payload: serde_json::json!({ "order_id": "order-1", "endpoint": "le" }),
         status: "failed".to_string(),
         run_at: 1_700_000_000,
         attempts: 3,
@@ -257,7 +257,7 @@ pub fn upstream_order_row_fixture() -> crate::upstream_order::UpstreamOrderRow {
         client_ptr: Some("host.example.com".to_string()),
         user_agent: Some("lego/4".to_string()),
         request_id: Some("req-9".to_string()),
-        profile: "le".to_string(),
+        endpoint: "le".to_string(),
         account_id: uuid::uuid!("00000000-0000-7000-8000-0000000acc01"),
         identifiers: vec![acme_proxy_core::identifier::Identifier::dns(
             "a.example.com",
@@ -564,9 +564,9 @@ pub async fn seed_every_table(db: &std::sync::Arc<crate::db::Database>) {
     Http01Token::publish("tok", "tok.thumb", 1, 4_102_444_800, db)
         .await
         .expect("an http-01 token");
-    crate::profile_issuer::ProfileIssuer::record_if_absent("default", &"a".repeat(64), 1, db)
+    crate::endpoint_issuer::EndpointIssuer::record_if_absent("default", &"a".repeat(64), 1, db)
         .await
-        .expect("a profile issuer");
+        .expect("an endpoint issuer");
     crate::admin_login_bucket::AdminLoginBucket::begin("password", "192.0.2.1", 5, 300, 1, db)
         .await
         .expect("a login bucket");

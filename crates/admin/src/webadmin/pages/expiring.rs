@@ -18,19 +18,19 @@ use crate::webadmin::pages::auth::PageSession;
 use crate::webadmin::pages::error::PageError;
 use crate::webadmin::pages::{chrome, pager, respond};
 
-/// `GET /ui/expiring?profile=&days=&superseded=&limit=&offset=`
+/// `GET /ui/expiring?endpoint=&days=&superseded=&limit=&offset=`
 pub async fn list_expiring(
     State(state): State<AdminState>,
     Query(params): Query<ExpiringListParams>,
     session: PageSession,
 ) -> Result<Html<String>, PageError> {
     let page = PageParams::from(params.limit, params.offset).resolve(&state.config);
-    let profile = params.profile.clone().unwrap_or_default();
+    let endpoint = params.endpoint.clone().unwrap_or_default();
     let days = params.lead_days(&state.config);
     let include_superseded = params.include_superseded();
 
     let query = acme_proxy_store::expiring::ExpiringQuery {
-        profile: params.profile.clone(),
+        endpoint: params.endpoint.clone(),
         account: None,
         before: acme_proxy_store::expiring::expiring_horizon(days),
         include_superseded,
@@ -64,7 +64,7 @@ pub async fn list_expiring(
             total,
             "/ui/expiring",
             &[
-                ("profile", &profile),
+                ("endpoint", &endpoint),
                 ("days", &days_text),
                 ("superseded", superseded),
             ],
@@ -74,14 +74,14 @@ pub async fn list_expiring(
     context.insert(
         "filters".to_string(),
         serde_json::json!({
-            "profile": profile,
+            "endpoint": endpoint,
             "days": days,
             "hideSuperseded": !include_superseded,
         }),
     );
     context.insert(
-        "profiles".to_string(),
-        Value::Array(crate::webadmin::handlers::misc::profile_rows(&state)),
+        "endpoints".to_string(),
+        Value::Array(crate::webadmin::handlers::misc::endpoint_rows(&state)),
     );
 
     respond(

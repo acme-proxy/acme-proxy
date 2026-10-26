@@ -37,7 +37,7 @@ impl EmailNotifier {
     /// dispatcher, whose events carry their own recipient
     /// ([`NotifyEvent::recipients`]): there, an empty `to` is a valid "deliver
     /// to each operator's own `contact_email` and nowhere else". Every
-    /// per-profile dispatcher passes `false` and keeps the startup error, since
+    /// per-endpoint dispatcher passes `false` and keeps the startup error, since
     /// its events name no recipient and a `send` would have nowhere to go.
     pub fn from_config(
         cfg: &EmailNotifyConfig,
@@ -271,9 +271,9 @@ mod tests {
         assert_eq!(notifier.name(), "email");
 
         let error = notifier
-            .send(&NotifyEvent::ProfileMounted(
-                crate::notify::ProfileMountedData {
-                    profile: "le".to_string(),
+            .send(&NotifyEvent::EndpointMounted(
+                crate::notify::EndpointMountedData {
+                    endpoint: "le".to_string(),
                 },
             ))
             .await
@@ -289,7 +289,7 @@ mod tests {
         let notifier =
             EmailNotifier::from_config(&cfg(), Arc::new(build_environment("")), false).unwrap();
         let event = NotifyEvent::CertificateIssued(CertificateIssuedData {
-            profile: "le".to_string(),
+            endpoint: "le".to_string(),
             order_id: "ord-1".to_string(),
             account_id: "acc-1".to_string(),
             cert_serial: "AA:BB".to_string(),
@@ -321,7 +321,7 @@ mod tests {
 
     fn admin_sign_in(recipient: Option<&str>) -> NotifyEvent {
         NotifyEvent::AdminSignIn(crate::notify::AdminSignInData {
-            profile: crate::notify::ADMIN_DISPATCHER_KEY.to_string(),
+            endpoint: crate::notify::ADMIN_DISPATCHER_KEY.to_string(),
             username: "alice".to_string(),
             recipient: recipient.map(str::to_string),
             outcome: crate::notify::AdminSignInOutcome::SucceededFromNewAddress,
@@ -397,7 +397,7 @@ mod tests {
 
     fn account_digest(recipients: &[&str]) -> NotifyEvent {
         NotifyEvent::AccountCertificatesExpiring(crate::notify::AccountCertificatesExpiringData {
-            profile: "le".to_string(),
+            endpoint: "le".to_string(),
             account_id: "acct-1".to_string(),
             recipients: recipients.iter().map(|r| (*r).to_string()).collect(),
             generated_at: 1_700_000_000,

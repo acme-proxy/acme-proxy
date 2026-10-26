@@ -20,10 +20,11 @@ thing the older `filter.enabled` shape could not express.
 ## Naming
 
 Each name must match `^[a-z0-9-]+$`: lowercase letters, digits and `-`, the same
-restriction profile names have. The reason is that a name is also an environment
-variable segment (`ACME_PROXY_FILTER__CHECK__<NAME>__…`), and the `config` crate
-lowercases those, so `MgmtNet` in a file and `MGMTNET` in the environment would
-silently become two entries instead of one overriding the other.
+restriction endpoint names have. The reason is that a name is also an
+environment variable segment (`ACME_PROXY_FILTER__CHECK__<NAME>__…`), and the
+`config` crate lowercases those, so `MgmtNet` in a file and `MGMTNET` in the
+environment would silently become two entries instead of one overriding the
+other.
 
 `and`, `or` and `not` are the [condition language](policy.md)'s own words and
 cannot name a check.
@@ -34,9 +35,9 @@ A check defined here but mentioned by no selected rule is **never constructed**.
 It opens no connection, spawns no client and validates nothing; it is reported
 once at startup as `filter_check_unused`.
 
-That is deliberate, and it is what makes profile inheritance usable: a global
-`[filter]` section can carry a library of checks, every profile inherits all of
-them, and each profile's `filter.rules` picks the subset it actually wants
+That is deliberate, and it is what makes endpoint inheritance usable: a global
+`[filter]` section can carry a library of checks, every endpoint inherits all of
+them, and each endpoint's `filter.rules` picks the subset it actually wants
 without paying for — or failing startup on — the rest.
 
 ## Keys by type

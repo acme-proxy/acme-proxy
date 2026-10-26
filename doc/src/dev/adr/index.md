@@ -49,8 +49,9 @@ In the book:
 - [Evidence has no foreign
   keys](../database.md#the-audit-trail-has-no-foreign-keys-deliberately): the
   audit trail and the revocation ledger outlive what they describe.
-- [Profiles](../../core/profiles.md): an endpoint is a profile, its path is
-  derived from its name, and it is a database boundary.
+- [Endpoints](../../core/endpoints.md): each ACME endpoint is its own
+  configuration table, its path is derived from its name, and it is a database
+  boundary.
 - [Bypass is not a
   shortcut](../../challenges/index.md#bypass-is-not-a-shortcut): why validation
   is on by default.

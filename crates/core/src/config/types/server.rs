@@ -47,7 +47,7 @@ pub struct ServerConfig {
     /// *inside* a request, or work still in progress is cut off and reported as a
     /// server failure. Challenge validation runs in the job queue, so that is
     /// `signer.custom.timeout_ms` while a custom signer answers `GET /crl` or
-    /// renewal information; `server::profile::check_request_timeout` refuses to
+    /// renewal information; `server::endpoint::check_request_timeout` refuses to
     /// start if it does not.
     pub request_timeout_ms: u64,
     /// Largest request body accepted. An ACME body is a JWS carrying at most a
@@ -91,9 +91,9 @@ impl Default for TlsConfig {
 /// The web admin interface: a **second listener**, on its own socket, serving
 /// no ACME.
 ///
-/// Process-wide, not per-profile -- an operator manages every endpoint this
-/// process serves, so there is no `[profiles.<name>].admin` and this is not in
-/// `PROFILE_SECTIONS`.
+/// Process-wide, not per-endpoint -- an operator manages every endpoint this
+/// process serves, so there is no `[endpoints.<name>].admin` and this is not in
+/// `ENDPOINT_SECTIONS`.
 ///
 /// Off by default. A certificate authority should not grow a management
 /// surface because somebody upgraded it.
@@ -147,7 +147,7 @@ pub struct AdminConfig {
     pub tls: AdminTlsConfig,
     /// Where web-admin operator security events (a sign-in from an unfamiliar
     /// address, a refused second factor, a lockout, a credential change --
-    /// ASVS V6.3.5 / V6.3.7) are sent. Same shape as the per-profile
+    /// ASVS V6.3.5 / V6.3.7) are sent. Same shape as the per-endpoint
     /// `[notify]`, but process-wide and email delivery goes to each operator's
     /// own `contact_email`. Disabled (empty `enabled`) by default, and only
     /// built at all when `admin.enabled`.
@@ -156,7 +156,7 @@ pub struct AdminConfig {
     /// the connection stage on every request, `/health` included.
     ///
     /// Its own section rather than an inheritance of the global `[filter]`:
-    /// that one is the ACME profiles' base, and a panel that silently took the
+    /// that one is the ACME endpoints' base, and a panel that silently took the
     /// ACME policy would be refused or opened by an edit made for another
     /// listener. Empty (no `rules`) filters nothing, as `[filter]` does.
     /// `webadmin::check_config` refuses a rule that cannot decide at the
@@ -299,8 +299,8 @@ pub struct OrderConfig {
     /// and only once their own `expires` is `retention_days` behind, at which
     /// point no client can act on them either.
     ///
-    /// Per-profile like the rest of `[order]`: the sweep is one handler that
-    /// applies each mounted profile's own value to that profile's rows.
+    /// Per-endpoint like the rest of `[order]`: the sweep is one handler that
+    /// applies each mounted endpoint's own value to that endpoint's rows.
     pub retention_days: u64,
 }
 

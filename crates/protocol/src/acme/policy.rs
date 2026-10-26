@@ -28,7 +28,7 @@ pub(crate) async fn check_identifiers(
     filter: &FilterPolicy,
     client_ip: Option<IpAddr>,
     account_id: &str,
-    profile: &str,
+    endpoint: &str,
     stage: IdentifierStage,
     identifiers: &[Identifier],
     database: &Database,
@@ -37,7 +37,7 @@ pub(crate) async fn check_identifiers(
     // credential — see `FilterPolicy::needs_eab`. A policy without an `eab`
     // check pays nothing for the field existing.
     let eab = if filter.needs_eab() {
-        resolve_eab(account_id, profile, database).await?
+        resolve_eab(account_id, endpoint, database).await?
     } else {
         None
     };
@@ -68,10 +68,10 @@ pub(crate) async fn check_identifiers(
 /// look" must never be reported as "there is none".
 async fn resolve_eab(
     account_id: &str,
-    profile: &str,
+    endpoint: &str,
     database: &Database,
 ) -> Result<Option<EabIdentity>, Problem> {
-    let account = Account::find_by_id(profile, account_id, database)
+    let account = Account::find_by_id(endpoint, account_id, database)
         .await
         .map_err(|error| {
             error!(event = "account_lookup_failed", outcome = "failure", account_id, error = %error);
@@ -83,7 +83,7 @@ async fn resolve_eab(
     };
 
     // Deliberately the unscoped lookup: the credential authorised this account
-    // when it was created, and re-checking the profile scope now would make a
+    // when it was created, and re-checking the endpoint scope now would make a
     // later narrowing of that scope silently rewrite history.
     let key = acme_proxy_store::eab::Eab::find_any_by_kid(kid.to_string().as_str(), database)
         .await

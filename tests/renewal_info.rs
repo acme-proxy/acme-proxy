@@ -45,8 +45,8 @@ async fn post(app: &Router, path: &str, body: String) -> Response {
         .unwrap()
 }
 
-const NEW_ACCOUNT_URL: &str = "http://localhost:3000/profile/default/newAccount";
-const NEW_ORDER_URL: &str = "http://localhost:3000/profile/default/newOrder";
+const NEW_ACCOUNT_URL: &str = "http://localhost:3000/endpoint/default/newAccount";
+const NEW_ORDER_URL: &str = "http://localhost:3000/endpoint/default/newOrder";
 
 async fn register(app: &Router, signer: &impl TestSigner) -> String {
     let nonce = fetch_nonce(app).await;
@@ -195,7 +195,7 @@ async fn renewal_info_returns_window_for_valid_cert() {
 /// RFC 9773 §4.1 builds the certID from *both* the issuer's key identifier and
 /// the serial. Matching on the serial alone would answer for a certificate the
 /// caller did not name — a different issuer's certificate that happens to share
-/// a serial within this profile.
+/// a serial within this endpoint.
 #[tokio::test]
 async fn a_cert_id_whose_key_identifier_is_wrong_is_rejected() {
     let app = test_app().await;
@@ -273,7 +273,7 @@ async fn renewal_info_returns_past_window_for_revoked_cert() {
     let payload = json!({ "certificate": cert_field(&chain) });
     let body = signer.sign_kid(
         &account_url,
-        "http://localhost:3000/profile/default/revokeCert",
+        "http://localhost:3000/endpoint/default/revokeCert",
         &nonce,
         &payload,
     );
@@ -449,7 +449,7 @@ async fn revocation_beats_an_upstream_window_in_the_future() {
     let nonce = fetch_nonce(&app).await;
     let body = ec.sign_kid(
         &account_url,
-        "http://localhost:3000/profile/default/revokeCert",
+        "http://localhost:3000/endpoint/default/revokeCert",
         &nonce,
         &json!({ "certificate": cert_field(&chain) }),
     );

@@ -29,9 +29,9 @@ use common::{
     test_app_with_signer, write_script,
 };
 
-const NEW_ACCOUNT_URL: &str = "http://localhost:3000/profile/default/newAccount";
-const NEW_ORDER_URL: &str = "http://localhost:3000/profile/default/newOrder";
-const REVOKE_URL: &str = "http://localhost:3000/profile/default/revokeCert";
+const NEW_ACCOUNT_URL: &str = "http://localhost:3000/endpoint/default/newAccount";
+const NEW_ORDER_URL: &str = "http://localhost:3000/endpoint/default/newOrder";
+const REVOKE_URL: &str = "http://localhost:3000/endpoint/default/revokeCert";
 
 /// A real `openssl`-backed `issue` script: on first invocation it generates
 /// a throwaway self-signed CA next to itself, then signs whatever CSR it's

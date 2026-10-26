@@ -76,7 +76,7 @@ pub trait SignerInfo: Send + Sync {
     ///
     /// `router::build_app` mounts `GET
     /// /.well-known/acme-challenge/{token}` on the root router when any
-    /// profile's backend returns `Some`, and not at all otherwise — the same "a
+    /// endpoint's backend returns `Some`, and not at all otherwise — the same "a
     /// backend that has something to publish over HTTP says so" shape as
     /// [`crl_der`](SignerInfo::crl_der). Only [`relay`] with
     /// `challenge_strategy = "http01"` answers.

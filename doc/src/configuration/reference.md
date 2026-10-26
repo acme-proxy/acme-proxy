@@ -11,7 +11,7 @@ sections' keys are documented.
 Sources are layered, lowest precedence first:
 
 1. **Built-in defaults** — everything documented below has one, so an empty
-   configuration is valid apart from `[profiles]`.
+   configuration is valid apart from `[endpoints]`.
 2. **A configuration file** — `config.toml` in the working directory, or the
    path in `ACME_PROXY_CONFIG` (the extension may be omitted, in which case the
    format is inferred). A missing file is not an error.
@@ -23,9 +23,9 @@ Sources are layered, lowest precedence first:
 it lists every key with its default and its environment variable name in
 context.
 
-> **`[profiles]` is mandatory.** Everything else can be left at its default, but
-> the server serves ACME only through profiles and refuses to start without at
-> least one enabled. See [`[profiles]`](#profilesname) below.
+> **`[endpoints]` is mandatory.** Everything else can be left at its default,
+> but the server serves ACME only through endpoints and refuses to start without
+> at least one enabled. See [`[endpoints]`](#endpointsname) below.
 
 ## Every section, and where it is documented
 
@@ -36,7 +36,7 @@ not its text lives here. A delegated section's own sub-tables —
 `[signer.local_ca.subject]`, `[ipam.netbox]`, `[filter.check.<name>]` and the
 rest — are listed in the chapter that owns them.
 
-**Overridable** marks the sections a `[profiles.<name>]` block may override.
+**Overridable** marks the sections an `[endpoints.<name>]` block may override.
 Everything else is process-wide — one setting for the whole server, however many
 endpoints it mounts.
 
@@ -59,7 +59,7 @@ endpoints it mounts.
 | `[logging]` | Filter, format, target | no | [below](#logging) |
 | `[order]` | The ACME order object's lifetime | **yes** | [below](#order) |
 | `[meta]` | Directory `meta` members | **yes** | [below](#meta) |
-| `[profiles.<name>]` | An ACME endpoint | — | [below](#profilesname) |
+| `[endpoints.<name>]` | An ACME endpoint | — | [below](#endpointsname) |
 | `[signer]` | How a certificate is obtained | **yes** | [Signers](../signers/index.md) |
 | `[filter]` | Who may ask, and for what | **yes** | [Filters](../filters/index.md) |
 | `[ipam]` | The inventory an `ipam` filter check consults | **yes** | [IPAM](../ipam/index.md) |
@@ -185,7 +185,7 @@ so this never delays another client.
 ## `[admin]`
 
 The web admin interface — a **second listener**, on its own socket, serving no
-ACME. Process-wide, so there is no `[profiles.<name>].admin`: an operator
+ACME. Process-wide, so there is no `[endpoints.<name>].admin`: an operator
 manages every endpoint this process serves. Full treatment in
 [Web Admin](../operations/webadmin.md).
 
@@ -297,7 +297,7 @@ and the same keys as the ACME listener's
 `ACME_PROXY_ADMIN__FILTER__…`, with four differences:
 
 - **It is its own section.** Nothing is inherited from the global `[filter]`,
-  which is the ACME profiles' base: an edit made for one listener must not open
+  which is the ACME endpoints' base: an edit made for one listener must not open
   or shut the other.
 - **Only the connection stage exists here**, so only `allowed_ip`, `path`,
   `reverse_dns` and `custom` checks are accepted. An `identifiers`, `eab` or
@@ -318,7 +318,7 @@ and is logged as `filter_request_blocked` with `listener = "admin"`. See
 A whole `[notify]` section, process-wide, built only while `[admin]` is
 enabled. It delivers the `admin_sign_in` / `admin_credential_changed` operator
 security events (ASVS V6.3.5 / V6.3.7). Every key is the one documented for the
-per-profile [`[notify]`](../notifications/index.md) — under
+per-endpoint [`[notify]`](../notifications/index.md) — under
 `ACME_PROXY_ADMIN__NOTIFY__…` — with one difference: `[admin.notify.email].to`
 may be empty, since each event carries the affected operator's own contact
 address as its recipient. See
@@ -364,7 +364,7 @@ at all, and the per-type keys under `[challenge.http_01]` and
 `[challenge.tls_alpn_01]`.
 
 Documented in full in [Challenge Validation](../challenges/index.md#reference) —
-this section is a per-profile subsystem with its own chapter, so its keys live
+this section is a per-endpoint subsystem with its own chapter, so its keys live
 there rather than being restated here.
 
 ---
@@ -414,10 +414,10 @@ grew for the life of a deployment — one order plus one authorization per
 identifier plus one challenge per offered type, on a default configuration where
 `newAccount` is open to anyone.
 
-Per-profile like the rest of `[order]`. The sweep is a single job handler
+Per-endpoint like the rest of `[order]`. The sweep is a single job handler
 (`JobRegistry` refuses two handlers for one kind) that applies each mounted
-profile's own value to that profile's rows, emitting one `order_reaper_swept`
-line per profile.
+endpoint's own value to that endpoint's rows, emitting one `order_reaper_swept`
+line per endpoint.
 
 ---
 
@@ -432,9 +432,9 @@ interval for the life of the process.
 
 ## `[audit]`
 
-Traceability and the CA's audit trail. **Process-wide, not per-profile** — the
+Traceability and the CA's audit trail. **Process-wide, not per-endpoint** — the
 trail describes the CA, not one of its endpoints, so this section may not appear
-under `[profiles.<name>]`.
+under `[endpoints.<name>]`.
 
 There is deliberately **no `enabled` key**. The address columns on accounts and
 orders, and the `audit_log` table, are always written: recording who asked the
@@ -470,9 +470,9 @@ See [Audit Trail](../operations/audit.md).
 ## `[jobs]`
 
 The durable background-work queue: the `jobs` table plus the one runner that
-drains it. **Process-wide, not per-profile** — there is one queue and one
+drains it. **Process-wide, not per-endpoint** — there is one queue and one
 runner for the process, so this section may not appear under
-`[profiles.<name>]`.
+`[endpoints.<name>]`.
 
 There is deliberately **no `enabled` key**. The queue is how the server finishes
 work it has already promised a client: an order answered `processing` is owed a
@@ -556,7 +556,7 @@ scheduled at all.
 
 The Prometheus exposition, served on a **listener of its own** — a third socket
 beside the ACME and admin ones, not a route on either. **Process-wide, not
-per-profile**: there is one counter set for the process, and the endpoint is a
+per-endpoint**: there is one counter set for the process, and the endpoint is a
 *dimension* of it rather than something each endpoint configures for itself.
 
 The separate port is what settles the access question. A scrape carries no
@@ -811,45 +811,46 @@ by default because a field can then collide with one of the format's own keys.
 
 ---
 
-## `[profiles.<name>]`
+## `[endpoints.<name>]`
 
-An **ACME endpoint is a profile**. The server serves ACME only through them, and
-**at least one enabled profile is required** — startup fails otherwise, with a
-copy-pasteable minimal configuration in the error.
+Each **`[endpoints.<name>]` table is one ACME endpoint**. The server serves ACME
+only through them, and **at least one enabled endpoint is required** — startup
+fails otherwise, with a copy-pasteable minimal configuration in the error.
 
 ```toml
 # The whole minimum. `enabled` defaults to true, so naming it is enough.
-[profiles.default]
+[endpoints.default]
 ```
 
-**`enabled`** (`Boolean`) — *Default: `true` | Env: `ACME_PROXY_PROFILES__<NAME>__ENABLED`*
+**`enabled`** (`Boolean`) — *Default: `true` | Env: `ACME_PROXY_ENDPOINTS__<NAME>__ENABLED`*
 
-Parks a profile without deleting its configuration. It also doubles as the one
-key an environment-only profile needs:
-`ACME_PROXY_PROFILES__DEFAULT__ENABLED=true` defines a working profile with no
+Parks an endpoint without deleting its configuration. It also doubles as the one
+key an environment-only endpoint needs:
+`ACME_PROXY_ENDPOINTS__DEFAULT__ENABLED=true` defines a working endpoint with no
 configuration file at all.
 
 Load-bearing rules:
 
-- **The mount path is derived from the name, never configured.** `[profiles.le]`
-  answers at `{base_url}/profile/le/directory`. Names must match `^[a-z0-9-]+$`.
-  The name is public API — it appears in every `kid` and order URL a client
-  stores — so renaming a profile invalidates every client's saved account.
+- **The mount path is derived from the name, never configured.**
+  `[endpoints.le]` answers at `{base_url}/endpoint/le/directory`. Names must
+  match `^[a-z0-9-]+$`. The name is public API — it appears in every `kid` and
+  order URL a client stores — so renaming an endpoint invalidates every client's
+  saved account.
 - **Inheritance is per key, not per section.** The global `[signer]`,
   `[filter]`, `[challenge]`, `[eab]`, `[order]`, `[notify]` and `[meta]`
-  sections are the base each profile overlays. A profile that sets only
+  sections are the base each endpoint overlays. An endpoint that sets only
   `challenge.bypass` keeps the **global** `challenge.enabled` rather than
-  reverting it to the compiled default. Precedence: profile key > global key >
+  reverting it to the compiled default. Precedence: endpoint key > global key >
   compiled default.
-- **Arrays replace wholesale, never append.** A profile's `filter.rules` fully
+- **Arrays replace wholesale, never append.** An endpoint's `filter.rules` fully
   replaces the global one — order *is* the policy, so it is stated once per
-  profile rather than accumulated from two places.
-- **Profiles are a database boundary, not just a URL prefix.** Accounts and
-  orders carry a profile column, and accounts are keyed `UNIQUE(profile,
+  endpoint rather than accumulated from two places.
+- **Endpoints are a database boundary, not just a URL prefix.** Accounts and
+  orders carry an endpoint column, and accounts are keyed `UNIQUE(endpoint,
   pubkey)` — one client key used at two endpoints is two independent ACME
   accounts.
-- **Signer backends are shared by configuration.** Two profiles with identical
-  `[signer]` sections share one backend instance. Two profiles sharing a
+- **Signer backends are shared by configuration.** Two endpoints with identical
+  `[signer]` sections share one backend instance. Two endpoints sharing a
   `local_ca` key path while differing elsewhere is a startup error.
 
 ```toml
@@ -869,16 +870,16 @@ then = "allow"
 
 # Inherits everything above, but dry-runs the one rule: `[filter.rule.<name>]`
 # is a table, so overriding `mode` keeps `when` and `then` from the global one.
-[profiles.dev]
+[endpoints.dev]
 filter.rule.corp-only.mode = "warn"
 
 # Overrides two keys; keeps the whole filter policy.
-[profiles.prod]
+[endpoints.prod]
 signer.backend = "relay"
 signer.relay.directory_url = "https://acme-v02.api.letsencrypt.org/directory"
 ```
 
-See [Profiles & Routing](../core/profiles.md).
+See [Endpoints & Routing](../core/endpoints.md).
 
 ---
 

@@ -1,11 +1,11 @@
-//! Several relay profiles in one process, and the one handler over them all.
+//! Several relay endpoints in one process, and the one handler over them all.
 //!
 //! The trap this exists for: [`acme_proxy_jobs::jobs::JobRegistry::register`] refuses two
 //! handlers for one `kind`, so returning a handler from each backend — which
-//! `SignerBackend::jobs()` used to do — made two profiles relaying to
+//! `SignerBackend::jobs()` used to do — made two endpoints relaying to
 //! *different* upstreams a startup error, `build_backends` deliberately not
 //! collapsing two `[signer]` sections that differ. **Nothing in a
-//! single-profile test can see that**, which is why every other file here
+//! single-endpoint test can see that**, which is why every other file here
 //! passed while a two-upstream deployment could not start. It is the same trap
 //! `local_ca::tests::one_sweep_handler_serves_every_ca_in_the_process` guards
 //! on the CRL side.
@@ -25,7 +25,7 @@ use acme_proxy_jobs::jobs::JobRegistry;
 use acme_proxy_store::job::Job;
 use acme_proxy_store::status::OrderStatus;
 
-/// Two relay backends over two upstreams, plus the profiles they serve.
+/// Two relay backends over two upstreams, plus the endpoints they serve.
 struct TwoUpstreams {
     bypassing: RelaySigner,
     challenged: RelaySigner,
@@ -37,8 +37,8 @@ struct TwoUpstreams {
     _dirs: (TempDir, TempDir),
 }
 
-/// Builds the pair: profile `a` relays to an upstream that validates nothing,
-/// profile `b` to one that poses an `http-01` challenge and is answered by a
+/// Builds the pair: endpoint `a` relays to an upstream that validates nothing,
+/// endpoint `b` to one that poses an `http-01` challenge and is answered by a
 /// backend holding a token store.
 ///
 /// The two differ in `directory_url` and `account_key_path`, which is exactly
@@ -91,7 +91,7 @@ async fn two_upstreams(
     }
 }
 
-/// One handler over two backends, mounted under the profiles each serves.
+/// One handler over two backends, mounted under the endpoints each serves.
 fn handler(db: &Arc<Database>, pair: &TwoUpstreams) -> RelayJob {
     RelayJob::new(
         db.clone(),
@@ -127,16 +127,16 @@ async fn two_relay_backends_register_one_handler() {
     );
 }
 
-/// Each profile's orders are relayed by **its own** backend.
+/// Each endpoint's orders are relayed by **its own** backend.
 ///
-/// The proof is the strategy, not the chain: profile `b`'s upstream poses a
+/// The proof is the strategy, not the chain: endpoint `b`'s upstream poses a
 /// challenge only a backend holding the token store can answer, so a row
-/// dispatched to profile `a`'s bypassing backend would leave that order
+/// dispatched to endpoint `a`'s bypassing backend would leave that order
 /// `processing` until the test times out. The chains are asserted too, since a
 /// certificate landing on the wrong order would be the other half of the same
 /// mistake.
 #[tokio::test(flavor = "multi_thread")]
-async fn each_profile_is_relayed_by_its_own_backend() {
+async fn each_endpoint_is_relayed_by_its_own_backend() {
     let db = database().await;
     let queue = test_queue(db.clone());
     let pair = two_upstreams(&db, &queue).await;
@@ -154,7 +154,7 @@ async fn each_profile_is_relayed_by_its_own_backend() {
     let order_a = ready_order_for("a", db.clone()).await;
     let order_b = ready_order_for("b", db.clone()).await;
     for order in [&order_a, &order_b] {
-        let signer = if order.profile == "a" {
+        let signer = if order.endpoint == "a" {
             &pair.bypassing
         } else {
             &pair.challenged
@@ -187,12 +187,12 @@ async fn each_profile_is_relayed_by_its_own_backend() {
     assert_eq!(
         settled_a.certificate.as_deref(),
         Some(pair.chain_a.as_str()),
-        "profile `a` must hold what its own upstream issued"
+        "endpoint `a` must hold what its own upstream issued"
     );
     assert_eq!(
         settled_b.certificate.as_deref(),
         Some(pair.chain_b.as_str()),
-        "profile `b` must hold what its own upstream issued"
+        "endpoint `b` must hold what its own upstream issued"
     );
 
     // The strategy assertion, which is the one a shared handler can get wrong:
@@ -201,7 +201,7 @@ async fn each_profile_is_relayed_by_its_own_backend() {
     assert_eq!(
         pair.tokens.published().len(),
         1,
-        "profile `b`'s own backend must be the one that answered its challenge"
+        "endpoint `b`'s own backend must be the one that answered its challenge"
     );
     assert_eq!(pair.challenged_upstream.challenge_triggered(), 1);
     assert_eq!(pair.bypassing_upstream.challenge_triggered(), 0);
@@ -227,13 +227,13 @@ fn job(payload: serde_json::Value) -> Job {
     }
 }
 
-/// The per-attempt budget follows the row's own profile.
+/// The per-attempt budget follows the row's own endpoint.
 ///
 /// It is the only bound on `poll_until`, so answering one number for the whole
 /// handler would let an endpoint configured for a minute poll for as long as
 /// the most patient one in the process.
 #[tokio::test(flavor = "multi_thread")]
-async fn the_lease_is_the_owning_profile_s_own_poll_timeout() {
+async fn the_lease_is_the_owning_endpoint_s_own_poll_timeout() {
     let db = database().await;
     let queue = test_queue(db.clone());
     let chain = real_chain().await;
@@ -268,17 +268,17 @@ async fn the_lease_is_the_owning_profile_s_own_poll_timeout() {
 
     assert_eq!(
         handler.lease(&job(
-            serde_json::json!({"order_id": "o", "profile": "quick"})
+            serde_json::json!({"order_id": "o", "endpoint": "quick"})
         )),
         Some(Duration::from_secs(11))
     );
     assert_eq!(
         handler.lease(&job(
-            serde_json::json!({"order_id": "o", "profile": "patient"})
+            serde_json::json!({"order_id": "o", "endpoint": "patient"})
         )),
         Some(Duration::from_secs(97))
     );
-    // A row from a build that wrote no profile cannot be resolved without a
+    // A row from a build that wrote no endpoint cannot be resolved without a
     // database, and this is synchronous — so it gets the most generous budget
     // configured. Longer than one backend asked for is the safe direction: an
     // attempt runs to its own conclusion instead of being cut short.
@@ -288,40 +288,40 @@ async fn the_lease_is_the_owning_profile_s_own_poll_timeout() {
     );
 }
 
-/// A row whose profile is no longer mounted asks to be tried again.
+/// A row whose endpoint is no longer mounted asks to be tried again.
 ///
 /// **Not `Failed`**: that would call `abandon`, which tells the client its order
 /// is `invalid` — a terminal answer to what may be one reload's worth of
 /// absence. The attempt budget and the job's own deadline still retire it if the
-/// profile really has gone.
+/// endpoint really has gone.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_row_for_an_unmounted_profile_is_retried_rather_than_abandoned() {
+async fn a_row_for_an_unmounted_endpoint_is_retried_rather_than_abandoned() {
     let db = database().await;
     let pair = two_upstreams(&db, &test_queue(db.clone())).await;
     let handler = handler(&db, &pair);
 
     match handler
         .run(&job(
-            serde_json::json!({"order_id": super::order_id("ord-1"), "profile": "gone"}),
+            serde_json::json!({"order_id": super::order_id("ord-1"), "endpoint": "gone"}),
         ))
         .await
     {
         JobOutcome::Retry(reason) => assert!(
             reason.contains("gone"),
-            "the retry must name the profile: {reason}"
+            "the retry must name the endpoint: {reason}"
         ),
         other => panic!("expected a retry, got {other:?}"),
     }
 }
 
-/// A payload written before the profile was recorded still resolves.
+/// A payload written before the endpoint was recorded still resolves.
 ///
 /// A relay job outlives the process, so an upgrade meets rows carrying only an
 /// order id. The order itself still says which endpoint it was placed against,
 /// which is what the payload would have carried — so the fallback is the same
 /// answer, read later, and it has to reach all four of a lookup's outcomes.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_payload_from_before_the_profile_was_recorded_resolves_from_the_order() {
+async fn a_payload_from_before_the_endpoint_was_recorded_resolves_from_the_order() {
     let db = database().await;
     let pair = two_upstreams(&db, &test_queue(db.clone())).await;
     let handler = handler(&db, &pair);
@@ -351,7 +351,7 @@ async fn a_payload_from_before_the_profile_was_recorded_resolves_from_the_order(
         other => panic!("expected a permanent failure, got {other:?}"),
     }
 
-    // An order on a profile this process no longer mounts reaches the same
+    // An order on an endpoint this process no longer mounts reaches the same
     // answer the named case does, by the longer route: a retry, never the
     // `Failed` that would tell the client its order is invalid.
     let elsewhere = ready_order_for("c", db.clone()).await;
@@ -377,7 +377,7 @@ async fn a_payload_from_before_the_profile_was_recorded_resolves_from_the_order(
     }
 }
 
-/// Recovery covers **every** backend, and asks each only for the profiles this
+/// Recovery covers **every** backend, and asks each only for the endpoints this
 /// generation says it serves.
 ///
 /// One handler means one `recover`, so a fan-out that stopped at the first
@@ -389,11 +389,11 @@ async fn recovery_re_queues_the_in_flight_orders_of_every_backend() {
     let queue = test_queue(db.clone());
     let pair = two_upstreams(&db, &queue).await;
 
-    // One order left `processing` on each profile, as a killed process leaves
+    // One order left `processing` on each endpoint, as a killed process leaves
     // them: the mapping row exists, but no job row does.
     let mut queued = Vec::new();
-    for profile in ["a", "b"] {
-        let order = ready_order_for(profile, db.clone()).await;
+    for endpoint in ["a", "b"] {
+        let order = ready_order_for(endpoint, db.clone()).await;
         UpstreamOrder::create(
             order.id.to_string().as_str(),
             "https://upstream.example/order/1",
@@ -403,21 +403,21 @@ async fn recovery_re_queues_the_in_flight_orders_of_every_backend() {
         )
         .await
         .unwrap();
-        queued.push((profile, order.id));
+        queued.push((endpoint, order.id));
     }
 
     handler(&db, &pair).recover(&queue).await;
 
-    for (profile, id) in queued {
+    for (endpoint, id) in queued {
         let row =
             acme_proxy_store::job::Job::find_live(RELAY_JOB_KIND, id.to_string().as_str(), &db)
                 .await
                 .unwrap()
-                .unwrap_or_else(|| panic!("order {id} on profile `{profile}` must be re-queued"));
+                .unwrap_or_else(|| panic!("order {id} on endpoint `{endpoint}` must be re-queued"));
         assert_eq!(
-            row.payload.get("profile").and_then(|value| value.as_str()),
-            Some(profile),
-            "a recovered row names the profile it belongs to, like a fresh one"
+            row.payload.get("endpoint").and_then(|value| value.as_str()),
+            Some(endpoint),
+            "a recovered row names the endpoint it belongs to, like a fresh one"
         );
     }
 }

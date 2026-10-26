@@ -76,7 +76,7 @@ base_url = "http://{proxy}:3000"
 [challenge]
 bypass = true
 
-[profiles.default]
+[endpoints.default]
 enabled = true
 
 [admin]

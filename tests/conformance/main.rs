@@ -5,7 +5,7 @@
 //! three, and none depends on how the server happens to be written:
 //!
 //! - **Invariants** hold for any request: the server never answers with a 5xx,
-//!   every answer links to its profile's directory (§7.1), every refusal is an
+//!   every answer links to its endpoint's directory (§7.1), every refusal is an
 //!   RFC 8555 problem document (§6.7), and every answer to a POST carries a
 //!   nonce no request or earlier answer used (§6.5).
 //! - **Exact answers.** Each refusal is pinned to its status and problem type

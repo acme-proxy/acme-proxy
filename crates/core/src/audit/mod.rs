@@ -69,7 +69,7 @@ pub enum AuditEvent {
     NonceCleanupCompleted,
     AuditPruned,
     DatabaseTransferred,
-    ProfileIssuerAccepted,
+    EndpointIssuerAccepted,
 }
 
 impl AuditEvent {
@@ -108,7 +108,7 @@ impl AuditEvent {
             Self::NonceCleanupCompleted => "nonce_cleanup_completed",
             Self::AuditPruned => "audit_pruned",
             Self::DatabaseTransferred => "database_transferred",
-            Self::ProfileIssuerAccepted => "profile_issuer_accepted",
+            Self::EndpointIssuerAccepted => "endpoint_issuer_accepted",
         }
     }
 
@@ -149,7 +149,7 @@ impl AuditEvent {
             | Self::NonceCleanupCompleted
             | Self::AuditPruned
             | Self::DatabaseTransferred
-            | Self::ProfileIssuerAccepted => "success",
+            | Self::EndpointIssuerAccepted => "success",
         }
     }
 
@@ -204,7 +204,7 @@ pub const ALL_AUDIT_EVENTS: &[AuditEvent] = &[
     AuditEvent::NonceCleanupCompleted,
     AuditEvent::AuditPruned,
     AuditEvent::DatabaseTransferred,
-    AuditEvent::ProfileIssuerAccepted,
+    AuditEvent::EndpointIssuerAccepted,
 ];
 
 /// How many variants [`AuditEvent`] has, asserted against
@@ -254,7 +254,7 @@ const fn event_count_is_exhaustive(event: AuditEvent) -> usize {
         AuditEvent::NonceCleanupCompleted => 25,
         AuditEvent::AuditPruned => 26,
         AuditEvent::DatabaseTransferred => 27,
-        AuditEvent::ProfileIssuerAccepted => EVENT_COUNT,
+        AuditEvent::EndpointIssuerAccepted => EVENT_COUNT,
     }
 }
 
@@ -488,7 +488,7 @@ impl<S: Send + Sync> FromRequestParts<S> for RequestContext {
 #[derive(Debug, Clone)]
 pub struct AuditRecord {
     pub event: AuditEvent,
-    pub profile: String,
+    pub endpoint: String,
     pub actor: Actor,
     pub account_id: Option<String>,
     pub order_id: Option<String>,
@@ -500,13 +500,13 @@ pub struct AuditRecord {
 }
 
 impl AuditRecord {
-    /// A record of `event` at `profile`, by `actor`, with every optional field
+    /// A record of `event` at `endpoint`, by `actor`, with every optional field
     /// empty; the `with_*` builders fill them in.
     #[must_use]
-    pub fn new(event: AuditEvent, profile: impl Into<String>, actor: Actor) -> Self {
+    pub fn new(event: AuditEvent, endpoint: impl Into<String>, actor: Actor) -> Self {
         Self {
             event,
-            profile: profile.into(),
+            endpoint: endpoint.into(),
             actor,
             account_id: None,
             order_id: None,
@@ -520,10 +520,10 @@ impl AuditRecord {
 
     /// A record for an administrative action that is not scoped to one ACME
     /// endpoint — an operator, a session, the nonce table, the audit log
-    /// itself. `profile` is stored empty (the column stays `NOT NULL`; `""`
-    /// reads as "no profile"), and the acting identity is [`Actor`] plus
+    /// itself. `endpoint` is stored empty (the column stays `NOT NULL`; `""`
+    /// reads as "no endpoint"), and the acting identity is [`Actor`] plus
     /// whatever [`AuditRecord::with_detail`] carries. Account, EAB and order
-    /// actions keep [`AuditRecord::new`] with their real profile.
+    /// actions keep [`AuditRecord::new`] with their real endpoint.
     #[must_use]
     pub fn admin(event: AuditEvent, actor: Actor) -> Self {
         Self::new(event, String::new(), actor)

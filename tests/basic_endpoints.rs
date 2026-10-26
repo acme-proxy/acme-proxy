@@ -11,7 +11,7 @@ use common::{
     test_app_with_db,
 };
 
-/// POSTs a signed body to a profile path.
+/// POSTs a signed body to an endpoint path.
 async fn post(app: &axum::Router, path: &str, body: String) -> Response {
     app.clone()
         .oneshot(

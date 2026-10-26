@@ -14,7 +14,7 @@
 //! - **The directory itself is skipped**, per the "other than the directory"
 //!   half of §7.1 — a directory pointing at itself says nothing.
 //!
-//! Living in the profile router means the path seen here is already
+//! Living in the endpoint router means the path seen here is already
 //! prefix-stripped by `Router::nest`, the same convention `verify_jws` relies
 //! on, so the comparison is against the bare `/directory`.
 

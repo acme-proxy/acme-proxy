@@ -109,11 +109,11 @@ mode = "warn"
 
 A policy of nothing but warn rules therefore falls through to `filter.default`.
 
-Because rules are a map rather than an array of tables, a profile can dry-run
+Because rules are a map rather than an array of tables, an endpoint can dry-run
 one rule and inherit the rest:
 
 ```toml
-[profiles.staging.filter.rule.inventory-owned]
+[endpoints.staging.filter.rule.inventory-owned]
 mode = "warn"
 ```
 

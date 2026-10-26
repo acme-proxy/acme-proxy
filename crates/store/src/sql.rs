@@ -574,7 +574,7 @@ impl Exec<'_> {
 /// Was this error a unique-violation on one particular constraint?
 ///
 /// The two dialects say so differently and neither says both things. SQLite
-/// names the **columns** — `UNIQUE constraint failed: orders.profile,
+/// names the **columns** — `UNIQUE constraint failed: orders.endpoint,
 /// orders.replaces` — and gives sqlx no constraint name. PostgreSQL names the
 /// **index** — `duplicate key value violates unique constraint
 /// "idx_orders_replaces_claim"` — and exposes it through

@@ -32,8 +32,8 @@ Before 1.0.0 the **database schema is the only compatibility guarantee**:
 new binary against the existing database.
 
 Everything else may be renamed or removed in any release: configuration keys,
-profile names and the ACME URLs derived from them, the admin JSON API, log event
-names and the CLI. Such a change owes exactly three things:
+endpoint names and the ACME URLs derived from them, the admin JSON API, log
+event names and the CLI. Such a change owes exactly three things:
 
 - An entry under the release's `### Breaking` heading in `CHANGELOG.md`, naming
   the old spelling and the new one. The changelog's

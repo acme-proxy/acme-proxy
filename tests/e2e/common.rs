@@ -242,11 +242,11 @@ impl Lab {
             .with_container_name(&proxy_host)
             .with_env_var("ACME_PROXY_SERVER__BIND_ADDRESS", "[::]:3000")
             .with_env_var("ACME_PROXY_SERVER__BASE_URL", &proxy_url)
-            .with_env_var("ACME_PROXY_PROFILES__DEFAULT__ENABLED", "true")
+            .with_env_var("ACME_PROXY_ENDPOINTS__DEFAULT__ENABLED", "true")
             .with_env_var("RUST_LOG", "acme_proxy=debug");
 
         // Most scenarios here are about something other than domain-control
-        // proof — EAB, filters, profiles, the admin CLI — and have no responder
+        // proof — EAB, filters, endpoints, the admin CLI — and have no responder
         // for a real challenge, so they want the bypass. It used to come from
         // `challenge.bypass`'s own default; now that the default validates, the
         // lab has to ask. Set only when the scenario has not chosen for itself,
@@ -291,7 +291,7 @@ impl Lab {
                 .with_container_name(&upstream_host)
                 .with_env_var("ACME_PROXY_SERVER__BIND_ADDRESS", "[::]:3000")
                 .with_env_var("ACME_PROXY_SERVER__BASE_URL", &upstream_base_url)
-                .with_env_var("ACME_PROXY_PROFILES__DEFAULT__ENABLED", "true")
+                .with_env_var("ACME_PROXY_ENDPOINTS__DEFAULT__ENABLED", "true")
                 .with_env_var("ACME_PROXY_CHALLENGE__BYPASS", "true")
                 .with_env_var(
                     "ACME_PROXY_SIGNER__LOCAL_CA__CERT_PATH",
@@ -337,7 +337,7 @@ impl Lab {
         );
 
         let proxy_upstream_url =
-            upstream_ip.map(|ip| format!("http://{}:3000/profile/default/directory", ip));
+            upstream_ip.map(|ip| format!("http://{}:3000/endpoint/default/directory", ip));
 
         for (k, v) in env {
             if k == "ACME_PROXY_DNS__RESOLVER" && v == "dns:53" {
@@ -382,7 +382,7 @@ impl Lab {
 
         let proxy = proxy_image.start().await.expect("Failed to start proxy");
 
-        let proxy_url_with_path = format!("{}/profile/default/directory", proxy_url);
+        let proxy_url_with_path = format!("{}/endpoint/default/directory", proxy_url);
 
         Self {
             network,

@@ -251,8 +251,8 @@ the same Go tarball.
     new lego scenario needs `ACME_PROXY_SERVER__TLS__ENABLED=true` plus
     `--tls-skip-verify`, and `lego run` takes its flags *after* the
     subcommand, not before it.
-- **`profiles.rs`** — two ACME endpoints (`default`/`second`) in one
-  process: cross-profile isolation, per-profile CAs and filters, distinct
+- **`endpoints.rs`** — two ACME endpoints (`default`/`second`) in one
+  process: cross-endpoint isolation, per-endpoint CAs and filters, distinct
   CRLs.
 - **`admin_cli.rs`** — registers and orders through certbot, then runs
   `acme-proxy account list --json`/`order list --json` inside the *running*

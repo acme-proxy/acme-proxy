@@ -161,8 +161,8 @@ pub trait JobHandler: Send + Sync {
     ///
     /// Takes the job because a handler may serve several configurations of one
     /// subsystem — `signer::relay::flow::RelayJob` is one handler over every
-    /// relay profile in the process, and `signer.relay.poll_timeout_secs` is
-    /// per profile. The runner has the claimed row in hand when it asks, so
+    /// relay endpoint in the process, and `signer.relay.poll_timeout_secs` is
+    /// per endpoint. The runner has the claimed row in hand when it asks, so
     /// this costs nothing; a handler with one budget ignores the argument.
     fn lease(&self, _job: &Job) -> Option<Duration> {
         None

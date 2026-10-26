@@ -48,7 +48,7 @@ An account registered without EAB has no credential, and this check refuses it.
 That is the only defensible reading of a question about *which* credential
 authorised the account — "none" cannot satisfy a tenant rule.
 
-It follows that an `eab` check under a profile whose `eab.enabled` is `false`
+It follows that an `eab` check under an endpoint whose `eab.enabled` is `false`
 could never do anything but refuse, so that combination is a **startup error**
 rather than a policy.
 

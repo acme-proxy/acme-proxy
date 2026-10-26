@@ -39,7 +39,7 @@ async fn account_cli_list_and_show() {
     let mut reader: &[u8] = &[];
     run_account_command(
         AccountCommand::List {
-            profile: None,
+            endpoint: None,
             eab_kid: None,
             limit: DEFAULT_LIMIT,
             offset: 0,
@@ -55,7 +55,7 @@ async fn account_cli_list_and_show() {
     .unwrap();
     run_account_command(
         AccountCommand::List {
-            profile: None,
+            endpoint: None,
             eab_kid: None,
             limit: DEFAULT_LIMIT,
             offset: 0,
@@ -224,7 +224,7 @@ async fn order_cli_list_show_delete() {
     let mut reader: &[u8] = &[];
     run_order_command(
         OrderCommand::List(OrderListArgs {
-            profile: None,
+            endpoint: None,
             account_id: Some(account.id.to_string()),
             status: Some("pending".to_string()),
             identifier: None,
@@ -247,7 +247,7 @@ async fn order_cli_list_show_delete() {
 
     run_order_command(
         OrderCommand::List(OrderListArgs {
-            profile: None,
+            endpoint: None,
             account_id: None,
             status: None,
             identifier: None,
@@ -396,7 +396,7 @@ async fn eab_cli_create_list_show_revoke() {
 
     run_eab_command(
         EabCommand::Create {
-            profile: None,
+            endpoint: None,
             label: Some("test-label".to_string()),
             json: false,
         },
@@ -411,7 +411,7 @@ async fn eab_cli_create_list_show_revoke() {
 
     run_eab_command(
         EabCommand::Create {
-            profile: None,
+            endpoint: None,
             label: None,
             json: true,
         },
@@ -570,7 +570,7 @@ async fn order_cli_lists_what_is_expiring() {
     for (hide_superseded, json) in [(false, false), (false, true), (true, false), (true, true)] {
         run_order_command(
             OrderCommand::List(OrderListArgs {
-                profile: None,
+                endpoint: None,
                 account_id: None,
                 status: None,
                 identifier: None,
@@ -595,7 +595,7 @@ async fn order_cli_lists_what_is_expiring() {
     // The window is a filter, and an empty one is not an error.
     run_order_command(
         OrderCommand::List(OrderListArgs {
-            profile: Some("default".to_string()),
+            endpoint: Some("default".to_string()),
             account_id: None,
             status: None,
             identifier: None,

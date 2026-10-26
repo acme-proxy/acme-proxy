@@ -100,7 +100,7 @@ pub enum AuthOutcome {
 /// not URL syntax, so the templates cannot rescue it either.
 ///
 /// The same rule this tree already applies wherever a configured name becomes a
-/// path or an environment segment (`valid_profile_name`,
+/// path or an environment segment (`valid_endpoint_name`,
 /// `valid_config_key_name`), widened by `_` and `.` because an operator name is
 /// a person's, not a slug — `a.smith` and `a_smith` are ordinary and neither
 /// means anything to a URL — and by `@`, because an identity provider's

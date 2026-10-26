@@ -24,8 +24,8 @@ use acme_proxy_core::config::Config;
 use common::{StubValidator, challenges_with};
 use std::sync::Arc;
 
-const NEW_ACCOUNT_URL: &str = "http://localhost:3000/profile/default/newAccount";
-const NEW_ORDER_URL: &str = "http://localhost:3000/profile/default/newOrder";
+const NEW_ACCOUNT_URL: &str = "http://localhost:3000/endpoint/default/newAccount";
+const NEW_ORDER_URL: &str = "http://localhost:3000/endpoint/default/newOrder";
 
 async fn post(app: &Router, path: &str, body: String) -> Response {
     app.clone()

@@ -2,8 +2,8 @@
 //!
 //! [`access`] is **server-wide** and outermost: it opens the `request` span
 //! every other line nests under and emits the access line. It sits outside the
-//! profile routers on purpose, because a request id that stopped at the profile
-//! boundary would be missing from exactly the paths that have no profile —
+//! endpoint routers on purpose, because a request id that stopped at the endpoint
+//! boundary would be missing from exactly the paths that have no endpoint —
 //! `/health`, the http-01 responder, and every admission-control refusal.
 //!
 //! [`admission`] bounds concurrent ACME work, shedding past the limit rather
@@ -15,7 +15,7 @@
 //! than outside them, because unlike [`access`] it needs `MatchedPath`, which
 //! routing is what populates.
 //!
-//! The rest are per profile. [`filter`] runs the configured access-control
+//! The rest are per endpoint. [`filter`] runs the configured access-control
 //! chain and inserts the resolved client address. [`nonce`] attaches a
 //! `Replay-Nonce` wherever RFC 8555 asks for one, and [`index_link`] the
 //! `Link: rel="index"` header — which *appends*, so `post_challenge`'s

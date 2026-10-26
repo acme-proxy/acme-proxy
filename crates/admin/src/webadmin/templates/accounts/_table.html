@@ -6,7 +6,7 @@
       <thead>
         <tr>
           <th>Account</th>
-          <th>Profile</th>
+          <th>Endpoint</th>
           <th>Status</th>
           <th>Contact</th>
           <th>Last seen from</th>
@@ -17,7 +17,7 @@
         {% for account in page.items %}
           <tr>
             <td class="id-cell"><a href="/ui/accounts/{{ account.id }}" title="{{ account.id }}"><code>{{ account.id }}</code></a></td>
-            <td><code>{{ account.profile }}</code></td>
+            <td><code>{{ account.endpoint }}</code></td>
             <td><span class="badge {{ account.status }}">{{ account.status }}</span></td>
             <td class="wrap-anywhere">
               {%- if account.contact -%}

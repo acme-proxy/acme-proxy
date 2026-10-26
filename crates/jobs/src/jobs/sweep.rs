@@ -92,7 +92,7 @@ const DAILY: Duration = Duration::from_secs(24 * 60 * 60);
 /// Which table a sweep deletes from, and what it needs to know to do it.
 ///
 /// `Clone` but not `Copy`: the order sweep carries one entry per mounted
-/// profile, `order.retention_days` being a per-profile key.
+/// endpoint, `order.retention_days` being a per-endpoint key.
 #[derive(Debug, Clone)]
 enum SweepTarget {
     /// Expired nonces.
@@ -107,8 +107,8 @@ enum SweepTarget {
     },
     /// Settled job rows past `jobs.retention_days`.
     Jobs { retention_days: u64 },
-    /// Expired, non-`valid` orders past each profile's `order.retention_days`,
-    /// as `(profile, retention_days)`.
+    /// Expired, non-`valid` orders past each endpoint's `order.retention_days`,
+    /// as `(endpoint, retention_days)`.
     Orders { retention: Vec<(String, u64)> },
     /// http-01 key authorizations past their deadline.
     Http01Tokens,
@@ -174,13 +174,13 @@ impl SweepJob {
         }
     }
 
-    /// The order-retention sweep, one handler covering every mounted profile.
+    /// The order-retention sweep, one handler covering every mounted endpoint.
     ///
-    /// One handler and not one per profile because `JobRegistry::register`
+    /// One handler and not one per endpoint because `JobRegistry::register`
     /// refuses a second handler for a kind — the same constraint that makes
-    /// `SignerBackend::crl_refresher` hands over state rather than a job. Profiles
+    /// `SignerBackend::crl_refresher` hands over state rather than a job. Endpoints
     /// whose `order.retention_days` is `0` are simply absent from `retention`,
-    /// so "keep everything" stays a profile the sweep never touches rather than
+    /// so "keep everything" stays an endpoint the sweep never touches rather than
     /// a `DELETE` with a cutoff at the epoch.
     #[must_use]
     pub fn orders(database: Arc<Database>, retention: Vec<(String, u64)>) -> Self {
@@ -191,7 +191,7 @@ impl SweepJob {
         }
     }
 
-    /// The expired http-01 token sweep. Registered only when some profile's
+    /// The expired http-01 token sweep. Registered only when some endpoint's
     /// signer backend publishes tokens, the way the CRL refresh is registered
     /// only when some backend keeps a CRL.
     #[must_use]
@@ -334,23 +334,23 @@ impl SweepJob {
                 }
             }
             SweepTarget::Orders { retention } => {
-                // One statement per profile rather than one over all of them:
-                // the retention is per-profile, and a profile whose delete
+                // One statement per endpoint rather than one over all of them:
+                // the retention is per-endpoint, and an endpoint whose delete
                 // fails must not stop the others being swept.
-                for (profile, retention_days) in retention {
+                for (endpoint, retention_days) in retention {
                     let cutoff = acme_proxy_store::audit::audit_cutoff(*retention_days);
-                    match acme_proxy_store::order::Order::cleanup(profile, cutoff, &self.database)
+                    match acme_proxy_store::order::Order::cleanup(endpoint, cutoff, &self.database)
                         .await
                     {
                         Ok(removed) => info!(
                             event = "order_reaper_swept",
                             outcome = "success",
-                            profile = %profile,
+                            endpoint = %endpoint,
                             rows_removed = removed,
                             cutoff
                         ),
                         Err(error) => {
-                            error!(event = "order_reaper_failed", outcome = "failure", profile = %profile, error = %error);
+                            error!(event = "order_reaper_failed", outcome = "failure", endpoint = %endpoint, error = %error);
                         }
                     }
                 }
@@ -827,10 +827,10 @@ mod tests {
         );
     }
 
-    /// A profile keeps its own history: the sweep is one handler, so a second
-    /// profile's rows must not go out with the first's.
+    /// An endpoint keeps its own history: the sweep is one handler, so a second
+    /// endpoint's rows must not go out with the first's.
     #[tokio::test]
-    async fn the_order_sweep_is_scoped_to_one_profile() {
+    async fn the_order_sweep_is_scoped_to_one_endpoint() {
         use acme_proxy_core::identifier::Identifier;
         use acme_proxy_store::account::Account;
         use acme_proxy_store::order::Order;
@@ -838,9 +838,9 @@ mod tests {
         let (database, _queue) = setup().await;
         let ancient = now_secs() - 400 * 24 * 60 * 60;
         let mut ids = Vec::new();
-        for (index, profile) in ["default", "other"].iter().enumerate() {
+        for (index, endpoint) in ["default", "other"].iter().enumerate() {
             let (account, _) = Account::find_or_create(
-                profile,
+                endpoint,
                 &[index as u8 + 40; 8],
                 vec![],
                 &acme_proxy_core::audit::ClientContext::default(),
@@ -849,7 +849,7 @@ mod tests {
             .await
             .unwrap();
             let order = Order::create(
-                profile,
+                endpoint,
                 account.id,
                 vec![Identifier::dns("example.com")],
                 ancient,
@@ -882,7 +882,7 @@ mod tests {
                 .await
                 .unwrap()
                 .is_some(),
-            "another profile's orders are not this profile's to delete"
+            "another endpoint's orders are not this endpoint's to delete"
         );
     }
 }

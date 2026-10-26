@@ -33,7 +33,7 @@
 //! 6. **Several admin processes share one login budget**: the brute-force
 //!    counter is a database row, not process memory.
 //! 7. **Every worker issues from the one CA.** A worker whose CA is not the one
-//!    the database records for its profile refuses to start, and one with no
+//!    the database records for its endpoint refuses to start, and one with no
 //!    CA refuses rather than generating a second.
 //! 8. **Several workers share one queue.** Each job runs once however many
 //!    workers poll, and a job a dead worker held is reclaimed and run by
@@ -79,7 +79,7 @@ impl Process {
     }
 }
 
-/// A single-profile configuration over a database file in `dir`.
+/// A single-endpoint configuration over a database file in `dir`.
 ///
 /// Deliberately one database for every process in the test: sharing it is what
 /// makes them one deployment rather than three unrelated servers.
@@ -113,7 +113,7 @@ fn write_config_with_ca(dir: &TempDir, into: &TempDir, cert_path: &str, key_path
         enabled = true
         login_max_attempts = 2
 
-        [profiles.default]
+        [endpoints.default]
         signer.local_ca.cert_path = "{cert_path}"
         signer.local_ca.key_path = "{key_path}"
         signer.local_ca.crl_path = "{ca}.crl"
@@ -278,7 +278,7 @@ async fn each_role_serves_only_its_own_surface() {
 
     // The ACME process serves the directory and no panel.
     assert_eq!(
-        status_of(acme_addr, "/profile/default/directory").await,
+        status_of(acme_addr, "/endpoint/default/directory").await,
         200
     );
     assert_eq!(status_of(acme_addr, "/api/accounts").await, 404);
@@ -287,7 +287,7 @@ async fn each_role_serves_only_its_own_surface() {
     // there is no session, which is an answer — `404` would mean not routed.
     assert_eq!(status_of(admin_addr, "/api/accounts").await, 401);
     assert_eq!(
-        status_of(admin_addr, "/profile/default/directory").await,
+        status_of(admin_addr, "/endpoint/default/directory").await,
         404
     );
 
@@ -315,7 +315,7 @@ async fn an_acme_process_queues_work_a_worker_performs() {
     let acme = start(&config, RoleSet::parse(Some("acme")).unwrap()).await;
     let acme_addr = acme.acme.expect("the acme role binds the ACME socket");
     assert_eq!(
-        status_of(acme_addr, "/profile/default/directory").await,
+        status_of(acme_addr, "/endpoint/default/directory").await,
         200
     );
 
@@ -450,7 +450,7 @@ async fn the_three_roles_start_concurrently_over_one_database() {
     );
 
     assert_eq!(
-        status_of(acme.acme.unwrap(), "/profile/default/directory").await,
+        status_of(acme.acme.unwrap(), "/endpoint/default/directory").await,
         200
     );
     assert_eq!(status_of(admin.admin.unwrap(), "/api/accounts").await, 401);
@@ -516,7 +516,7 @@ async fn the_acme_and_admin_processes_never_touch_the_ca_key() {
     let acme_addr = acme.acme.expect("the acme role binds the ACME socket");
 
     // Both came up and serve, the acme process the CA's own certificate.
-    let (status, body) = fetch(acme_addr, "/profile/default/ca.pem").await;
+    let (status, body) = fetch(acme_addr, "/endpoint/default/ca.pem").await;
     assert_eq!(status, 200);
     assert_eq!(String::from_utf8(body).unwrap(), ca_pem);
     assert_eq!(status_of(admin.admin.unwrap(), "/api/accounts").await, 401);
@@ -543,7 +543,7 @@ async fn the_acme_and_admin_processes_never_touch_the_ca_key() {
     // admin roles write — reaches the CRL the acme process serves, once the
     // worker has signed it in.
     let route = acme_proxy_signer::revocation_route(
-        &keyless.resolve_profiles().unwrap()[0].sections.signer,
+        &keyless.resolve_endpoints().unwrap()[0].sections.signer,
     )
     .unwrap();
     let audit = acme_proxy_jobs::auditor::Auditor::offline(database.clone());
@@ -568,7 +568,7 @@ async fn the_acme_and_admin_processes_never_touch_the_ca_key() {
     let serial = order.cert_serial.clone().unwrap();
     let mut listed = false;
     for _ in 0..300 {
-        let (status, der) = fetch(acme_addr, "/profile/default/crl").await;
+        let (status, der) = fetch(acme_addr, "/endpoint/default/crl").await;
         assert_eq!(status, 200);
         use x509_parser::prelude::FromDer;
         let (_, crl) =
@@ -760,9 +760,9 @@ async fn worker_refusal(config: &Config) -> String {
 }
 
 /// **A second worker host with no key files refuses rather than minting a
-/// second CA.** The first run records the profile's issuer; a worker that then
+/// second CA.** The first run records the endpoint's issuer; a worker that then
 /// finds no CA certificate on its own host would otherwise generate one, and
-/// the profile would issue from two CAs over one database.
+/// the endpoint would issue from two CAs over one database.
 #[tokio::test]
 async fn a_worker_without_key_files_refuses_rather_than_generating() {
     let dir = TempDir::shared("roles-ca-missing").await;
@@ -804,7 +804,7 @@ async fn a_second_worker_with_another_ca_refuses_to_start() {
     write_config_with_ca(&dir, &host, cert.to_str().unwrap(), key.to_str().unwrap());
     let message = worker_refusal(&load_from(&host)).await;
     assert!(
-        message.contains("acme-proxy profile issuer accept default"),
+        message.contains("acme-proxy endpoint issuer accept default"),
         "{message}"
     );
 

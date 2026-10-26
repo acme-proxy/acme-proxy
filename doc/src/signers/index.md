@@ -29,9 +29,9 @@ Start from what has to trust the certificate:
   It is the escape hatch, and it is deliberately a shell contract rather than a
   plugin API, so anything that can be scripted can be a signer.
 
-Nothing stops you from running more than one. `[signer]` is a per-profile
-section, so a `local_ca` at `/profile/dev` can sit beside a relay at
-`/profile/prod` in the same process.
+Nothing stops you from running more than one. `[signer]` is a per-endpoint
+section, so a `local_ca` at `/endpoint/dev` can sit beside a relay at
+`/endpoint/prod` in the same process.
 
 ## What every backend has to provide
 
@@ -75,14 +75,14 @@ Each backend then reads its own table — `[signer.local_ca]`,
 Which backend issues certificates: `local_ca`, `relay` or `custom`. Any
 other value is a startup error.
 
-## Backends are shared by configuration, not per profile
+## Backends are shared by configuration, not per endpoint
 
-Two profiles whose `[signer]` sections are **identical** share one backend
+Two endpoints whose `[signer]` sections are **identical** share one backend
 instance rather than constructing two. Revocations and the CRL live in the
 database, keyed by the CA's key, so two instances over one CA would still agree
 on what is revoked; what they could not agree on is everything else in the
 section.
 
-Two profiles sharing `ca.key` while differing anywhere else in `[signer]` is
+Two endpoints sharing `ca.key` while differing anywhere else in `[signer]` is
 therefore a **startup error**, not a race to discover later. See
-[Profiles & Routing](../core/profiles.md).
+[Endpoints & Routing](../core/endpoints.md).

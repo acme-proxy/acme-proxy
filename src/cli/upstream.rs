@@ -23,7 +23,7 @@ use clap::Subcommand;
 
 use crate::cli::render;
 use crate::cli::window::{DEFAULT_LIMIT, Window};
-use crate::cli::{CliError, resolve_profile};
+use crate::cli::{CliError, resolve_endpoint};
 use acme_proxy_admin::admin;
 use acme_proxy_core::config::Config;
 use acme_proxy_core::palette::Palette;
@@ -46,20 +46,20 @@ pub enum UpstreamCommand {
         /// not) from this file instead of prompting on stdin. The file is read, used, and never copied.
         #[arg(long = "eab-hmac-key-file")]
         eab_hmac_key_file: Option<PathBuf>,
-        /// Which profile's upstream to register with. Optional when the
-        /// configuration defines exactly one profile.
+        /// Which endpoint's upstream to register with. Optional when the
+        /// configuration defines exactly one endpoint.
         #[arg(long)]
-        profile: Option<String>,
+        endpoint: Option<String>,
     },
     /// Show the configured upstream and whether this server is registered.
     Show {
         /// Print it as JSON.
         #[arg(long)]
         json: bool,
-        /// Which profile's upstream to describe. Optional when the
-        /// configuration defines exactly one profile.
+        /// Which endpoint's upstream to describe. Optional when the
+        /// configuration defines exactly one endpoint.
         #[arg(long)]
-        profile: Option<String>,
+        endpoint: Option<String>,
     },
     /// The relay backend's per-order upstream state. Read-only — abandoning an
     /// in-flight relay is done through `acme-proxy jobs cancel` on the
@@ -74,9 +74,9 @@ pub enum UpstreamCommand {
 pub enum UpstreamOrderCommand {
     /// List upstream orders, optionally filtered.
     List {
-        /// Restrict to one ACME endpoint (the local order's profile).
+        /// Restrict to one ACME endpoint (the local order's endpoint).
         #[arg(long)]
-        profile: Option<String>,
+        endpoint: Option<String>,
         /// Only upstream orders in this state: `processing`, `valid` or
         /// `invalid`.
         #[arg(long)]
@@ -102,12 +102,12 @@ pub enum UpstreamOrderCommand {
     },
 }
 
-/// Resolves which profile's `[signer.relay]` a command should act on.
+/// Resolves which endpoint's `[signer.relay]` a command should act on.
 ///
-/// `signer` is a **per-profile** section, but this command read
-/// `config.signer.relay` — the global base every profile overlays, which
+/// `signer` is a **per-endpoint** section, but this command read
+/// `config.signer.relay` — the global base every endpoint overlays, which
 /// nothing serves from. An operator who configured the upstream only under
-/// `[profiles.le].signer.relay` was told "directory_url is not set", which
+/// `[endpoints.le].signer.relay` was told "directory_url is not set", which
 /// was simply false; and if a *different* upstream happened to be configured
 /// globally, `register` would write the account key and `.kid` sidecar for the
 pub async fn run_upstream_command(
@@ -121,9 +121,9 @@ pub async fn run_upstream_command(
         UpstreamCommand::Register {
             eab_kid,
             eab_hmac_key_file,
-            profile,
+            endpoint,
         } => {
-            let resolved = resolve_profile(config, profile.as_deref())?;
+            let resolved = resolve_endpoint(config, endpoint.as_deref())?;
             let cfg = &resolved.sections.signer.relay;
             if cfg.directory_url.is_empty() {
                 return Err(CliError::failed(
@@ -160,8 +160,8 @@ pub async fn run_upstream_command(
             }
         }
 
-        UpstreamCommand::Show { json, profile } => {
-            let resolved = resolve_profile(config, profile.as_deref())?;
+        UpstreamCommand::Show { json, endpoint } => {
+            let resolved = resolve_endpoint(config, endpoint.as_deref())?;
             let cfg = &resolved.sections.signer.relay;
             let kid = relay::stored_kid(cfg);
             let key_present = std::path::Path::new(&cfg.account_key_path).exists();
@@ -193,7 +193,7 @@ pub async fn run_upstream_command(
 
         UpstreamCommand::Order { command } => match command {
             UpstreamOrderCommand::List {
-                profile,
+                endpoint,
                 status,
                 limit,
                 offset,
@@ -202,7 +202,7 @@ pub async fn run_upstream_command(
                 let status = super::parse_flag::<UpstreamOrderStatus>("--status", status)?;
                 let window = Window::resolve(limit, offset);
                 let query = UpstreamOrderQuery {
-                    profile,
+                    endpoint,
                     status,
                     limit: window.limit,
                     offset: window.offset,
@@ -284,7 +284,7 @@ fn read_secret(
 mod tests {
     use acme_proxy_core::config::ENV_LOCK;
 
-    /// Loads a `Config` from TOML the way the server does, so `resolve_profiles`
+    /// Loads a `Config` from TOML the way the server does, so `resolve_endpoints`
     /// has the raw sources it needs for per-key inheritance.
     fn config_from(body: &str) -> Config {
         let _lock = ENV_LOCK
@@ -304,21 +304,21 @@ mod tests {
     }
 
     /// The bug this resolution fixes: `[signer.relay]` written *inside* a
-    /// profile was invisible, because the command read the global base section
+    /// endpoint was invisible, because the command read the global base section
     /// that nothing ever serves from. An operator saw "directory_url is not
     /// set" for a configuration where it plainly was.
     #[test]
-    fn a_profiles_own_upstream_is_what_gets_resolved() {
+    fn an_endpoints_own_upstream_is_what_gets_resolved() {
         let config = config_from(
             r#"
-            [profiles.le]
+            [endpoints.le]
             signer.backend = "relay"
             signer.relay.directory_url = "https://upstream.example/directory"
             signer.relay.account_key_path = "/tmp/le-upstream.key"
             "#,
         );
 
-        let resolved = resolve_profile(&config, None).unwrap();
+        let resolved = resolve_endpoint(&config, None).unwrap();
         assert_eq!(resolved.name, "le");
         assert_eq!(
             resolved.sections.signer.relay.directory_url,
@@ -330,29 +330,29 @@ mod tests {
         );
     }
 
-    /// With several profiles there is no right answer to guess — and guessing
+    /// With several endpoints there is no right answer to guess — and guessing
     /// wrong means `register` writing an account key and `.kid` for the wrong
     /// CA at the wrong paths.
     #[test]
-    fn several_profiles_require_saying_which() {
+    fn several_endpoints_require_saying_which() {
         let config = config_from(
             r#"
-            [profiles.le]
-            [profiles.internal]
+            [endpoints.le]
+            [endpoints.internal]
             "#,
         );
 
-        let error = resolve_profile(&config, None).unwrap_err().to_string();
-        assert!(error.contains("--profile"), "{error}");
+        let error = resolve_endpoint(&config, None).unwrap_err().to_string();
+        assert!(error.contains("--endpoint"), "{error}");
         assert!(
             error.contains("le") && error.contains("internal"),
             "{error}"
         );
 
         // Named explicitly, it resolves.
-        assert_eq!(resolve_profile(&config, Some("le")).unwrap().name, "le");
+        assert_eq!(resolve_endpoint(&config, Some("le")).unwrap().name, "le");
         // And an unknown name is refused rather than falling back.
-        let error = resolve_profile(&config, Some("nope"))
+        let error = resolve_endpoint(&config, Some("nope"))
             .unwrap_err()
             .to_string();
         assert!(error.contains("nope"), "{error}");
@@ -441,17 +441,17 @@ mod tests {
     /// so registration stops before it can prompt for a credential.
     #[tokio::test]
     async fn registering_without_an_upstream_is_refused() {
-        // A real profile, but one whose signer is the default `local_ca` — so
+        // A real endpoint, but one whose signer is the default `local_ca` — so
         // there genuinely is no upstream, which is what the message must say.
-        // (`Config::default()` would now fail earlier, on having no profiles at
+        // (`Config::default()` would now fail earlier, on having no endpoints at
         // all, and would not exercise this branch.)
-        let config = config_from("[profiles.default]\n");
+        let config = config_from("[endpoints.default]\n");
         let mut reader: &[u8] = &[];
         let error = run_upstream_command(
             UpstreamCommand::Register {
                 eab_kid: None,
                 eab_hmac_key_file: None,
-                profile: None,
+                endpoint: None,
             },
             &mut reader,
             Palette::plain(),
@@ -473,7 +473,7 @@ mod tests {
         // fast rather than hanging on a routable-but-silent address.
         let config = config_from(&format!(
             r#"
-            [profiles.default]
+            [endpoints.default]
             signer.backend = "relay"
             signer.relay.directory_url = "http://127.0.0.1:1/directory"
             signer.relay.account_key_path = "{}"
@@ -489,7 +489,7 @@ mod tests {
             UpstreamCommand::Register {
                 eab_kid: Some("kid-1".to_string()),
                 eab_hmac_key_file: None,
-                profile: None,
+                endpoint: None,
             },
             &mut reader,
             Palette::plain(),
@@ -510,13 +510,13 @@ mod tests {
     /// rather than failing — "nothing is set up" is a valid answer.
     #[tokio::test]
     async fn show_renders_an_unregistered_upstream() {
-        let config = config_from("[profiles.default]\n");
+        let config = config_from("[endpoints.default]\n");
         for json in [true, false] {
             let mut reader: &[u8] = &[];
             run_upstream_command(
                 UpstreamCommand::Show {
                     json,
-                    profile: None,
+                    endpoint: None,
                 },
                 &mut reader,
                 Palette::plain(),
@@ -536,13 +536,13 @@ mod tests {
     /// name.
     #[tokio::test]
     async fn upstream_order_list_and_show() {
-        let config = config_from("[profiles.default]\n");
+        let config = config_from("[endpoints.default]\n");
         let db = test_db().await;
         for json in [true, false] {
             run_upstream_command(
                 UpstreamCommand::Order {
                     command: UpstreamOrderCommand::List {
-                        profile: None,
+                        endpoint: None,
                         status: None,
                         limit: 50,
                         offset: 0,
@@ -561,7 +561,7 @@ mod tests {
         let err = run_upstream_command(
             UpstreamCommand::Order {
                 command: UpstreamOrderCommand::List {
-                    profile: None,
+                    endpoint: None,
                     status: Some("bogus".to_string()),
                     limit: 50,
                     offset: 0,

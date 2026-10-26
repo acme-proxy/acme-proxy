@@ -1,8 +1,8 @@
-//! Covers the multi-endpoint (profile) surface: several ACME endpoints served
-//! by one process, over one database, under `/profile/<name>`.
+//! Covers the multi-endpoint (endpoint) surface: several ACME endpoints served
+//! by one process, over one database, under `/endpoint/<name>`.
 //!
 //! Most of this crate is about what must **not** work across endpoints. The
-//! URL prefix alone is cosmetic; what makes a profile a boundary is that
+//! URL prefix alone is cosmetic; what makes an endpoint a boundary is that
 //! accounts and orders are scoped to it in the database. Without that, a client
 //! could register at a permissive endpoint and then use that account at a
 //! stricter one — bypassing its `eab.enabled`, and carrying orders whose
@@ -28,27 +28,27 @@ use tower::ServiceExt;
 
 mod common;
 use common::{
-    EcSigner, HOST, TestProfile, TestSigner, body_json, first_certificate, make_csr,
-    make_csr_and_keypair, send_from, test_app_with_profiles,
+    EcSigner, HOST, TestEndpoint, TestSigner, body_json, first_certificate, make_csr,
+    make_csr_and_keypair, send_from, test_app_with_endpoints,
 };
 
 /// Two endpoints: `a` issues freely, `b` demands an External Account Binding.
 /// They have distinct local CAs, so the issuer of a leaf says which one signed.
-async fn two_profiles() -> Router {
-    test_app_with_profiles(vec![
-        TestProfile::new("a").await,
-        TestProfile::new("b").await.requiring_eab(),
+async fn two_endpoints() -> Router {
+    test_app_with_endpoints(vec![
+        TestEndpoint::new("a").await,
+        TestEndpoint::new("b").await.requiring_eab(),
     ])
     .await
     .0
 }
 
 fn base(name: &str) -> String {
-    TestProfile::base(name)
+    TestEndpoint::base(name)
 }
 
 fn path(name: &str, path: &str) -> String {
-    TestProfile::path(name, path)
+    TestEndpoint::path(name, path)
 }
 
 async fn post(app: &Router, path: &str, body: String) -> Response {
@@ -70,8 +70,8 @@ async fn get(app: &Router, path: &str) -> Response {
         .unwrap()
 }
 
-async fn nonce(app: &Router, profile: &str) -> String {
-    get(app, &path(profile, "/newNonce"))
+async fn nonce(app: &Router, endpoint: &str) -> String {
+    get(app, &path(endpoint, "/newNonce"))
         .await
         .headers()
         .get("replay-nonce")
@@ -81,22 +81,22 @@ async fn nonce(app: &Router, profile: &str) -> String {
         .to_string()
 }
 
-/// POST-as-GETs `order_url` at `profile` until the worker has settled it,
+/// POST-as-GETs `order_url` at `endpoint` until the worker has settled it,
 /// returning the certificate URL. Issuance is queued work: finalize answers
 /// `processing`, and the client polls.
 async fn await_certificate(
     app: &Router,
-    profile: &str,
+    endpoint: &str,
     signer: &EcSigner,
     account: &str,
     order_url: &str,
 ) -> String {
     for _ in 0..600 {
-        let n = nonce(app, profile).await;
+        let n = nonce(app, endpoint).await;
         let body = signer.sign_kid_empty(account, order_url, &n);
         let order = body_json(post(app, to_path(order_url), body).await).await;
         if order["status"] != "processing" {
-            assert_eq!(order["status"], "valid", "issuance at {profile}");
+            assert_eq!(order["status"], "valid", "issuance at {endpoint}");
             return order["certificate"].as_str().unwrap().to_string();
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -104,19 +104,19 @@ async fn await_certificate(
     panic!("`{order_url}` never left `processing`");
 }
 
-/// Registers an account at `profile` and returns its account URL.
-async fn register(app: &Router, profile: &str, signer: &EcSigner) -> String {
-    let n = nonce(app, profile).await;
+/// Registers an account at `endpoint` and returns its account URL.
+async fn register(app: &Router, endpoint: &str, signer: &EcSigner) -> String {
+    let n = nonce(app, endpoint).await;
     let body = signer.sign(
-        &format!("{}/newAccount", base(profile)),
+        &format!("{}/newAccount", base(endpoint)),
         &n,
         &json!({ "termsOfServiceAgreed": true }),
     );
-    let res = post(app, &path(profile, "/newAccount"), body).await;
+    let res = post(app, &path(endpoint, "/newAccount"), body).await;
     assert_eq!(
         res.status(),
         StatusCode::CREATED,
-        "registering at {profile}"
+        "registering at {endpoint}"
     );
     res.headers()
         .get("location")
@@ -125,23 +125,29 @@ async fn register(app: &Router, profile: &str, signer: &EcSigner) -> String {
         .to_string()
 }
 
-/// The path a returned absolute URL maps to — the host goes, the profile
+/// The path a returned absolute URL maps to — the host goes, the endpoint
 /// prefix stays.
 fn to_path(url: &str) -> &str {
     url.strip_prefix(HOST).expect("URL must be under the host")
 }
 
-/// Drives one order at `profile` all the way to an issued certificate chain.
-async fn issue(app: &Router, profile: &str, signer: &EcSigner, account: &str, dns: &str) -> String {
-    let n = nonce(app, profile).await;
+/// Drives one order at `endpoint` all the way to an issued certificate chain.
+async fn issue(
+    app: &Router,
+    endpoint: &str,
+    signer: &EcSigner,
+    account: &str,
+    dns: &str,
+) -> String {
+    let n = nonce(app, endpoint).await;
     let payload = json!({ "identifiers": [{ "type": "dns", "value": dns }] });
     let body = signer.sign_kid(
         account,
-        &format!("{}/newOrder", base(profile)),
+        &format!("{}/newOrder", base(endpoint)),
         &n,
         &payload,
     );
-    let res = post(app, &path(profile, "/newOrder"), body).await;
+    let res = post(app, &path(endpoint, "/newOrder"), body).await;
     assert_eq!(res.status(), StatusCode::CREATED);
     let order_url = res
         .headers()
@@ -152,7 +158,7 @@ async fn issue(app: &Router, profile: &str, signer: &EcSigner, account: &str, dn
     let order = body_json(res).await;
 
     let authz_url = order["authorizations"][0].as_str().unwrap().to_string();
-    let n = nonce(app, profile).await;
+    let n = nonce(app, endpoint).await;
     let body = signer.sign_kid_empty(account, &authz_url, &n);
     let authz = body_json(post(app, to_path(&authz_url), body).await).await;
     let chall_url = authz["challenges"][0]["url"].as_str().unwrap().to_string();
@@ -161,7 +167,7 @@ async fn issue(app: &Router, profile: &str, signer: &EcSigner, account: &str, dn
     // repeat `{}` POST §7.5.1 makes explicitly not a state change.
     let mut status = serde_json::Value::Null;
     for _ in 0..600 {
-        let n = nonce(app, profile).await;
+        let n = nonce(app, endpoint).await;
         let body = signer.sign_kid(account, &chall_url, &n, &json!({}));
         let res = post(app, to_path(&chall_url), body).await;
         assert_eq!(res.status(), StatusCode::OK);
@@ -174,13 +180,13 @@ async fn issue(app: &Router, profile: &str, signer: &EcSigner, account: &str, dn
     assert_eq!(status, "valid");
 
     let finalize_url = format!("{order_url}/finalize");
-    let n = nonce(app, profile).await;
+    let n = nonce(app, endpoint).await;
     let body = signer.sign_kid(account, &finalize_url, &n, &json!({ "csr": make_csr(dns) }));
     let res = post(app, to_path(&finalize_url), body).await;
-    assert_eq!(res.status(), StatusCode::OK, "finalize at {profile}");
-    let cert_url = await_certificate(app, profile, signer, account, &order_url).await;
+    assert_eq!(res.status(), StatusCode::OK, "finalize at {endpoint}");
+    let cert_url = await_certificate(app, endpoint, signer, account, &order_url).await;
 
-    let n = nonce(app, profile).await;
+    let n = nonce(app, endpoint).await;
     let body = signer.sign_kid_empty(account, &cert_url, &n);
     let res = post(app, to_path(&cert_url), body).await;
     assert_eq!(res.status(), StatusCode::OK);
@@ -190,7 +196,7 @@ async fn issue(app: &Router, profile: &str, signer: &EcSigner, account: &str, dn
 /// Each endpoint advertises its own URLs, and only its own.
 #[tokio::test]
 async fn each_directory_advertises_its_own_prefix() {
-    let app = two_profiles().await;
+    let app = two_endpoints().await;
 
     for name in ["a", "b"] {
         let directory = body_json(get(&app, &path(name, "/directory")).await).await;
@@ -214,8 +220,8 @@ async fn each_directory_advertises_its_own_prefix() {
 /// The whole lifecycle works through a nested router — the proof that
 /// `Router::nest`'s path rewriting and the RFC 8555 §6.4 `url` check agree.
 #[tokio::test]
-async fn a_full_lifecycle_runs_under_a_profile_prefix() {
-    let app = two_profiles().await;
+async fn a_full_lifecycle_runs_under_a_endpoint_prefix() {
+    let app = two_endpoints().await;
     let signer = EcSigner::new();
     let account = register(&app, "a", &signer).await;
 
@@ -229,10 +235,10 @@ async fn a_full_lifecycle_runs_under_a_profile_prefix() {
 }
 
 /// A JWS is bound to the endpoint it was signed for: the `url` it carries names
-/// one profile, and replaying it at another is refused before anything else.
+/// one endpoint, and replaying it at another is refused before anything else.
 #[tokio::test]
-async fn a_jws_signed_for_one_profile_is_refused_at_another() {
-    let app = two_profiles().await;
+async fn a_jws_signed_for_one_endpoint_is_refused_at_another() {
+    let app = two_endpoints().await;
     let signer = EcSigner::new();
 
     let n = nonce(&app, "a").await;
@@ -254,8 +260,8 @@ async fn a_jws_signed_for_one_profile_is_refused_at_another() {
 /// when the `kid` is rewritten to name the second one: the row itself is
 /// scoped, so there is nothing to find.
 #[tokio::test]
-async fn an_account_from_one_profile_is_unknown_at_another() {
-    let app = two_profiles().await;
+async fn an_account_from_one_endpoint_is_unknown_at_another() {
+    let app = two_endpoints().await;
     let signer = EcSigner::new();
     let account_at_a = register(&app, "a", &signer).await;
 
@@ -279,8 +285,8 @@ async fn an_account_from_one_profile_is_unknown_at_another() {
 /// The regression this whole scoping exists for: registering where no External
 /// Account Binding is required must not produce an account usable where one is.
 #[tokio::test]
-async fn registering_without_eab_does_not_open_an_eab_protected_profile() {
-    let app = two_profiles().await;
+async fn registering_without_eab_does_not_open_an_eab_protected_endpoint() {
+    let app = two_endpoints().await;
     let signer = EcSigner::new();
 
     // The same key, at the endpoint that demands a binding: refused.
@@ -323,10 +329,10 @@ async fn registering_without_eab_does_not_open_an_eab_protected_profile() {
 /// one fails at the account lookup, so a permissive endpoint's authorizations
 /// can never be spent on a stricter endpoint's signer.
 #[tokio::test]
-async fn an_order_is_invisible_from_another_profile() {
-    let app = test_app_with_profiles(vec![
-        TestProfile::new("a").await,
-        TestProfile::new("b").await,
+async fn an_order_is_invisible_from_another_endpoint() {
+    let app = test_app_with_endpoints(vec![
+        TestEndpoint::new("a").await,
+        TestEndpoint::new("b").await,
     ])
     .await
     .0;
@@ -367,10 +373,10 @@ async fn an_order_is_invisible_from_another_profile() {
 
 /// Each endpoint signs with its own CA and publishes its own CRL.
 #[tokio::test]
-async fn each_profile_issues_from_its_own_ca() {
-    let app = test_app_with_profiles(vec![
-        TestProfile::new("a").await,
-        TestProfile::new("b").await,
+async fn each_endpoint_issues_from_its_own_ca() {
+    let app = test_app_with_endpoints(vec![
+        TestEndpoint::new("a").await,
+        TestEndpoint::new("b").await,
     ])
     .await
     .0;
@@ -417,10 +423,10 @@ async fn each_profile_issues_from_its_own_ca() {
 /// key), so the endpoint the request reached is the only thing scoping it: `b`
 /// must not revoke — or even recognise — a certificate `a` issued.
 #[tokio::test]
-async fn a_certificate_cannot_be_revoked_through_another_profile() {
-    let app = test_app_with_profiles(vec![
-        TestProfile::new("a").await,
-        TestProfile::new("b").await,
+async fn a_certificate_cannot_be_revoked_through_another_endpoint() {
+    let app = test_app_with_endpoints(vec![
+        TestEndpoint::new("a").await,
+        TestEndpoint::new("b").await,
     ])
     .await
     .0;
@@ -511,10 +517,10 @@ async fn a_certificate_cannot_be_revoked_through_another_profile() {
 
 /// ARI is unauthenticated, so it is scoped the same way revocation is.
 #[tokio::test]
-async fn renewal_info_does_not_answer_for_another_profiles_certificate() {
-    let app = test_app_with_profiles(vec![
-        TestProfile::new("a").await,
-        TestProfile::new("b").await,
+async fn renewal_info_does_not_answer_for_another_endpoints_certificate() {
+    let app = test_app_with_endpoints(vec![
+        TestEndpoint::new("a").await,
+        TestEndpoint::new("b").await,
     ])
     .await
     .0;
@@ -523,9 +529,9 @@ async fn renewal_info_does_not_answer_for_another_profiles_certificate() {
     let chain = issue(&app, "a", &signer, &account, "ari.example.com").await;
 
     // RFC 9773 certID = base64url(AKI).base64url(serial), built from the
-    // certificate exactly as a client would. Note each profile has its own CA,
+    // certificate exactly as a client would. Note each endpoint has its own CA,
     // so `b` would reject this identifier on the AKI half even if the serials
-    // collided — but the isolation being tested here is the profile-scoped
+    // collided — but the isolation being tested here is the endpoint-scoped
     // lookup, which is why the assertion below is about `b` specifically.
     let leaf = first_certificate(&chain);
     let cert_id = acme_proxy_core::cert::ari_cert_id(&leaf).unwrap();
@@ -541,7 +547,7 @@ async fn renewal_info_does_not_answer_for_another_profiles_certificate() {
     );
 }
 
-/// A filter that denies every connection, for the per-profile filtering test.
+/// A filter that denies every connection, for the per-endpoint filtering test.
 struct DenyAll;
 
 #[async_trait]
@@ -563,14 +569,14 @@ impl Check for DenyAll {
     }
 }
 
-/// Filters are per endpoint: one profile can be closed while the other is open,
+/// Filters are per endpoint: one endpoint can be closed while the other is open,
 /// which is the point of running both in one process.
 #[tokio::test]
-async fn filters_apply_to_their_own_profile_only() {
+async fn filters_apply_to_their_own_endpoint_only() {
     let closed = common::policy_with(Arc::new(DenyAll));
-    let app = test_app_with_profiles(vec![
-        TestProfile::new("open").await,
-        TestProfile::new("closed").await.with_filter(closed),
+    let app = test_app_with_endpoints(vec![
+        TestEndpoint::new("open").await,
+        TestEndpoint::new("closed").await.with_filter(closed),
     ])
     .await
     .0;
@@ -598,14 +604,14 @@ async fn filters_apply_to_their_own_profile_only() {
     // That a refusal still hands back a usable nonce is a POST-only property
     // now (RFC 8555 §6.5), so it is asserted where it can be — over a signed
     // POST, in `filters.rs::a_rejection_still_carries_a_replay_nonce`. What
-    // this test is about is which profile the filter applied to.
+    // this test is about is which endpoint the filter applied to.
 }
 
 /// Server-level routes live at the root and nowhere else; ACME lives under a
-/// profile and nowhere else. Anything in between is a 404, never a surprise.
+/// endpoint and nowhere else. Anything in between is a 404, never a surprise.
 #[tokio::test]
 async fn routing_separates_server_routes_from_acme_routes() {
-    let app = two_profiles().await;
+    let app = two_endpoints().await;
 
     assert_eq!(get(&app, "/health").await.status(), StatusCode::OK);
     assert_eq!(
@@ -625,9 +631,9 @@ async fn routing_separates_server_routes_from_acme_routes() {
         "nothing ACME is served at the root"
     );
     assert_eq!(
-        get(&app, "/profile/nope/directory").await.status(),
+        get(&app, "/endpoint/nope/directory").await.status(),
         StatusCode::NOT_FOUND,
-        "an unconfigured profile is simply not mounted"
+        "an unconfigured endpoint is simply not mounted"
     );
 }
 
@@ -635,10 +641,10 @@ async fn routing_separates_server_routes_from_acme_routes() {
 /// `url` check is what binds a request to its endpoint, and a nonce is single
 /// use wherever it is spent.
 #[tokio::test]
-async fn a_nonce_minted_at_one_profile_is_accepted_at_another() {
-    let app = test_app_with_profiles(vec![
-        TestProfile::new("a").await,
-        TestProfile::new("b").await,
+async fn a_nonce_minted_at_one_endpoint_is_accepted_at_another() {
+    let app = test_app_with_endpoints(vec![
+        TestEndpoint::new("a").await,
+        TestEndpoint::new("b").await,
     ])
     .await
     .0;
@@ -657,10 +663,10 @@ async fn a_nonce_minted_at_one_profile_is_accepted_at_another() {
 /// The same client key registering at both endpoints gets two independent
 /// accounts — different ids, and deactivating one leaves the other working.
 #[tokio::test]
-async fn one_key_yields_one_account_per_profile() {
-    let app = test_app_with_profiles(vec![
-        TestProfile::new("a").await,
-        TestProfile::new("b").await,
+async fn one_key_yields_one_account_per_endpoint() {
+    let app = test_app_with_endpoints(vec![
+        TestEndpoint::new("a").await,
+        TestEndpoint::new("b").await,
     ])
     .await
     .0;

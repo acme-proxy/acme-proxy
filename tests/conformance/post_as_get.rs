@@ -121,7 +121,7 @@ async fn renewal_information_cannot_be_posted() {
     assert_eq!(answer.problem_type(), MALFORMED);
 }
 
-/// A correctly signed POST-as-GET to a path under the test profile.
+/// A correctly signed POST-as-GET to a path under the test endpoint.
 async fn post_as_get_raw(world: &World, path: &str) -> axum::response::Response {
     acme::post_as_get_raw(&world.app, &world.signer, &world.account, &url(path)).await
 }

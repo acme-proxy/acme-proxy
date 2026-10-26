@@ -239,7 +239,7 @@ fn names_of(sources: &[Source]) -> String {
         .join(", ")
 }
 
-/// The inventory this profile consults.
+/// The inventory this endpoint consults.
 #[async_trait]
 pub trait Ipam: Send + Sync {
     /// The product's name, as it should read in a log line or a 403 detail.

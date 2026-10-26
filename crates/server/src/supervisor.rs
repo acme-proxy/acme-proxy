@@ -12,7 +12,7 @@ use tracing::{error, info, warn};
 use acme_proxy_core::config::Config;
 
 use super::Assembly;
-use super::generation::{announce_profile, prepare_reload, publish_reload};
+use super::generation::{announce_endpoint, prepare_reload, publish_reload};
 use super::sockets::{Role, announce_admin_listener, announce_metrics_listener};
 
 /// The cells one generation is published into.
@@ -49,7 +49,7 @@ pub(super) async fn supervise_reloads(
     roles: crate::RoleSet,
     mut reloads: crate::reload::Reloads,
     mut config: Arc<Config>,
-    mut resolved: Vec<acme_proxy_core::config::ProfileConfig>,
+    mut resolved: Vec<acme_proxy_core::config::EndpointConfig>,
     assembly: Arc<Assembly>,
     cells: Cells,
 ) {
@@ -66,7 +66,7 @@ pub(super) async fn supervise_reloads(
         // The build phase runs on a blocking thread, and that is not a
         // precaution: `RelaySigner::from_config` contacts the upstream the first
         // time it is built for an account with no `kid` sidecar yet, on a scoped
-        // OS thread it then *joins*. Mounting a relay profile by `SIGHUP` would
+        // OS thread it then *joins*. Mounting a relay endpoint by `SIGHUP` would
         // otherwise park a runtime worker for as long as
         // `signer.relay.poll_timeout_secs` allows — five minutes by default —
         // with every connection that worker was polling parked behind it. The
@@ -117,7 +117,7 @@ pub(super) async fn supervise_reloads(
                     event = "server_config_reloaded",
                     outcome = "success",
                     generation = report.generation,
-                    profiles = ?report.profiles,
+                    endpoints = ?report.endpoints,
                     job_kinds = ?report.job_kinds,
                     tls_reloaded = report.tls_reloaded,
                     admin_tls_reloaded = report.admin_tls_reloaded,
@@ -147,13 +147,13 @@ pub(super) async fn supervise_reloads(
                 // An endpoint this reload mounted really did come up, so it gets
                 // the same announcement and the same notification startup makes
                 // for one. An endpoint that was *already* mounted stays silent:
-                // `profile_mounted` is a lifecycle event and not a heartbeat,
+                // `endpoint_mounted` is a lifecycle event and not a heartbeat,
                 // and re-firing it per `SIGHUP` would make the notify surface
                 // noisiest in exactly the config-managed deployments that would
                 // least want it. Here rather than in the publishing run because
                 // dispatching reaches the database.
-                for profile in reloaded.mounted {
-                    announce_profile(&profile).await;
+                for endpoint in reloaded.mounted {
+                    announce_endpoint(&endpoint).await;
                 }
                 if let Some(respond) = request.respond {
                     let _ = respond.send(Ok(report));

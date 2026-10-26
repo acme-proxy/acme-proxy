@@ -13,8 +13,8 @@ committed one. Upgrading is therefore just starting the new binary
 against the existing database — there is no dump/restore step, and no upgrade
 procedure beyond replacing the binary.
 
-Everything else may change in any release: configuration keys, profile names and
-the ACME URLs derived from them, the admin JSON API, log event names, and the
+Everything else may change in any release: configuration keys, endpoint names
+and the ACME URLs derived from them, the admin JSON API, log event names, and the
 CLI. That is deliberate — it is what lets the design keep improving instead of
 carrying a compatibility layer for every shape it has ever had. In exchange:
 
@@ -31,6 +31,43 @@ Read this section before an upgrade, and `acme-proxy filter show` builds a
 migrated configuration before restarting.
 
 ## [Unreleased]
+
+### Breaking
+
+- **A configured ACME endpoint is called an endpoint everywhere, no longer a
+  "profile"** — the word is left for ACME profiles (draft-ietf-acme-profiles).
+  Every operator-facing spelling moved, with no alias:
+  - Configuration: `[profiles.<name>]` → `[endpoints.<name>]`, and
+    `ACME_PROXY_PROFILES__<NAME>__…` → `ACME_PROXY_ENDPOINTS__<NAME>__…`. The
+    old table is refused by name at startup.
+  - **ACME URLs**: `/profile/<name>/…` → `/endpoint/<name>/…`. **Every
+    client's directory URL must be updated**. The account a client saved holds
+    a `kid` under the old URL, which no longer answers; a `newAccount` with the
+    same key returns the existing account at its new URL (RFC 8555 §7.3.1).
+  - CLI: `acme-proxy profile list|issuer|accept` → `acme-proxy endpoint …`,
+    and every `--profile` flag → `--endpoint`.
+  - Admin API and web admin: `/api/profiles` and `/api/profiles/{name}/filter`
+    → `/api/endpoints…`, `/ui/profiles…` → `/ui/endpoints…`, the `profile`
+    member of every JSON object and the `?profile=` filter → `endpoint`.
+  - Notifications: the `profile_mounted` hook → `endpoint_mounted` (rename it
+    in `events` lists and override templates, e.g.
+    `email/endpoint_mounted.subject.j2`), and the `profile` member and template
+    variable → `endpoint` in every event body, webhook template and `custom`
+    notifier input.
+  - `acme-proxy filter show|explain --json`: `profile` → `endpoint`.
+  - Metrics: the `profile` label → `endpoint` on every series. Dashboards and
+    alerts that select on it must be edited; the bundled Grafana dashboard is.
+  - Logs: the `profile` field → `endpoint` on every event, and the events
+    `profile_mounted`, `profile_unmounted`, `profile_init_failed` and
+    `order_profile_mismatch` → `endpoint_mounted`, `endpoint_unmounted`,
+    `endpoint_init_failed` and `order_endpoint_mismatch`.
+  - Audit: `profile_issuer_accepted` → `endpoint_issuer_accepted`.
+
+  The database follows, through an ordinary migration applied on upgrade:
+  every `profile` column is now `endpoint`, `profile_issuers` is
+  `endpoint_issuers`, and queued jobs and audit rows written by the previous
+  release are rewritten to the new names, so work in flight at the upgrade
+  still runs.
 
 ## [0.7.0] — 2026-10-25
 

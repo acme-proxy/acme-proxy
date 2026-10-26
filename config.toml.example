@@ -15,16 +15,16 @@
 # empty item is refused. A regex containing a literal comma — a quantifier such
 # as `{2,3}` — can only be written in this file.
 #
-# Profiles:
-# The server serves ACME only through the [profiles.<name>] tables at the bottom
+# Endpoints:
+# The server serves ACME only through the [endpoints.<name>] tables at the bottom
 # of this file — at least one is required, or startup fails. Each is mounted at
-# /profile/<name>, so a profile named `default` answers at
-# {base_url}/profile/default/directory. See that section for what a profile
+# /endpoint/<name>, so an endpoint named `default` answers at
+# {base_url}/endpoint/default/directory. See that section for what an endpoint
 # inherits and what it can override.
 #
 # ---------------------------------------------------------------------------
-# Sections in this file, in order. Sections marked [per-profile] may also
-# appear inside a [profiles.<name>] block, where they override the value set
+# Sections in this file, in order. Sections marked [per-endpoint] may also
+# appear inside an [endpoints.<name>] block, where they override the value set
 # here; everything else is process-wide, one setting for the whole server.
 #
 #   [database]                          the SQLite file or PostgreSQL server
@@ -40,8 +40,8 @@
 #   [jobs]                              the durable background-work queue
 #   [metrics]                           the Prometheus listener
 #   [logging]                           filter, format, target
-#   [order]                    [per-profile]  the order object's lifetime
-#   [signer]                   [per-profile]  how a certificate is obtained
+#   [order]                    [per-endpoint]  the order object's lifetime
+#   [signer]                   [per-endpoint]  how a certificate is obtained
 #     [signer.local_ca]                 the embedded CA
 #     [signer.local_ca.subject]         its self-generated certificate's subject
 #     [signer.local_ca.pkcs11]          its key in a token (--features hsm)
@@ -51,29 +51,29 @@
 #     [signer.relay.dns01.rfc2136]      the TSIG-authenticated DNS update
 #     [signer.relay.dns01.propagation]  waiting before the upstream looks
 #     [signer.custom]                   shelling out to a script
-#   [challenge]                [per-profile]  how control of a name is proven
+#   [challenge]                [per-endpoint]  how control of a name is proven
 #     [challenge.http_01]               (there is no [challenge.dns_01])
 #     [challenge.tls_alpn_01]
-#   [filter]                   [per-profile]  who may ask, and for what
+#   [filter]                   [per-endpoint]  who may ask, and for what
 #     [filter.check.<name>]             one named check, of one `type`
 #     [filter.rule.<name>]              a condition over checks, and its effect
-#   [ipam]                     [per-profile]  the inventory `ipam` checks read
+#   [ipam]                     [per-endpoint]  the inventory `ipam` checks read
 #     [ipam.netbox]
 #     [ipam.phpipam]
 #     [ipam.custom]
-#   [eab]                      [per-profile]  External Account Binding
-#   [meta]                     [per-profile]  directory `meta` members
-#   [notify]                   [per-profile]  outbound notifications
+#   [eab]                      [per-endpoint]  External Account Binding
+#   [meta]                     [per-endpoint]  directory `meta` members
+#   [notify]                   [per-endpoint]  outbound notifications
 #     [notify.email]
 #     [notify.expiry]                   the periodic expiry digest
 #     [notify.webhook.<name>]           one table per named HTTP target
 #     [notify.custom.<name>]            one table per named script hook
 #   [dns]                               the resolver every lookup goes through
 #   [proxy]                             the forward proxy outbound clients use
-#   [profiles.<name>]                   an ACME endpoint — at least one required
+#   [endpoints.<name>]                   an ACME endpoint — at least one required
 #
-# The eight [per-profile] sections are exactly those a profile may override,
-# and inheritance is per *key*, not per section: a profile setting only
+# The eight [per-endpoint] sections are exactly those an endpoint may override,
+# and inheritance is per *key*, not per section: an endpoint setting only
 # challenge.bypass keeps the global challenge.enabled. Arrays replace
 # wholesale, never append.
 # ---------------------------------------------------------------------------
@@ -200,7 +200,7 @@ template_dir = ""                   # ACME_PROXY_ADMIN__TEMPLATE_DIR
 # [admin.notify] — where web-admin operator security events go (a sign-in from
 # an unfamiliar address, a correct password then a refused second factor, a
 # lockout, a credential change — ASVS V6.3.5 / V6.3.7). Exactly the shape of the
-# per-profile [notify] section below (email / webhook / custom / template_dir /
+# per-endpoint [notify] section below (email / webhook / custom / template_dir /
 # per-backend events), but process-wide and built only when [admin] is enabled.
 # Email delivery goes to each operator's own contact address
 # (`acme-proxy admin user create --contact` / `admin user contact`), falling
@@ -407,7 +407,7 @@ span_events = "none"                # ACME_PROXY_LOGGING__SPAN_EVENTS
 # format's reserved keys.
 flatten_event = false               # ACME_PROXY_LOGGING__FLATTEN_EVENT
 
-[order]   # [per-profile] — a [profiles.<name>] block may override these
+[order]   # [per-endpoint] — an [endpoints.<name>] block may override these
 # Validity window for ACME order objects in seconds (RFC 8555 §7.1.3).
 # This defines the order's lifetime, not the resulting certificate's validity.
 validity_seconds = 604800           # ACME_PROXY_ORDER__VALIDITY_SECONDS
@@ -430,7 +430,7 @@ max_identifiers = 100               # ACME_PROXY_ORDER__MAX_IDENTIFIERS
 # `expires` is this many days behind, by which point no client can act on them.
 retention_days = 30                 # ACME_PROXY_ORDER__RETENTION_DAYS
 
-[signer]   # [per-profile] — a [profiles.<name>] block may override these
+[signer]   # [per-endpoint] — an [endpoints.<name>] block may override these
 # The issuance backend to use.
 #   "local_ca" — this server IS the CA: it signs every certificate itself.
 #   "relay"    — this server RELAYS to an upstream ACME server, becoming a
@@ -459,13 +459,13 @@ crl_path = "ca.crl"                 # ACME_PROXY_SIGNER__LOCAL_CA__CRL_PATH
 # is why a leaf says nothing about revocation until this is set.
 #
 # Nothing derives it: the URL is frozen into every certificate signed while it
-# is set, and this server's own CRL lives at {base_url}/profile/<name>/crl
-# BEHIND that profile's filter chain — an address-based policy would refuse it
+# is set, and this server's own CRL lives at {base_url}/endpoint/<name>/crl
+# BEHIND that endpoint's filter chain — an address-based policy would refuse it
 # to exactly the relying parties meant to read it. Name a URL you know is
 # publicly reachable (a webroot or CDN copy of crl_path is the usual answer).
 # Several entries mean one CRL reachable at several places, not several CRLs.
 # http:// is fine and idiomatic here: fetching a signed CRL over TLS invites a
-# validation loop. Two profiles sharing one CA share this list too.
+# validation loop. Two endpoints sharing one CA share this list too.
 crl_distribution_points = []        # ACME_PROXY_SIGNER__LOCAL_CA__CRL_DISTRIBUTION_POINTS
 # Where a relying party can fetch THIS CA's own certificate, written into every
 # issued leaf as authorityInfoAccess / caIssuers (RFC 5280 §4.2.2.1). Empty
@@ -759,7 +759,7 @@ supports_renewal_info = false        # ACME_PROXY_SIGNER__CUSTOM__SUPPORTS_RENEW
 # supports_crl = true
 # supports_renewal_info = false
 
-[challenge]   # [per-profile] — a [profiles.<name>] block may override these
+[challenge]   # [per-endpoint] — an [endpoints.<name>] block may override these
 # Which challenge types each new authorization offers, in the order they appear
 # in the authorization object. The client picks one of them to satisfy.
 # Known names: "http-01", "dns-01", "tls-alpn-01".
@@ -839,7 +839,7 @@ max_response_bytes = 4096           # ACME_PROXY_CHALLENGE__HTTP_01__MAX_RESPONS
 # that is already there.
 port = 443                          # ACME_PROXY_CHALLENGE__TLS_ALPN_01__PORT
 
-[filter]   # [per-profile] — a [profiles.<name>] block may override these
+[filter]   # [per-endpoint] — an [endpoints.<name>] block may override these
 # Request filtering: which clients may reach the server, and which names they
 # may have certified. Independent of [challenge] above, and the only access
 # control left when challenge.bypass is on — with it set, anyone who can reach
@@ -890,7 +890,7 @@ forwarded_header = "x-forwarded-for"  # ACME_PROXY_FILTER__FORWARDED_HEADER
 #   custom        shell out to an operator-supplied script
 #
 # Each name must match ^[a-z0-9-]+$ — lowercase letters, digits and `-`, the
-# same restriction profile names have. Reason: a name is also an environment
+# same restriction endpoint names have. Reason: a name is also an environment
 # variable segment (ACME_PROXY_FILTER__CHECK__<NAME>__...), and the config crate
 # lowercases those, so e.g. "MgmtNet" in this file and
 # "ACME_PROXY_FILTER__CHECK__MGMTNET__..." would silently become TWO different
@@ -900,7 +900,7 @@ forwarded_header = "x-forwarded-for"  # ACME_PROXY_FILTER__FORWARDED_HEADER
 # A check defined here but named by no selected rule is never built: it opens no
 # connection, validates nothing, and is reported once at startup as
 # `filter_check_unused`. That is deliberate — a global [filter] section can hold
-# a library of checks and each profile pick the subset its `rules` names.
+# a library of checks and each endpoint pick the subset its `rules` names.
 #
 # Setting a key that belongs to another type is a STARTUP ERROR naming both, so
 # `script_path` on an `allowed_ip` check stops the server rather than being read
@@ -961,7 +961,7 @@ forwarded_header = "x-forwarded-for"  # ACME_PROXY_FILTER__FORWARDED_HEADER
 # rules = ["public", "mgmt-bypass", "inventory-owned"]
 #
 # # Relying parties fetching the CRL are not the ACME clients you allowlisted,
-# # and /crl is served by the profile router — so an address-based policy
+# # and /crl is served by the endpoint router — so an address-based policy
 # # without this makes revocation checking fail for everyone outside it.
 # [filter.check.public-paths]
 # type  = "path"
@@ -1056,7 +1056,7 @@ forwarded_header = "x-forwarded-for"  # ACME_PROXY_FILTER__FORWARDED_HEADER
 # timeout_ms tight. A script still running when timeout_ms expires is killed,
 # not left behind.
 
-[ipam]   # [per-profile] — a [profiles.<name>] block may override these
+[ipam]   # [per-endpoint] — an [endpoints.<name>] block may override these
 # The IP address management inventory an `ipam` filter check consults.
 #
 # Where an `identifiers` check answers "may anyone here have this name?", an
@@ -1229,7 +1229,7 @@ args = []                           # ACME_PROXY_IPAM__CUSTOM__ARGS
 # There is deliberately NO timeout_ms here: ipam.timeout_ms above is the budget
 # the whole lookup runs under, and it is what kills the child at the deadline.
 
-[eab]   # [per-profile] — a [profiles.<name>] block may override these
+[eab]   # [per-endpoint] — an [endpoints.<name>] block may override these
 # Require External Account Binding (RFC 8555 §7.3.4) on every newAccount that
 # would create an account. A request missing it gets 400
 # externalAccountRequired; one that is malformed, unknown, revoked, or fails to
@@ -1245,11 +1245,11 @@ args = []                           # ACME_PROXY_IPAM__CUSTOM__ARGS
 # never through this file: a credential must be revocable without a restart.
 enabled = false                     # ACME_PROXY_EAB__ENABLED
 
-[meta]   # [per-profile] — a [profiles.<name>] block may override these
+[meta]   # [per-endpoint] — an [endpoints.<name>] block may override these
 # The optional `meta` members of the directory object (RFC 8555 §7.1.1). All
 # empty by default; an empty one is omitted from the directory rather than
-# advertised blank. Like every other profile section, these can be overridden
-# per profile ([profiles.<name>.meta]) — two endpoints on one process can have
+# advertised blank. Like every other endpoint section, these can be overridden
+# per endpoint ([endpoints.<name>.meta]) — two endpoints on one process can have
 # different terms.
 
 # A URL identifying this endpoint's current terms of service (§7.1.1).
@@ -1272,8 +1272,8 @@ website = ""                        # ACME_PROXY_META__WEBSITE
 # private networks where public CAA policy is not the trust anchor.
 caa_identities = []                 # ACME_PROXY_META__CAA_IDENTITIES
 
-[notify]   # [per-profile] — a [profiles.<name>] block may override these
-# Operator notifications on lifecycle events: a profile mounting at startup,
+[notify]   # [per-endpoint] — an [endpoints.<name>] block may override these
+# Operator notifications on lifecycle events: an endpoint mounting at startup,
 # account creation/deactivation, certificate issuance/revocation, and a
 # challenge validation failure. Dispatch is fire-and-forget — a notify
 # backend can never fail or delay the ACME response that triggered it; any
@@ -1320,9 +1320,9 @@ to = []                             # ACME_PROXY_NOTIFY__EMAIL__TO
 # "account_certificates_expiring" is its per-account cut, sent only with
 # notify.expiry.contact set, and only ever by this email backend.
 # "admin_sign_in" / "admin_credential_changed" fire only on the process-wide
-# [admin.notify] dispatcher (see below), never on a profile's, so listing them
-# on a per-profile backend costs nothing either.
-events = ["profile_mounted", "account_created", "account_deactivated",
+# [admin.notify] dispatcher (see below), never on an endpoint's, so listing them
+# on a per-endpoint backend costs nothing either.
+events = ["endpoint_mounted", "account_created", "account_deactivated",
           "certificate_issued", "certificate_revoked", "challenge_failed",
           "certificates_expiring", "account_certificates_expiring",
           "admin_sign_in", "admin_credential_changed"]
@@ -1331,7 +1331,7 @@ timeout_ms = 5000                   # ACME_PROXY_NOTIFY__EMAIL__TIMEOUT_MS
 
 [notify.expiry]
 # The periodic digest of certificates approaching their expiry: ONE message
-# per profile per interval_days, listing what lapses inside lead_days.
+# per endpoint per interval_days, listing what lapses inside lead_days.
 #
 # Deliberately not one message per certificate. A renewal is a new order, so
 # the certificate it replaced still expires on schedule — a per-certificate
@@ -1404,7 +1404,7 @@ contact_domains = []                # ACME_PROXY_NOTIFY__EXPIRY__CONTACT_DOMAINS
 #
 # Context via environment variables:
 #   ACME_NOTIFY_HOOK          - event kind, e.g. "certificate_issued"
-#   ACME_NOTIFY_PROFILE       - the profile name
+#   ACME_NOTIFY_ENDPOINT       - the endpoint name
 #   ACME_NOTIFY_CLIENT_IP     - client IP (or empty — always empty for the
 #                               asynchronous relay completion path,
 #                               which has no request in scope at all)
@@ -1494,40 +1494,40 @@ contact_domains = []                # ACME_PROXY_NOTIFY__EXPIRY__CONTACT_DOMAINS
 # no_proxy = ["10.0.0.0/8", ".internal.example"]  # ACME_PROXY_PROXY__NO_PROXY
 
 # ---------------------------------------------------------------------------
-# Profiles: the ACME endpoints this server actually serves.
+# Endpoints: the ACME endpoints this server actually serves.
 # ---------------------------------------------------------------------------
 #
-# Everything above is the *base*. A profile is one ACME endpoint built from it:
+# Everything above is the *base*. An endpoint is one ACME endpoint built from it:
 # it inherits every [signer] / [filter] / [ipam] / [challenge] / [eab] /
 # [order] / [meta] / [notify] value above, key by key, and overrides only what
 # it states. So the
 # empty table below is a complete endpoint, identical to the configuration
 # above.
 #
-# At least one enabled profile is required — without one the server has nothing
+# At least one enabled endpoint is required — without one the server has nothing
 # to serve, and it says so at startup rather than answering 404 to everything.
 #
-# Each profile is mounted at /profile/<name>, derived from the name and never
+# Each endpoint is mounted at /endpoint/<name>, derived from the name and never
 # configured: that namespace is reserved, so an endpoint can never collide with
 # a server route (/health) present or future. The name is therefore public API
 # — renaming it invalidates every account and order URL its clients hold. Use
 # lowercase letters, digits and `-`.
 #
-# From the environment: ACME_PROXY_PROFILES__<NAME>__<SECTION>__<KEY>, e.g.
-# `ACME_PROXY_PROFILES__LE__SIGNER__BACKEND=relay`. A profile that
+# From the environment: ACME_PROXY_ENDPOINTS__<NAME>__<SECTION>__<KEY>, e.g.
+# `ACME_PROXY_ENDPOINTS__LE__SIGNER__BACKEND=relay`. An endpoint that
 # overrides nothing still needs one variable to exist at all — set
-# `ACME_PROXY_PROFILES__DEFAULT__ENABLED=true`.
+# `ACME_PROXY_ENDPOINTS__DEFAULT__ENABLED=true`.
 
-[profiles.default]
-# Mount this profile. Default true; set it to false to park an endpoint without
+[endpoints.default]
+# Mount this endpoint. Default true; set it to false to park an endpoint without
 # deleting its configuration.
-enabled = true                      # ACME_PROXY_PROFILES__DEFAULT__ENABLED
+enabled = true                      # ACME_PROXY_ENDPOINTS__DEFAULT__ENABLED
 
 # A second endpoint, relaying to a real upstream CA while keeping the filters
 # and challenge settings from the base above. Commented out because the example
 # must match the defaults it documents; uncomment and adapt.
 #
-# [profiles.le]
+# [endpoints.le]
 # signer.backend = "relay"
 # signer.relay.directory_url = "https://acme-v02.api.letsencrypt.org/directory"
 # signer.relay.account_key_path = "le_upstream.key"

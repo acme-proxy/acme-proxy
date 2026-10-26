@@ -42,14 +42,14 @@ use common::{
     post_from, send_from, test_app_full, test_app_with_filter, write_script,
 };
 
-const NEW_ACCOUNT_URL: &str = "http://localhost:3000/profile/default/newAccount";
-const NEW_ORDER_URL: &str = "http://localhost:3000/profile/default/newOrder";
+const NEW_ACCOUNT_URL: &str = "http://localhost:3000/endpoint/default/newAccount";
+const NEW_ORDER_URL: &str = "http://localhost:3000/endpoint/default/newOrder";
 
 /// The address every test uses unless it is specifically testing rejection.
 const ALLOWED: &str = "192.168.1.5:40000";
 const BLOCKED: &str = "203.0.113.9:40000";
 
-/// The shared resolver `server::profile::build_all` would hand the filter chain. These
+/// The shared resolver `server::endpoint::build_all` would hand the filter chain. These
 /// tests reach loopback by IP literal, which `dns::connect` short-circuits, so
 /// the system configuration is never actually consulted.
 fn test_resolver() -> Arc<dyn acme_proxy_net::dns::Resolver> {
@@ -65,7 +65,7 @@ async fn app_with_config(filter: FilterConfig) -> Router {
 }
 
 /// The same, with an `[ipam]` section — the two are built together at startup,
-/// `[ipam]` first, exactly as `server::profile::build_all` does it.
+/// `[ipam]` first, exactly as `server::endpoint::build_all` does it.
 async fn app_with_ipam(filter: FilterConfig, ipam: &IpamConfig) -> Router {
     let inventory = acme_proxy_policy::ipam::from_config(
         ipam,
@@ -462,7 +462,7 @@ async fn a_rejection_still_carries_a_replay_nonce() {
     );
 }
 
-/// `/health` is served by the *root* router, which no profile's policy ever
+/// `/health` is served by the *root* router, which no endpoint's policy ever
 /// sees — which is why nothing has to be exempted for a health probe to keep
 /// working from a blocked address.
 #[tokio::test]
@@ -478,7 +478,7 @@ async fn a_server_level_route_is_reachable_from_a_blocked_address() {
 }
 
 #[tokio::test]
-async fn a_profile_route_is_still_filtered() {
+async fn an_endpoint_route_is_still_filtered() {
     let app = app_with_config(ip_allowlist_config()).await;
     let res = send_from(
         &app,
@@ -1726,7 +1726,7 @@ async fn a_policy_without_an_eab_check_resolves_no_credential() {
 // ---------------------------------------------------------------- path
 
 /// The `path` check exists for one concrete trap, and this is it: **`/crl` is
-/// served by the profile router**, so an address-based policy without a path
+/// served by the endpoint router**, so an address-based policy without a path
 /// rule silently breaks revocation checking for every relying party outside the
 /// allowlist — the parties the extension exists for.
 ///
@@ -1897,14 +1897,14 @@ async fn a_path_wildcard_covers_one_segment_and_no_more() {
     );
 }
 
-/// The path a `path` check sees is the **profile-stripped** one.
+/// The path a `path` check sees is the **endpoint-stripped** one.
 ///
 /// A rule written `/directory` has to match a request to
-/// `/profile/default/directory`, or every path rule in a multi-profile
+/// `/endpoint/default/directory`, or every path rule in a multi-endpoint
 /// deployment would silently need the prefix baked in — and would then break
-/// the moment the profile were renamed.
+/// the moment the endpoint were renamed.
 #[tokio::test]
-async fn a_path_rule_matches_the_profile_stripped_path() {
+async fn a_path_rule_matches_the_endpoint_stripped_path() {
     let mut rule = BTreeMap::new();
     rule.insert(
         "connection".to_string(),
@@ -1921,7 +1921,7 @@ async fn a_path_rule_matches_the_profile_stripped_path() {
             "paths".to_string(),
             CheckConfig {
                 r#type: "path".to_string(),
-                // Written without the `/profile/default` prefix.
+                // Written without the `/endpoint/default` prefix.
                 allow: strings(&["/directory"]),
                 ..CheckConfig::default()
             },
@@ -1941,7 +1941,7 @@ async fn a_path_rule_matches_the_profile_stripped_path() {
     assert_eq!(
         res.status(),
         StatusCode::OK,
-        "a path rule is written against the path inside the profile"
+        "a path rule is written against the path inside the endpoint"
     );
 
     let res = send_from(

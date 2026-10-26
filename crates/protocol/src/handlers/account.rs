@@ -4,7 +4,7 @@
 //!
 //! `newAccount` is the one route besides `revokeCert` signed with an embedded
 //! `jwk` rather than a `kid`; everything else here names an account the
-//! extractor has already resolved, within this profile.
+//! extractor has already resolved, within this endpoint.
 
 use axum::{
     Extension, Json,
@@ -46,15 +46,15 @@ pub async fn post_new_account(
     );
     let AppState {
         database,
-        profile,
+        endpoint,
         audit,
         ..
     } = state;
-    let base = &profile.base_url;
+    let base = &endpoint.base_url;
     let accounts = AccountService {
         database: &database,
         audit: &audit,
-        profile: &profile,
+        endpoint: &endpoint,
     };
 
     let NewAccount {
@@ -74,7 +74,7 @@ pub async fn post_new_account(
                 header::LINK,
                 format!(
                     "<{}>;rel=\"terms-of-service\"",
-                    profile.meta.terms_of_service
+                    endpoint.meta.terms_of_service
                 ),
             ));
         }
@@ -121,14 +121,14 @@ pub async fn post_account(
     );
     let AppState {
         database,
-        profile,
+        endpoint,
         audit,
         ..
     } = state;
     let accounts = AccountService {
         database: &database,
         audit: &audit,
-        profile: &profile,
+        endpoint: &endpoint,
     };
 
     let account = match payload {
@@ -139,7 +139,7 @@ pub async fn post_account(
         }
         None => accounts.read(account, &id, &pubkey).await?,
     };
-    Ok(Json(account.to_json(&profile.base_url)))
+    Ok(Json(account.to_json(&endpoint.base_url)))
 }
 
 /// Handles ACME account key rollover (RFC 8555 §7.3.5).
@@ -157,15 +157,15 @@ pub async fn post_key_change(
     info!(event = "key_change_requested", outcome = "progress",);
     let AppState {
         database,
-        profile,
+        endpoint,
         audit,
         ..
     } = state;
-    let base = &profile.base_url;
+    let base = &endpoint.base_url;
     let accounts = AccountService {
         database: &database,
         audit: &audit,
-        profile: &profile,
+        endpoint: &endpoint,
     };
 
     match accounts
@@ -207,15 +207,15 @@ pub async fn post_account_orders(
     );
     let AppState {
         database,
-        profile,
+        endpoint,
         audit,
         ..
     } = state;
-    let base = &profile.base_url;
+    let base = &endpoint.base_url;
     let accounts = AccountService {
         database: &database,
         audit: &audit,
-        profile: &profile,
+        endpoint: &endpoint,
     };
 
     let orders = accounts.orders(account, &pubkey, &id).await?;

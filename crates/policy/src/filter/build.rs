@@ -11,8 +11,8 @@
 //! A `[filter.check.<name>]` that no selected rule mentions is never
 //! constructed — it opens no HTTP client, resolves no nameserver and validates
 //! nothing. That is what lets a global `[filter]` section carry a library of
-//! checks (profile inheritance copies every one of them down) while each
-//! profile's `filter.rules` picks the subset it wants. An unreferenced check is
+//! checks (endpoint inheritance copies every one of them down) while each
+//! endpoint's `filter.rules` picks the subset it wants. An unreferenced check is
 //! reported once at startup as `filter_check_unused`.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -570,14 +570,14 @@ pub fn build(
         anyhow::ensure!(
             config.r#type.trim() != "eab" || eab_enabled,
             "filter.check.{name} is type = \"eab\" but eab.enabled is false for this \
-             profile, so no account has a credential and the check could only ever \
+             endpoint, so no account has a credential and the check could only ever \
              refuse; turn EAB on or drop the check"
         );
         if config.r#type.trim() == "ipam" {
             inventories += 1;
             anyhow::ensure!(
                 inventories == 1,
-                "filter.check.{name} is a second type = \"ipam\" check, but a profile has \
+                "filter.check.{name} is a second type = \"ipam\" check, but an endpoint has \
                  exactly one inventory — the one [ipam] configures. Use the one check in \
                  as many rules as you like."
             );
@@ -782,9 +782,9 @@ mod tests {
         assert_eq!(build_with(&cfg).unwrap().default_effect(), Effect::Allow);
     }
 
-    /// The library-of-checks pattern profile inheritance depends on: an
+    /// The library-of-checks pattern endpoint inheritance depends on: an
     /// inherited check no selected rule names must not even be constructed, or
-    /// a profile would pay for — and could fail startup on — a check it does
+    /// an endpoint would pay for — and could fail startup on — a check it does
     /// not use.
     #[test]
     fn an_unreferenced_check_is_never_built() {

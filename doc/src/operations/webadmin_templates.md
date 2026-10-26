@@ -47,13 +47,13 @@ each other in `{% extends %}` and `{% include %}`.
 | `accounts/detail.html`, `accounts/_card.html` | One account, and the card every account mutation returns |
 | `orders/list.html`, `orders/_table.html` | The order list |
 | `orders/detail.html`, `orders/_card.html` | One order with its authorizations and challenges |
-| `expiring/list.html`, `expiring/_table.html` | The expiry list, its window and profile filters, and the hidden-count line |
+| `expiring/list.html`, `expiring/_table.html` | The expiry list, its window and endpoint filters, and the hidden-count line |
 | `eab/list.html`, `eab/_table.html` | The credential list and the create form |
 | `eab/detail.html`, `eab/_card.html` | One credential |
 | `eab/_created.html` | The one-time HMAC secret |
 | `nonces/index.html`, `nonces/_panel.html` | The nonce count and the sweep control |
-| `profiles/list.html`, `profiles/_table.html` | The mounted endpoints |
-| `profiles/filter.html` | One endpoint's resolved access policy. No fragment: nothing on it swaps |
+| `endpoints/list.html`, `endpoints/_table.html` | The mounted endpoints |
+| `endpoints/filter.html` | One endpoint's resolved access policy. No fragment: nothing on it swaps |
 | `audit/list.html`, `audit/_table.html` | The audit trail |
 | `audit/detail.html`, `audit/_card.html` | One audit row |
 | `jobs/list.html`, `jobs/_table.html` | The background job queue |
@@ -126,7 +126,7 @@ timestamp:
 `render_account_json`, `render_order_detail_json`, `render_eab_json` — so `GET
 /api/accounts/{id}` is an accurate description of what `account` holds in
 `accounts/_card.html`. Lists additionally get `page` (`{items, total}`),
-`pager`, `filters` and `profiles`.
+`pager`, `filters` and `endpoints`.
 
 A quick way to see a context in full is to render it:
 

@@ -52,13 +52,13 @@ tsig_algorithm = "hmac-sha256"
 enabled = ["http-01"]
 bypass = false
 
-[profiles.default]
+[endpoints.default]
 enabled = true
 ```
 
 The key above writes only inside `internal.company.com.`. For names spread over
 several zones, [DNS alias mode](../signers/relay.md#dns-alias-mode) points every
-domain's challenge at one alias zone instead of needing a profile per zone.
+domain's challenge at one alias zone instead of needing an endpoint per zone.
 
 ## Public CA relay with HTTP validation
 
@@ -91,7 +91,7 @@ poll_timeout_secs = 300
 enabled = ["http-01"]
 bypass = false
 
-[profiles.default]
+[endpoints.default]
 enabled = true
 ```
 
@@ -152,6 +152,6 @@ token = "your_netbox_read_only_token"
 custom_field = "acme_domains"
 sources = ["dns_name", "custom_field", "device"]
 
-[profiles.default]
+[endpoints.default]
 enabled = true
 ```

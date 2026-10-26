@@ -122,11 +122,11 @@ struct Inner {
     /// reason as `dns01_propagation`.
     dns01_alias: Option<String>,
     poll: PollConfig,
-    /// The whole `profile name -> dispatcher` map, not merely the profiles this
+    /// The whole `endpoint name -> dispatcher` map, not merely the endpoints this
     /// backend relays for: a cheap clone either way, and it sidesteps keeping a
     /// second, filtered copy in sync. `settle()` looks up the right one by
-    /// `Order.profile` once an issuance resolves — the only place this backend
-    /// has no `AppState`/`Profile` to reach a notifier through at all.
+    /// `Order.endpoint` once an issuance resolves — the only place this backend
+    /// has no `AppState`/`Endpoint` to reach a notifier through at all.
     ///
     /// A [`Notifiers`] handle rather than the map itself, because this backend
     /// outlives a configuration generation: it is carried across a reload while
@@ -440,7 +440,7 @@ impl SignerBackend for RelaySigner {
 
         // The order's own `expires` bounds how long this may be retried: past
         // it the order is refused on read, so a certificate obtained upstream
-        // could never be collected. Its `profile` comes back from the same read
+        // could never be collected. Its `endpoint` comes back from the same read
         // and names the backend that owns the work, this one handling `issue`
         // but the shared handler having several to choose between. One extra
         // primary-key read on a path that has just made an HTTPS round trip, and
@@ -452,7 +452,7 @@ impl SignerBackend for RelaySigner {
     /// This backend, as the shared [`flow::RelayJob`] sees it.
     ///
     /// State rather than a handler, for the reason `crl_refresher` is: the
-    /// registry refuses two handlers for one `kind`, and two relay profiles
+    /// registry refuses two handlers for one `kind`, and two relay endpoints
     /// pointed at different upstreams are two backends.
     fn relay_state(&self) -> Option<RelayState> {
         Some(RelayState(self.0.clone()))

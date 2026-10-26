@@ -4,9 +4,9 @@
 //! Three layers, lowest first: the compiled defaults (each section's
 //! `Default`), an optional TOML file (`config.toml`, or `ACME_PROXY_CONFIG`),
 //! and `ACME_PROXY_*` environment variables with `__` between nested keys.
-//! [`Config::resolve_profiles`] then builds each `[profiles.<name>]` endpoint
-//! by overlaying it on the global sections in `PROFILE_SECTIONS`, **key by
-//! key**: a profile changing one knob keeps the rest of the section, while an
+//! [`Config::resolve_endpoints`] then builds each `[endpoints.<name>]` endpoint
+//! by overlaying it on the global sections in `ENDPOINT_SECTIONS`, **key by
+//! key**: an endpoint changing one knob keeps the rest of the section, while an
 //! array is replaced whole, never extended.
 //!
 //! The traps, each guarded by a test here:
@@ -31,12 +31,12 @@ pub use types::*;
 
 /// Runtime configuration for the ACME proxy server.
 ///
-/// The eight sections a profile can carry (`signer`, `filter`, `ipam`,
+/// The eight sections an endpoint can carry (`signer`, `filter`, `ipam`,
 /// `challenge`, `eab`, `order`, `notify`, `meta`) are kept here as the **base
-/// every profile inherits**; nothing serves them directly. The rest (`database`, `server`,
+/// every endpoint inherits**; nothing serves them directly. The rest (`database`, `server`,
 /// `admin`, `nonce`, `audit`, `jobs`, `metrics`, `logging`, `dns`, `proxy`) is process-wide and has no
-/// per-profile form — an operator of the web admin manages every endpoint this process
-/// serves, so `admin` in particular has no per-profile meaning, `audit`
+/// per-endpoint form — an operator of the web admin manages every endpoint this process
+/// serves, so `admin` in particular has no per-endpoint meaning, `audit`
 /// records one trail for the whole CA, and `jobs` drains one queue.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
@@ -44,24 +44,24 @@ pub struct Config {
     pub database: DatabaseConfig,
     pub server: ServerConfig,
     /// The web admin listener. Process-wide, so deliberately absent from
-    /// [`PROFILE_SECTIONS`].
+    /// [`ENDPOINT_SECTIONS`].
     pub admin: AdminConfig,
     pub nonce: NonceConfig,
     /// Traceability and the CA's audit trail. Process-wide for the reason
-    /// [`AuditConfig`] gives, so also absent from [`PROFILE_SECTIONS`].
+    /// [`AuditConfig`] gives, so also absent from [`ENDPOINT_SECTIONS`].
     pub audit: AuditConfig,
     /// The durable background-work queue. Process-wide for the reason
-    /// [`JobsConfig`] gives, so also absent from [`PROFILE_SECTIONS`].
+    /// [`JobsConfig`] gives, so also absent from [`ENDPOINT_SECTIONS`].
     pub jobs: JobsConfig,
     /// The Prometheus exposition endpoint. Process-wide for the reason
-    /// [`MetricsConfig`] gives, so also absent from [`PROFILE_SECTIONS`].
+    /// [`MetricsConfig`] gives, so also absent from [`ENDPOINT_SECTIONS`].
     pub metrics: MetricsConfig,
     pub logging: LoggingConfig,
     pub order: OrderConfig,
     pub signer: SignerConfig,
     pub challenge: ChallengeConfig,
     pub filter: FilterConfig,
-    /// The inventory the `ipam` filter consults. Per-profile, so two endpoints
+    /// The inventory the `ipam` filter consults. Per-endpoint, so two endpoints
     /// may consult different ones — and read by nothing unless that filter is
     /// enabled.
     pub ipam: IpamConfig,
@@ -71,20 +71,20 @@ pub struct Config {
     pub dns: DnsConfig,
     /// The forward proxy every outbound client dials through. Process-wide for
     /// the reason [`ProxyConfig`] gives, so also absent from
-    /// [`PROFILE_SECTIONS`].
+    /// [`ENDPOINT_SECTIONS`].
     pub proxy: ProxyConfig,
     /// The configuration sources as they were read, *before* serde filled in
     /// any default — the only form in which "unset" and "set to the default
     /// value" can still be told apart, which is what per-key inheritance
     /// needs. Populated by [`Config::load`]; `None` for a `Config` built in
-    /// code (tests, `Config::default`), which simply has no profiles to
+    /// code (tests, `Config::default`), which simply has no endpoints to
     /// resolve.
     #[serde(skip)]
     raw: Option<::config::Config>,
 }
 
-/// The sections a profile may override, in the order they are documented.
-const PROFILE_SECTIONS: &[&str] = &[
+/// The sections an endpoint may override, in the order they are documented.
+const ENDPOINT_SECTIONS: &[&str] = &[
     "signer",
     "filter",
     "ipam",
@@ -101,7 +101,7 @@ const PROFILE_SECTIONS: &[&str] = &[
 /// crate lowercases environment keys, so anything outside this set could name
 /// one entry in a file and a silently different one through the environment.
 ///
-/// Used for profile names (`[profiles.<name>]` / `ACME_PROXY_PROFILES__<NAME>__…`),
+/// Used for endpoint names (`[endpoints.<name>]` / `ACME_PROXY_ENDPOINTS__<NAME>__…`),
 /// `filter.custom` entry names (`[filter.custom.<name>]` /
 /// `ACME_PROXY_FILTER__CUSTOM__<NAME>__…`), and `notify.custom` entry names
 /// (`[notify.custom.<name>]` / `ACME_PROXY_NOTIFY__CUSTOM__<NAME>__…`) —
@@ -183,9 +183,9 @@ pub fn validate_key_names<'a>(
     Ok(())
 }
 
-/// Profile names are URL segments (`/profile/<name>`) as well as config-key
+/// Endpoint names are URL segments (`/endpoint/<name>`) as well as config-key
 /// names; see [`valid_config_key_name`].
-fn valid_profile_name(name: &str) -> bool {
+fn valid_endpoint_name(name: &str) -> bool {
     valid_config_key_name(name)
 }
 
@@ -195,7 +195,7 @@ impl Config {
         let path = std::env::var("ACME_PROXY_CONFIG").unwrap_or_else(|_| "config".into());
 
         // No list separator and no list keys: `config` can only split a key it
-        // is told about by its full literal path, which a list inside a profile
+        // is told about by its full literal path, which a list inside an endpoint
         // or inside an operator-named table never has. Every list field splits
         // its own string instead, through `types::string_list`.
         let environment = ::config::Environment::with_prefix("ACME_PROXY")
@@ -213,62 +213,76 @@ impl Config {
         Ok(config)
     }
 
-    /// The profiles this configuration mounts, each fully populated: what the
-    /// profile states, over what the matching global section states, over the
+    /// The endpoints this configuration mounts, each fully populated: what the
+    /// endpoint states, over what the matching global section states, over the
     /// compiled defaults — resolved key by key, not section by section, so a
-    /// profile changing one knob keeps the rest of the global section.
+    /// endpoint changing one knob keeps the rest of the global section.
     ///
-    /// Fails when nothing is left to serve: profiles are the only way to serve
+    /// Fails when nothing is left to serve: endpoints are the only way to serve
     /// ACME at all, and a server that silently answers nothing would be worse
     /// than one that refuses to start.
-    pub fn resolve_profiles(&self) -> anyhow::Result<Vec<ProfileConfig>> {
-        let raw_profiles = self
+    pub fn resolve_endpoints(&self) -> anyhow::Result<Vec<EndpointConfig>> {
+        // Read off the raw sources, which hold every key a file or the
+        // environment wrote whether or not a field still declares it: the
+        // renamed table needs no dead field to be refused by name.
+        let has_old_table = self
             .raw
             .as_ref()
-            .and_then(|raw| raw.get::<::config::Value>("profiles").ok())
+            .is_some_and(|raw| raw.get::<::config::Value>("profiles").is_ok());
+        anyhow::ensure!(
+            !has_old_table,
+            "`[profiles.<name>]` was renamed to `[endpoints.<name>]` \
+             (`ACME_PROXY_PROFILES__…` to `ACME_PROXY_ENDPOINTS__…`), and each one is now \
+             served at `/endpoint/<name>/` instead of `/profile/<name>/`"
+        );
+
+        let raw_endpoints = self
+            .raw
+            .as_ref()
+            .and_then(|raw| raw.get::<::config::Value>("endpoints").ok())
             .map(as_table)
             .unwrap_or_default();
 
-        let mut profiles = Vec::new();
+        let mut endpoints = Vec::new();
         // A `BTreeMap` rather than the source's own ordering: mount order, log
         // order and error messages must not depend on how a file was written.
-        for (name, raw_profile) in raw_profiles.into_iter().collect::<BTreeMap<_, _>>() {
+        for (name, raw_endpoint) in raw_endpoints.into_iter().collect::<BTreeMap<_, _>>() {
             anyhow::ensure!(
-                valid_profile_name(&name),
-                "invalid profile name `{name}`: use lowercase letters, digits and `-` \
+                valid_endpoint_name(&name),
+                "invalid endpoint name `{name}`: use lowercase letters, digits and `-` \
                  (the name is both a URL segment and an environment variable segment)"
             );
 
-            let sections = self.merged_sections(&raw_profile).map_err(|error| {
-                anyhow::anyhow!("profile `{name}`: invalid configuration: {error}")
+            let sections = self.merged_sections(&raw_endpoint).map_err(|error| {
+                anyhow::anyhow!("endpoint `{name}`: invalid configuration: {error}")
             })?;
 
             if sections.enabled {
-                profiles.push(ProfileConfig { name, sections });
+                endpoints.push(EndpointConfig { name, sections });
             }
         }
 
-        anyhow::ensure!(!profiles.is_empty(), self.no_profiles_message());
-        Ok(profiles)
+        anyhow::ensure!(!endpoints.is_empty(), self.no_endpoints_message());
+        Ok(endpoints)
     }
 
-    /// Deserializes one profile, each of its sections overlaid on the global
+    /// Deserializes one endpoint, each of its sections overlaid on the global
     /// one first. Both sides are the *raw* values, so a key nobody wrote falls
     /// through to serde's own default rather than to a default masquerading as
     /// a global setting.
     fn merged_sections(
         &self,
-        raw_profile: &::config::Value,
-    ) -> Result<ProfileSections, ::config::ConfigError> {
-        let profile_table = as_table(raw_profile.clone());
-        let mut merged = profile_table.clone();
+        raw_endpoint: &::config::Value,
+    ) -> Result<EndpointSections, ::config::ConfigError> {
+        let endpoint_table = as_table(raw_endpoint.clone());
+        let mut merged = endpoint_table.clone();
 
-        for section in PROFILE_SECTIONS {
+        for section in ENDPOINT_SECTIONS {
             let global = self
                 .raw
                 .as_ref()
                 .and_then(|raw| raw.get::<::config::Value>(section).ok());
-            let overlay = profile_table.get(*section).cloned();
+            let overlay = endpoint_table.get(*section).cloned();
 
             match (global, overlay) {
                 (Some(global), Some(overlay)) => {
@@ -283,19 +297,19 @@ impl Config {
             }
         }
 
-        ProfileSections::deserialize(::config::Value::new(
+        EndpointSections::deserialize(::config::Value::new(
             None,
             ::config::ValueKind::Table(merged),
         ))
     }
 
     /// The startup error for a configuration that mounts nothing — written to
-    /// be copy-pasteable, since "no profiles" is what every first run hits.
-    fn no_profiles_message(&self) -> String {
+    /// be copy-pasteable, since "no endpoints" is what every first run hits.
+    fn no_endpoints_message(&self) -> String {
         format!(
-            "no enabled [profiles] — acme-proxy serves nothing without one. Minimal config:\n\
-             \n    [profiles.default]\n\n\
-             Its ACME directory is then at {}/profile/default/directory.",
+            "no enabled [endpoints] — acme-proxy serves nothing without one. Minimal config:\n\
+             \n    [endpoints.default]\n\n\
+             Its ACME directory is then at {}/endpoint/default/directory.",
             self.server.base_url
         )
     }
@@ -311,7 +325,7 @@ fn as_table(value: ::config::Value) -> ::config::Map<String, ::config::Value> {
 
 /// Overlays `overlay` on `base`, recursing into tables.
 ///
-/// Scalars **and arrays** are replaced wholesale: an inherited list a profile
+/// Scalars **and arrays** are replaced wholesale: an inherited list an endpoint
 /// could only ever extend (never shorten) would be a trap in a `deny` list.
 fn merge_values(base: &::config::Value, overlay: &::config::Value) -> ::config::Value {
     match (&base.kind, &overlay.kind) {
@@ -347,9 +361,9 @@ mod tests {
 
     /// A throwaway directory holding one `config.toml`, removed on drop.
     ///
-    /// Profile resolution reads the *raw* configuration sources, so it can only
+    /// Endpoint resolution reads the *raw* configuration sources, so it can only
     /// be exercised through `Config::load()` — a `Config` built in code has no
-    /// sources to merge and therefore no profiles at all.
+    /// sources to merge and therefore no endpoints at all.
     struct TempConfig {
         dir: crate::testutil::TempDir,
     }
@@ -395,7 +409,7 @@ mod tests {
             [filter.netbox]
             url = "https://netbox.example.com"
 
-            [profiles.le]
+            [endpoints.le]
             "#,
         );
 
@@ -407,27 +421,27 @@ mod tests {
     }
 
     #[test]
-    fn a_bare_profile_table_inherits_every_global_section() {
+    fn a_bare_endpoint_table_inherits_every_global_section() {
         let config = load_toml(
             r#"
             [challenge]
             enabled = ["dns-01"]
             bypass = false
 
-            [profiles.le]
+            [endpoints.le]
             "#,
         );
 
-        let profiles = config.resolve_profiles().unwrap();
-        assert_eq!(profiles.len(), 1);
-        assert_eq!(profiles[0].name, "le");
-        assert_eq!(profiles[0].sections.challenge.enabled, vec!["dns-01"]);
-        assert!(!profiles[0].sections.challenge.bypass);
-        // Untouched globally *and* by the profile: the compiled default.
-        assert_eq!(profiles[0].sections.signer.backend, "local_ca");
+        let endpoints = config.resolve_endpoints().unwrap();
+        assert_eq!(endpoints.len(), 1);
+        assert_eq!(endpoints[0].name, "le");
+        assert_eq!(endpoints[0].sections.challenge.enabled, vec!["dns-01"]);
+        assert!(!endpoints[0].sections.challenge.bypass);
+        // Untouched globally *and* by the endpoint: the compiled default.
+        assert_eq!(endpoints[0].sections.signer.backend, "local_ca");
     }
 
-    /// The trap section-level inheritance would fall into: a profile that
+    /// The trap section-level inheritance would fall into: an endpoint that
     /// overrides one knob of a section must keep the rest of the **global**
     /// section, not silently fall back to the compiled defaults.
     #[test]
@@ -439,14 +453,14 @@ mod tests {
             bypass = true
             timeout_ms = 1234
 
-            [profiles.strict]
+            [endpoints.strict]
             challenge.bypass = false
             "#,
         );
 
-        let profiles = config.resolve_profiles().unwrap();
-        let challenge = &profiles[0].sections.challenge;
-        assert!(!challenge.bypass, "the profile's own value wins");
+        let endpoints = config.resolve_endpoints().unwrap();
+        let challenge = &endpoints[0].sections.challenge;
+        assert!(!challenge.bypass, "the endpoint's own value wins");
         assert_eq!(
             challenge.enabled,
             vec!["dns-01"],
@@ -455,11 +469,11 @@ mod tests {
         assert_eq!(challenge.timeout_ms, 1234);
     }
 
-    /// `ipam` is per-profile, which is the whole reason it is a section rather
+    /// `ipam` is per-endpoint, which is the whole reason it is a section rather
     /// than a process-wide one: two endpoints of the same server may consult
     /// different inventories, and each keeps the rest of the global section.
     #[test]
-    fn two_profiles_may_name_different_inventories() {
+    fn two_endpoints_may_name_different_inventories() {
         let config = load_toml(
             r#"
             [ipam]
@@ -474,16 +488,16 @@ mod tests {
             url = "https://ipam.example.com"
             token = "appcode"
 
-            [profiles.dmz]
+            [endpoints.dmz]
 
-            [profiles.internal]
+            [endpoints.internal]
             ipam.backend = "phpipam"
             "#,
         );
 
-        let profiles = config.resolve_profiles().unwrap();
+        let endpoints = config.resolve_endpoints().unwrap();
         let by_name = |name: &str| {
-            profiles
+            endpoints
                 .iter()
                 .find(|p| p.name == name)
                 .map(|p| &p.sections.ipam)
@@ -499,11 +513,11 @@ mod tests {
         assert_eq!(by_name("internal").netbox.url, "https://netbox.example.com");
     }
 
-    /// A profile may narrow what its inventory is trusted for without
+    /// An endpoint may narrow what its inventory is trusted for without
     /// restating the connection details — the per-key inheritance rule applied
     /// to the one list that decides how much an address may claim.
     #[test]
-    fn a_profile_may_narrow_the_ipam_sources_alone() {
+    fn an_endpoint_may_narrow_the_ipam_sources_alone() {
         let config = load_toml(
             r#"
             [ipam]
@@ -514,22 +528,22 @@ mod tests {
             token = "t0ken"
             sources = ["dns_name", "custom_field", "device", "fhrp"]
 
-            [profiles.strict]
+            [endpoints.strict]
             ipam.netbox.sources = ["dns_name"]
             "#,
         );
 
-        let netbox = &config.resolve_profiles().unwrap()[0].sections.ipam.netbox;
+        let netbox = &config.resolve_endpoints().unwrap()[0].sections.ipam.netbox;
         assert_eq!(netbox.sources, vec!["dns_name"]);
         assert_eq!(netbox.url, "https://netbox.example.com");
         assert_eq!(netbox.token, "t0ken");
     }
 
-    /// `notify` joins `PROFILE_SECTIONS` like every other subsystem: a profile
+    /// `notify` joins `ENDPOINT_SECTIONS` like every other subsystem: an endpoint
     /// overriding one knob keeps the rest of the *global* `[notify]` section
     /// rather than resetting to compiled defaults.
     #[test]
-    fn a_profile_can_override_one_notify_key_and_keep_the_rest() {
+    fn an_endpoint_can_override_one_notify_key_and_keep_the_rest() {
         let config = load_toml(
             r#"
             [notify]
@@ -537,13 +551,13 @@ mod tests {
             email.smtp_host = "mail.example.com"
             email.smtp_port = 2525
 
-            [profiles.staging]
+            [endpoints.staging]
             notify.email.smtp_host = "mail.staging.example.com"
             "#,
         );
 
-        let profiles = config.resolve_profiles().unwrap();
-        let notify = &profiles[0].sections.notify;
+        let endpoints = config.resolve_endpoints().unwrap();
+        let notify = &endpoints[0].sections.notify;
         assert_eq!(notify.enabled, vec!["email"], "inherited from global");
         assert_eq!(notify.email.smtp_host, "mail.staging.example.com");
         assert_eq!(
@@ -553,20 +567,20 @@ mod tests {
     }
 
     #[test]
-    fn a_profile_section_replaces_an_inherited_list_wholesale() {
+    fn an_endpoint_section_replaces_an_inherited_list_wholesale() {
         let config = load_toml(
             r#"
             [filter]
             check.names.deny = ["a.example", "b.example"]
 
-            [profiles.narrow]
+            [endpoints.narrow]
             filter.check.names.deny = ["c.example"]
             "#,
         );
 
-        let profiles = config.resolve_profiles().unwrap();
+        let endpoints = config.resolve_endpoints().unwrap();
         assert_eq!(
-            profiles[0].sections.filter.check["names"].deny,
+            endpoints[0].sections.filter.check["names"].deny,
             vec!["c.example"],
             "arrays are replaced, never merged"
         );
@@ -574,10 +588,10 @@ mod tests {
 
     /// The other half of the inheritance promise, and the reason
     /// `[filter.rule.<name>]` is a map rather than an array of tables: a
-    /// profile overrides one field of one rule and inherits the rest, which an
+    /// endpoint overrides one field of one rule and inherits the rest, which an
     /// array could not express at all.
     #[test]
-    fn a_profile_overrides_one_field_of_an_inherited_rule() {
+    fn an_endpoint_overrides_one_field_of_an_inherited_rule() {
         let config = load_toml(
             r#"
             [filter]
@@ -586,29 +600,29 @@ mod tests {
             rule.inventory.then = "allow"
             rule.inventory.message = "not yours"
 
-            [profiles.staging]
+            [endpoints.staging]
             filter.rule.inventory.mode = "warn"
             "#,
         );
 
-        let rule = &config.resolve_profiles().unwrap()[0].sections.filter.rule["inventory"];
+        let rule = &config.resolve_endpoints().unwrap()[0].sections.filter.rule["inventory"];
         assert_eq!(rule.mode, "warn");
         assert_eq!(rule.when, "inv", "the condition is inherited");
         assert_eq!(rule.message, "not yours", "so is the message");
     }
 
     #[test]
-    fn profiles_are_resolved_in_name_order() {
+    fn endpoints_are_resolved_in_name_order() {
         let config = load_toml(
             r#"
-            [profiles.zulu]
-            [profiles.alpha]
-            [profiles.mike]
+            [endpoints.zulu]
+            [endpoints.alpha]
+            [endpoints.mike]
             "#,
         );
 
         let names: Vec<_> = config
-            .resolve_profiles()
+            .resolve_endpoints()
             .unwrap()
             .into_iter()
             .map(|p| p.name)
@@ -617,18 +631,18 @@ mod tests {
     }
 
     #[test]
-    fn a_disabled_profile_is_not_mounted() {
+    fn a_disabled_endpoint_is_not_mounted() {
         let config = load_toml(
             r#"
-            [profiles.live]
+            [endpoints.live]
 
-            [profiles.parked]
+            [endpoints.parked]
             enabled = false
             "#,
         );
 
         let names: Vec<_> = config
-            .resolve_profiles()
+            .resolve_endpoints()
             .unwrap()
             .into_iter()
             .map(|p| p.name)
@@ -637,52 +651,67 @@ mod tests {
     }
 
     #[test]
-    fn a_configuration_with_no_profile_refuses_to_resolve() {
-        for body in ["", "[profiles]\n", "[profiles.parked]\nenabled = false\n"] {
+    fn a_configuration_with_no_endpoint_refuses_to_resolve() {
+        for body in ["", "[endpoints]\n", "[endpoints.parked]\nenabled = false\n"] {
             let config = load_toml(body);
             let error = config
-                .resolve_profiles()
+                .resolve_endpoints()
                 .expect_err("a server with no endpoint must not start")
                 .to_string();
-            assert!(error.contains("[profiles.default]"), "{error}");
+            assert!(error.contains("[endpoints.default]"), "{error}");
             assert!(
-                error.contains("/profile/default/directory"),
+                error.contains("/endpoint/default/directory"),
                 "the error must show where the endpoint would answer: {error}"
             );
         }
     }
 
+    /// The table this was called before 0.8 is refused by name, even beside a
+    /// valid `[endpoints.*]`: coming up with only half the endpoints an
+    /// operator wrote would be worse than not coming up.
     #[test]
-    fn a_profile_name_outside_the_url_charset_is_refused() {
-        for name in ["Le", "my_profile", "we.b"] {
-            let config = load_toml(&format!("[profiles.\"{name}\"]\n"));
-            let error = config
-                .resolve_profiles()
-                .expect_err("{name} must be refused")
+    fn the_renamed_profiles_table_is_refused_by_name() {
+        for body in ["[profiles.le]\n", "[endpoints.le]\n[profiles.old]\n"] {
+            let error = load_toml(body)
+                .resolve_endpoints()
+                .expect_err("the old table must be refused")
                 .to_string();
-            assert!(error.contains("invalid profile name"), "{error}");
+            assert!(error.contains("[profiles.<name>]"), "{error}");
+            assert!(error.contains("[endpoints.<name>]"), "{error}");
         }
     }
 
-    /// A list-valued key inside a profile, whose path holds a name only known
+    #[test]
+    fn an_endpoint_name_outside_the_url_charset_is_refused() {
+        for name in ["Le", "my_endpoint", "we.b"] {
+            let config = load_toml(&format!("[endpoints.\"{name}\"]\n"));
+            let error = config
+                .resolve_endpoints()
+                .expect_err("{name} must be refused")
+                .to_string();
+            assert!(error.contains("invalid endpoint name"), "{error}");
+        }
+    }
+
+    /// A list-valued key inside an endpoint, whose path holds a name only known
     /// at runtime. It used to need that runtime path registered for list
     /// parsing; `types::string_list` now splits it where it lands.
     #[test]
-    fn a_profile_list_key_round_trips_through_the_environment() {
-        let file = TempConfig::new("[profiles.le]\n");
+    fn an_endpoint_list_key_round_trips_through_the_environment() {
+        let file = TempConfig::new("[endpoints.le]\n");
         let path = file.path();
         let _guard = EnvGuard::new(&[
             ("ACME_PROXY_CONFIG", &path),
             (
-                "ACME_PROXY_PROFILES__LE__CHALLENGE__ENABLED",
+                "ACME_PROXY_ENDPOINTS__LE__CHALLENGE__ENABLED",
                 "dns-01,http-01",
             ),
         ]);
 
         let config = Config::load().unwrap();
-        let profiles = config.resolve_profiles().unwrap();
+        let endpoints = config.resolve_endpoints().unwrap();
         assert_eq!(
-            profiles[0].sections.challenge.enabled,
+            endpoints[0].sections.challenge.enabled,
             vec!["dns-01".to_string(), "http-01".to_string()]
         );
     }
@@ -826,75 +855,75 @@ mod tests {
         assert_eq!(config.filter.rules, vec!["main"]);
     }
 
-    /// The same, scoped to one profile:
-    /// `ACME_PROXY_PROFILES__<NAME>__FILTER__CHECK__<NAME>__…`, two runtime
+    /// The same, scoped to one endpoint:
+    /// `ACME_PROXY_ENDPOINTS__<NAME>__FILTER__CHECK__<NAME>__…`, two runtime
     /// names deep.
     #[test]
-    fn env_configures_a_profile_scoped_named_check() {
-        let file = TempConfig::new("[profiles.le]\n");
+    fn env_configures_a_endpoint_scoped_named_check() {
+        let file = TempConfig::new("[endpoints.le]\n");
         let path = file.path();
         let _guard = EnvGuard::new(&[
             ("ACME_PROXY_CONFIG", &path),
-            ("ACME_PROXY_PROFILES__LE__FILTER__RULES", "only"),
+            ("ACME_PROXY_ENDPOINTS__LE__FILTER__RULES", "only"),
             (
-                "ACME_PROXY_PROFILES__LE__FILTER__CHECK__MAIN__TYPE",
+                "ACME_PROXY_ENDPOINTS__LE__FILTER__CHECK__MAIN__TYPE",
                 "custom",
             ),
             (
-                "ACME_PROXY_PROFILES__LE__FILTER__CHECK__MAIN__SCRIPT_PATH",
-                "/path/to/profile.sh",
+                "ACME_PROXY_ENDPOINTS__LE__FILTER__CHECK__MAIN__SCRIPT_PATH",
+                "/path/to/endpoint.sh",
             ),
             (
-                "ACME_PROXY_PROFILES__LE__FILTER__CHECK__MAIN__ARGS",
+                "ACME_PROXY_ENDPOINTS__LE__FILTER__CHECK__MAIN__ARGS",
                 "a,b,c",
             ),
         ]);
 
         let config = Config::load().unwrap();
-        let profiles = config.resolve_profiles().unwrap();
-        let check = &profiles[0].sections.filter.check;
-        assert_eq!(check["main"].script_path, "/path/to/profile.sh");
+        let endpoints = config.resolve_endpoints().unwrap();
+        let check = &endpoints[0].sections.filter.check;
+        assert_eq!(check["main"].script_path, "/path/to/endpoint.sh");
         assert_eq!(check["main"].args, vec!["a", "b", "c"]);
-        assert_eq!(profiles[0].sections.filter.rules, vec!["only"]);
+        assert_eq!(endpoints[0].sections.filter.rules, vec!["only"]);
     }
 
-    /// The two `[notify]` tables, scoped to a profile — two runtime names
-    /// deep, like the profile-scoped check above.
+    /// The two `[notify]` tables, scoped to an endpoint — two runtime names
+    /// deep, like the endpoint-scoped check above.
     ///
     /// The failure it guards against is silent: a list variable that does not
     /// reach its field leaves `events` at its default, all six, rather than
     /// being refused.
     #[test]
-    fn env_configures_profile_scoped_notify_tables() {
-        let file = TempConfig::new("[profiles.le]\n");
+    fn env_configures_endpoint_scoped_notify_tables() {
+        let file = TempConfig::new("[endpoints.le]\n");
         let path = file.path();
         let _guard = EnvGuard::new(&[
             ("ACME_PROXY_CONFIG", &path),
             (
-                "ACME_PROXY_PROFILES__LE__NOTIFY__CUSTOM__PAGER__SCRIPT_PATH",
+                "ACME_PROXY_ENDPOINTS__LE__NOTIFY__CUSTOM__PAGER__SCRIPT_PATH",
                 "/usr/local/bin/page.sh",
             ),
             (
-                "ACME_PROXY_PROFILES__LE__NOTIFY__CUSTOM__PAGER__ARGS",
+                "ACME_PROXY_ENDPOINTS__LE__NOTIFY__CUSTOM__PAGER__ARGS",
                 "--urgent,--team=netops",
             ),
             (
-                "ACME_PROXY_PROFILES__LE__NOTIFY__CUSTOM__PAGER__EVENTS",
+                "ACME_PROXY_ENDPOINTS__LE__NOTIFY__CUSTOM__PAGER__EVENTS",
                 "certificate_issued,challenge_failed",
             ),
             (
-                "ACME_PROXY_PROFILES__LE__NOTIFY__WEBHOOK__SLACK__URL",
+                "ACME_PROXY_ENDPOINTS__LE__NOTIFY__WEBHOOK__SLACK__URL",
                 "https://hooks.example.com/T/B/xyz",
             ),
             (
-                "ACME_PROXY_PROFILES__LE__NOTIFY__WEBHOOK__SLACK__EVENTS",
+                "ACME_PROXY_ENDPOINTS__LE__NOTIFY__WEBHOOK__SLACK__EVENTS",
                 "certificate_revoked",
             ),
         ]);
 
         let config = Config::load().unwrap();
-        let profiles = config.resolve_profiles().unwrap();
-        let notify = &profiles[0].sections.notify;
+        let endpoints = config.resolve_endpoints().unwrap();
+        let notify = &endpoints[0].sections.notify;
 
         let pager = &notify.custom["pager"];
         assert_eq!(pager.script_path, "/usr/local/bin/page.sh");
@@ -965,22 +994,22 @@ mod tests {
         assert!(error.contains("filter.check.type"), "{error}");
     }
 
-    /// An environment-only profile: no `[profiles]` table in the file at all.
+    /// An environment-only endpoint: no `[endpoints]` table in the file at all.
     #[test]
-    fn a_profile_can_be_declared_entirely_from_the_environment() {
+    fn an_endpoint_can_be_declared_entirely_from_the_environment() {
         let file = TempConfig::new("[server]\nbase_url = \"http://acme.test\"\n");
         let path = file.path();
         let _guard = EnvGuard::new(&[
             ("ACME_PROXY_CONFIG", &path),
-            ("ACME_PROXY_PROFILES__LE__ENABLED", "true"),
-            ("ACME_PROXY_PROFILES__LE__CHALLENGE__BYPASS", "false"),
+            ("ACME_PROXY_ENDPOINTS__LE__ENABLED", "true"),
+            ("ACME_PROXY_ENDPOINTS__LE__CHALLENGE__BYPASS", "false"),
         ]);
 
         let config = Config::load().unwrap();
-        let profiles = config.resolve_profiles().unwrap();
-        assert_eq!(profiles.len(), 1);
-        assert_eq!(profiles[0].name, "le");
-        assert!(!profiles[0].sections.challenge.bypass);
+        let endpoints = config.resolve_endpoints().unwrap();
+        assert_eq!(endpoints.len(), 1);
+        assert_eq!(endpoints[0].name, "le");
+        assert!(!endpoints[0].sections.challenge.bypass);
     }
 
     #[test]
@@ -1059,7 +1088,7 @@ mod tests {
         assert_eq!(
             config.notify.email.events,
             vec![
-                "profile_mounted",
+                "endpoint_mounted",
                 "account_created",
                 "account_deactivated",
                 "certificate_issued",
@@ -1114,16 +1143,19 @@ mod tests {
     #[test]
     fn the_example_config_documents_the_real_defaults() {
         // Copied as-is, the example must actually boot — which now means it has
-        // to declare a profile, since a configuration with none is refused.
+        // to declare an endpoint, since a configuration with none is refused.
         // At the repository root, two levels above this crate's manifest.
         let example_path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config.toml.example");
         let body = std::fs::read_to_string(&example_path).unwrap();
-        let profiles = load_toml(&body)
-            .resolve_profiles()
-            .expect("config.toml.example must define at least one profile");
+        let endpoints = load_toml(&body)
+            .resolve_endpoints()
+            .expect("config.toml.example must define at least one endpoint");
         assert_eq!(
-            profiles.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+            endpoints
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>(),
             vec!["default"]
         );
 
@@ -1501,7 +1533,7 @@ mod tests {
     /// `[admin.notify]` is a whole `NotifyConfig` hung off `[admin]`, and the
     /// book and `config.toml.example` both document its keys under
     /// `ACME_PROXY_ADMIN__NOTIFY__…`. Its lists, and those of its named
-    /// tables, must load from the environment like the per-profile
+    /// tables, must load from the environment like the per-endpoint
     /// `[notify]`'s. They were once refused, arriving as bare strings, which is
     /// what happened until this test existed.
     #[test]
@@ -1544,7 +1576,7 @@ mod tests {
             ["--now", "--loud"]
         );
 
-        // The per-profile `[notify]` is untouched by any of it.
+        // The per-endpoint `[notify]` is untouched by any of it.
         assert!(config.notify.enabled.is_empty());
     }
 

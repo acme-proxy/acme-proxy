@@ -17,7 +17,7 @@
   - [TLS Termination](features/tls_termination.md)
 
 # Core Components
-- [Profiles & Routing](core/profiles.md)
+- [Endpoints & Routing](core/endpoints.md)
 - [Signers](signers/index.md)
   - [Local CA](signers/local_ca.md)
     - [Hardware Keys (PKCS#11)](signers/local_ca_hsm.md)

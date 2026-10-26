@@ -12,24 +12,24 @@ roots are already trusted everywhere.
 
 ## Getting the root certificate
 
-Each profile serves its own CA material unauthenticated at
-`{base_url}/profile/<name>/ca.pem`, as `application/x-pem-file`:
+Each endpoint serves its own CA material unauthenticated at
+`{base_url}/endpoint/<name>/ca.pem`, as `application/x-pem-file`:
 
 ```bash
-curl -o internal-root.pem https://acme.internal/profile/default/ca.pem
+curl -o internal-root.pem https://acme.internal/endpoint/default/ca.pem
 ```
 
-These are exactly the bytes appended to every certificate that profile issues,
+These are exactly the bytes appended to every certificate that endpoint issues,
 so a client that fetches them here and one that reads the tail of its own chain
 end up trusting the same anchor.
 
 Two things worth knowing about the route. It is **not advertised in the ACME
 directory** — it is CA infrastructure rather than an ACME resource, so a client
 will not find it on its own and you distribute the URL yourself. And it is
-served *inside* the profile router, which means it sits **behind that profile's
-filter policy**: if you restrict the endpoint by address, the hosts that most
-need the root — the ones that do not have it yet — may be exactly the ones
-refused. Add a [`path` check](../filters/path.md) allowing `/ca.pem` if so.
+served *inside* the endpoint router, which means it sits **behind that
+endpoint's filter policy**: if you restrict the endpoint by address, the hosts
+that most need the root — the ones that do not have it yet — may be exactly the
+ones refused. Add a [`path` check](../filters/path.md) allowing `/ca.pem` if so.
 
 The same file is on the server's disk at `signer.local_ca.cert_path`, `ca.pem`
 by default in the working directory, which is the way to get it when the server
@@ -127,15 +127,15 @@ from it, or the first clients to renew will break.
 ## Revocation
 
 If you revoke certificates, clients need to be able to see the CRL. It is served
-unauthenticated at `{base_url}/profile/<name>/crl` as `application/pkix-crl`:
+unauthenticated at `{base_url}/endpoint/<name>/crl` as `application/pkix-crl`:
 
 ```bash
-curl -o internal.crl https://acme.internal/profile/default/crl
+curl -o internal.crl https://acme.internal/endpoint/default/crl
 openssl crl -in internal.crl -inform DER -noout -text
 ```
 
 Like `/ca.pem`, the CRL is not advertised in the ACME directory and sits behind
-the profile's filter policy. Issued certificates carry a CRL distribution point
+the endpoint's filter policy. Issued certificates carry a CRL distribution point
 only when you set `signer.local_ca.crl_distribution_points`; leave it unset and
 a client will not find the CRL automatically, so distribute the URL alongside
 the root if your validation policy needs it. See

@@ -1,4 +1,4 @@
-//! `GET /api/profiles/{name}/filter` — one endpoint's resolved access policy.
+//! `GET /api/endpoints/{name}/filter` — one endpoint's resolved access policy.
 //!
 //! **`show`, never `explain`.** [`acme_proxy_policy::filter::explain::explain`] executes
 //! the operator's `custom` scripts and issues real IPAM and DNS requests
@@ -15,7 +15,7 @@
 //! configuration is changed by editing the file and reloading, never through a
 //! browser session.
 //!
-//! **The policy served here is the *live* one** — read from `state.profiles`,
+//! **The policy served here is the *live* one** — read from `state.endpoints`,
 //! which is what this process is enforcing right now — where `acme-proxy
 //! filter show` rebuilds it from configuration on purpose, so that every
 //! startup refusal reaches an operator at the terminal. `[filter]` reloads on
@@ -34,24 +34,24 @@ use crate::webadmin::error::AdminError;
 use crate::webadmin::session::Authenticated;
 use acme_proxy_policy::filter::explain::policy_json;
 
-/// `GET /api/profiles/{name}/filter` — the resolved access policy.
+/// `GET /api/endpoints/{name}/filter` — the resolved access policy.
 ///
-/// The `profile` member comes from the mounted profile rather than from the
+/// The `endpoint` member comes from the mounted endpoint rather than from the
 /// path, the same habit `orders::download_chain` keeps for its filename: the
 /// two are equal by construction, and the one that is not caller-supplied is
 /// the one to interpolate.
-pub async fn get_profile_filter(
+pub async fn get_endpoint_filter(
     State(state): State<AdminState>,
     Path(name): Path<String>,
     _auth: Authenticated,
 ) -> Result<Json<Value>, AdminError> {
-    let profile = state.profiles.get(&name).ok_or_else(|| not_found(&name))?;
-    Ok(Json(policy_json(&profile.name, &profile.filter)))
+    let endpoint = state.endpoints.get(&name).ok_or_else(|| not_found(&name))?;
+    Ok(Json(policy_json(&endpoint.name, &endpoint.filter)))
 }
 
-/// A `404`, not the `409 profile_not_mounted` an order's missing profile
+/// A `404`, not the `409 endpoint_not_mounted` an order's missing endpoint
 /// raises: there the resource exists and its endpoint does not, which is a
 /// conflict, and here the endpoint *is* the resource being asked for.
 fn not_found(name: &str) -> AdminError {
-    AdminError::not_found(crate::admin::subject::Subject::Profile.missing(name))
+    AdminError::not_found(crate::admin::subject::Subject::Endpoint.missing(name))
 }

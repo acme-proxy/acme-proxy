@@ -363,7 +363,7 @@ impl LocalCa {
             "local_ca leaf_validity_days = {leaf_validity_days} is beyond the \
              {MAX_LEAF_VALIDITY_DAYS}-day ceiling"
         );
-        // The key, not a path or a profile, is what the revocation state is
+        // The key, not a path or an endpoint, is what the revocation state is
         // stored under — see `cert::issuer_id`.
         let info = Arc::new(LocalCaInfo::new(ca_pem.clone(), database.clone())?);
         // Read from the certificate, not derived: every CRL this CA signs names
@@ -2250,10 +2250,10 @@ mod tests {
     /// The trap this exists for: `JobRegistry::register` refuses two handlers
     /// for one `kind`, so returning the sweep from the backend itself would
     /// have made a two-CA deployment a startup error. Nothing in a
-    /// single-profile test can see that — which is not hypothetical: the relay
-    /// backend *did* return its own handler, and two relaying profiles against
+    /// single-endpoint test can see that — which is not hypothetical: the relay
+    /// backend *did* return its own handler, and two relaying endpoints against
     /// different upstreams could not start until it stopped
-    /// (`signer::relay::tests::multi_profile`).
+    /// (`signer::relay::tests::multi_endpoint`).
     #[tokio::test]
     async fn one_sweep_handler_serves_every_ca_in_the_process() {
         use crate::local_ca::sweep::CrlSweepJob;

@@ -22,7 +22,7 @@ use super::rules::{
     check_csr_matches_order, csr_identifiers, is_wildcard, names_an_ip_address, normalize_dns_name,
     parse_csr, parse_rfc3339, well_formed_name,
 };
-use crate::profile::Profile;
+use crate::endpoint::Endpoint;
 use acme_proxy_core::audit::RequestContext;
 use acme_proxy_core::error::Problem;
 use acme_proxy_core::identifier::Identifier;
@@ -105,7 +105,7 @@ fn compound_identifier_problem(mut rejections: Vec<Problem>) -> Problem {
 /// what every other unknown-or-unowned resource in this codebase returns.
 async fn check_replaces(
     cert_id: &str,
-    profile: &str,
+    endpoint: &str,
     account_id: Uuid,
     identifiers: &[Identifier],
     database: &Arc<Database>,
@@ -118,7 +118,7 @@ async fn check_replaces(
         Problem::malformed(format!("Invalid `replaces` certID: {error}"))
     })?;
 
-    let predecessor = Order::find_by_cert_serial(profile, &parsed.serial_hex(), database)
+    let predecessor = Order::find_by_cert_serial(endpoint, &parsed.serial_hex(), database)
         .await
         .map_err(|error| {
             error!(event = "replaces_lookup_failed", outcome = "failure", error = %error);
@@ -169,7 +169,7 @@ async fn check_replaces(
 
     // "…has not already been marked as replaced by a different Order that is
     // not `invalid`" — the one case §5 gives a status and a type for.
-    if let Some(existing) = Order::find_by_replaces(profile, cert_id, database)
+    if let Some(existing) = Order::find_by_replaces(endpoint, cert_id, database)
         .await
         .map_err(|error| {
             error!(event = "replaces_conflict_lookup_failed", outcome = "failure", error = %error);
@@ -201,7 +201,7 @@ async fn check_replaces(
 /// Each dialect names a different half of the same index, so both spellings go
 /// in and `sql::is_unique_violation_on` asks whichever the driver can answer.
 /// SQLite reports a partial unique index violation as `UNIQUE constraint
-/// failed: orders.profile, orders.replaces`, naming the columns and never the
+/// failed: orders.endpoint, orders.replaces`, naming the columns and never the
 /// index; PostgreSQL reports `duplicate key value violates unique constraint
 /// "idx_orders_replaces_claim"`, naming the index and never the columns.
 /// Matching on the SQLite text alone made this silently stop recognising the
@@ -222,13 +222,13 @@ fn is_replaces_conflict(error: &sqlx::Error) -> bool {
 /// A borrowed bundle rather than an owned service: every caller already holds
 /// these — the ACME handlers in `AppState`, the web admin in `AdminState`, a
 /// background job in its own state — and building one is three references.
-/// The profile is the endpoint's whole configuration (its signer, filter,
+/// The endpoint is the endpoint's whole configuration (its signer, filter,
 /// validators and notifier), which is what makes one operation mean the same
 /// thing whichever front end reached it.
 pub struct OrderService<'a> {
     pub database: &'a Arc<Database>,
     pub audit: &'a Auditor,
-    pub profile: &'a Profile,
+    pub endpoint: &'a Endpoint,
 }
 
 /// The order's identifiers as it will store them — normalized, deduplicated,
@@ -238,9 +238,9 @@ pub struct OrderService<'a> {
 /// malformed whoever sent it.
 fn validated_identifiers(
     mut identifiers: Vec<Identifier>,
-    profile: &Profile,
+    endpoint: &Endpoint,
 ) -> Result<Vec<Identifier>, Problem> {
-    let challenges = &profile.challenges;
+    let challenges = &endpoint.challenges;
 
     if identifiers.is_empty() {
         warn!(event = "order_no_identifiers", outcome = "failure");
@@ -248,16 +248,16 @@ fn validated_identifiers(
     }
     // Before anything is normalized or looked at: the cost this refuses is the
     // work below, and every bit of it scales with the count.
-    if identifiers.len() > profile.order.max_identifiers {
+    if identifiers.len() > endpoint.order.max_identifiers {
         warn!(
             event = "order_too_many_identifiers",
             outcome = "failure",
             identifiers_count = identifiers.len(),
-            limit = profile.order.max_identifiers
+            limit = endpoint.order.max_identifiers
         );
         return Err(Problem::malformed(format!(
             "An order may name at most {} identifiers; this one names {}",
-            profile.order.max_identifiers,
+            endpoint.order.max_identifiers,
             identifiers.len()
         )));
     }
@@ -357,8 +357,8 @@ impl OrderService<'_> {
         client_ip: Option<IpAddr>,
         request: &RequestContext,
     ) -> Result<(Order, Vec<Uuid>), Error> {
-        let (database, profile, audit) = (self.database, self.profile, self.audit);
-        let identifiers = validated_identifiers(payload.identifiers, profile)?;
+        let (database, endpoint, audit) = (self.database, self.endpoint, self.audit);
+        let identifiers = validated_identifiers(payload.identifiers, endpoint)?;
 
         let not_before = match payload.not_before {
             Some(ref s) => Some(parse_rfc3339("notBefore", s)?),
@@ -369,13 +369,13 @@ impl OrderService<'_> {
             None => None,
         };
 
-        let account = signer_account(cached, &profile.name, pubkey, database).await?;
+        let account = signer_account(cached, &endpoint.name, pubkey, database).await?;
 
         check_identifiers(
-            &profile.filter,
+            &endpoint.filter,
             client_ip,
             &account.id.to_string(),
-            &profile.name,
+            &endpoint.name,
             IdentifierStage::NewOrder,
             &identifiers,
             database,
@@ -386,13 +386,13 @@ impl OrderService<'_> {
         // has an account to compare against.
         let replaces = match payload.replaces {
             Some(ref cert_id) => Some(
-                check_replaces(cert_id, &profile.name, account.id, &identifiers, database).await?,
+                check_replaces(cert_id, &endpoint.name, account.id, &identifiers, database).await?,
             ),
             None => None,
         };
 
         let expires = now_secs()
-            .saturating_add(i64::try_from(profile.order.validity_seconds).unwrap_or(i64::MAX));
+            .saturating_add(i64::try_from(endpoint.order.validity_seconds).unwrap_or(i64::MAX));
 
         // The reverse lookup runs here rather than at the top of the handler: every
         // refusal above (malformed name, wildcard without dns-01, `alreadyReplaced`)
@@ -400,7 +400,7 @@ impl OrderService<'_> {
         // about to be turned away buys nothing.
         let client = audit.client(request).await;
         let mut order = Order::new(
-            &profile.name,
+            &endpoint.name,
             account.id,
             identifiers,
             expires,
@@ -418,7 +418,10 @@ impl OrderService<'_> {
             for identifier in &order.identifiers {
                 let authz = Authorization::new(order.id, identifier.clone(), order.expires);
                 authz.insert(tx.conn()).await?;
-                for typ in profile.challenges.types_for(is_wildcard(&identifier.value)) {
+                for typ in endpoint
+                    .challenges
+                    .types_for(is_wildcard(&identifier.value))
+                {
                     Challenge::new(authz.id, typ).insert(tx.conn()).await?;
                 }
                 authz_ids.push(authz.id);
@@ -431,7 +434,7 @@ impl OrderService<'_> {
         persisted.map_err(|error| {
             // The predecessor was claimed by another order between `check_replaces`
             // reading and this transaction committing. The partial unique index on
-            // `(profile, replaces)` is what catches it; without that arm the loser
+            // `(endpoint, replaces)` is what catches it; without that arm the loser
             // of the race would get a 500 for a condition RFC 9773 §5 gives a
             // status and a type for.
             if is_replaces_conflict(&error) {
@@ -647,7 +650,7 @@ impl OrderService<'_> {
         // The loser answers with the challenge as it now stands, which reports
         // `processing` — §8.2's answer for a challenge the server is still
         // working on.
-        let limit = self.profile.challenges.max_in_flight_per_account();
+        let limit = self.endpoint.challenges.max_in_flight_per_account();
         let spec = super::validate::challenge_validate_spec(
             &challenge.id.to_string(),
             client_ip,
@@ -700,7 +703,7 @@ impl OrderService<'_> {
         order: &mut Order,
         client_ip: Option<IpAddr>,
     ) -> Result<(), Error> {
-        let (database, profile) = (self.database, self.profile);
+        let (database, endpoint) = (self.database, self.endpoint);
         let thumbprint = jwk_thumbprint(&account.pubkey).map_err(|error| {
             error!(event = "authz_thumbprint_failed", outcome = "failure", account_id = %account.id, error = %error);
             Problem::server_internal("Key authorization could not be computed")
@@ -716,7 +719,7 @@ impl OrderService<'_> {
             challenge_id: &challenge_id,
         };
 
-        match profile.challenges.validate(&challenge.typ, &context).await {
+        match endpoint.challenges.validate(&challenge.typ, &context).await {
             Ok(()) => {
                 commit_validation(challenge, authz, order, database).await?;
             }
@@ -741,10 +744,10 @@ impl OrderService<'_> {
                 // failure would have notified an operator about a failure that
                 // was never recorded — and the client, which gets a 500, would
                 // see the challenge still `pending`.
-                profile
+                endpoint
                     .notify
                     .dispatch(NotifyEvent::ChallengeFailed(ChallengeFailedData {
-                        profile: profile.name.clone(),
+                        endpoint: endpoint.name.clone(),
                         order_id: order.id.to_string(),
                         account_id: account.id.to_string(),
                         authz_id: authz.id.to_string(),
@@ -802,8 +805,8 @@ impl OrderService<'_> {
         request: &RequestContext,
         jobs: &JobQueue,
     ) -> Result<Order, Error> {
-        let (database, profile, audit) = (self.database, self.profile, self.audit);
-        let filter = &profile.filter;
+        let (database, endpoint, audit) = (self.database, self.endpoint, self.audit);
+        let filter = &endpoint.filter;
 
         let id = order.id.to_string();
         if order.status != OrderStatus::Ready {
@@ -872,7 +875,7 @@ impl OrderService<'_> {
                 filter,
                 client_ip,
                 order.account_id.to_string().as_str(),
-                &profile.name,
+                &endpoint.name,
                 IdentifierStage::Csr,
                 &requested,
                 database,
@@ -1098,14 +1101,14 @@ async fn commit_validation_failure(
     }
 }
 
-/// `pub(crate)` so the sibling job suite can reuse `profile` and `account`
+/// `pub(crate)` so the sibling job suite can reuse `endpoint` and `account`
 /// rather than growing a second copy of each — the rule `crates/signer/src/testutil.rs`
 /// exists for, applied to two fixtures too entangled with this module's
 /// `OrderService` to live there.
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::profile::ProfileParts;
+    use crate::endpoint::EndpointParts;
     use acme_proxy_core::identifier::Identifier;
     use acme_proxy_jobs::notify::NotifyDispatcher;
     use acme_proxy_net::challenge::ChallengeError;
@@ -1113,28 +1116,28 @@ pub(crate) mod tests {
     use acme_proxy_net::challenge::ChallengeValidator;
     use std::time::Duration;
 
-    /// A `default` profile over `database`: an in-memory CA, no filter, no
+    /// A `default` endpoint over `database`: an in-memory CA, no filter, no
     /// notifier, and `challenges` as the validators.
-    pub(crate) fn profile(database: &Arc<Database>, challenges: ChallengeRegistry) -> Profile {
+    pub(crate) fn endpoint(database: &Arc<Database>, challenges: ChallengeRegistry) -> Endpoint {
         let ca = acme_proxy_signer::local_ca::LocalCa::generate_in_memory(
             "ecdsa-p256",
             90,
             database.clone(),
         )
         .unwrap();
-        profile_with(database, challenges, Arc::new(ca))
+        endpoint_with(database, challenges, Arc::new(ca))
     }
 
-    /// [`profile`] over a signer of the caller's choosing.
-    pub(crate) fn profile_with(
+    /// [`endpoint`] over a signer of the caller's choosing.
+    pub(crate) fn endpoint_with(
         database: &Arc<Database>,
         challenges: ChallengeRegistry,
         signer: Arc<dyn acme_proxy_signer::SignerBackend>,
-    ) -> Profile {
-        Profile::new(
+    ) -> Endpoint {
+        Endpoint::new(
             "default",
             "http://localhost:3000",
-            ProfileParts {
+            EndpointParts {
                 signer_info: signer.info(),
                 filter: Arc::new(acme_proxy_policy::filter::FilterPolicy::default()),
                 challenges: Arc::new(challenges),
@@ -1233,12 +1236,12 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn deactivating_under_a_ready_order_demotes_it_in_the_same_write() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
-        let profile = profile(&database, ChallengeRegistry::default());
+        let endpoint = endpoint(&database, ChallengeRegistry::default());
         let audit = Auditor::offline(database.clone());
         let orders = OrderService {
             database: &database,
             audit: &audit,
-            profile: &profile,
+            endpoint: &endpoint,
         };
         let account = account(&database).await;
         let (mut order, mut authzs) = pending_order(&database, &account, &["a.example.com"]).await;
@@ -1278,12 +1281,12 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn an_issued_order_refuses_deactivation() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
-        let profile = profile(&database, ChallengeRegistry::default());
+        let endpoint = endpoint(&database, ChallengeRegistry::default());
         let audit = Auditor::offline(database.clone());
         let orders = OrderService {
             database: &database,
             audit: &audit,
-            profile: &profile,
+            endpoint: &endpoint,
         };
         let account = account(&database).await;
         let (mut order, mut authzs) = pending_order(&database, &account, &["a.example.com"]).await;
@@ -1302,12 +1305,12 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_challenge_is_claimed_once() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
-        let profile = profile(&database, ChallengeRegistry::default());
+        let endpoint = endpoint(&database, ChallengeRegistry::default());
         let audit = Auditor::offline(database.clone());
         let orders = OrderService {
             database: &database,
             audit: &audit,
-            profile: &profile,
+            endpoint: &endpoint,
         };
         let account = account(&database).await;
         let (order, mut authzs) = pending_order(&database, &account, &["a.example.com"]).await;
@@ -1338,12 +1341,12 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn concurrent_validations_of_one_order_promote_it() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
-        let profile = profile(&database, ChallengeRegistry::default());
+        let endpoint = endpoint(&database, ChallengeRegistry::default());
         let audit = Auditor::offline(database.clone());
         let orders = OrderService {
             database: &database,
             audit: &audit,
-            profile: &profile,
+            endpoint: &endpoint,
         };
         let account = account(&database).await;
         let (order, authzs) =
@@ -1402,7 +1405,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_failed_validation_invalidates_challenge_authorization_and_order_together() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
-        let profile = profile(
+        let endpoint = endpoint(
             &database,
             ChallengeRegistry::new(
                 vec![Arc::new(Refusing)],
@@ -1415,7 +1418,7 @@ pub(crate) mod tests {
         let orders = OrderService {
             database: &database,
             audit: &audit,
-            profile: &profile,
+            endpoint: &endpoint,
         };
         let account = account(&database).await;
         let (mut order, mut authzs) = pending_order(&database, &account, &["a.example.com"]).await;
@@ -1452,12 +1455,12 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn duplicate_identifiers_become_one() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
-        let profile = profile(&database, ChallengeRegistry::default());
+        let endpoint = endpoint(&database, ChallengeRegistry::default());
         let audit = Auditor::offline(database.clone());
         let orders = OrderService {
             database: &database,
             audit: &audit,
-            profile: &profile,
+            endpoint: &endpoint,
         };
         let account = account(&database).await;
         let pubkey = account.pubkey.clone();
@@ -1515,8 +1518,8 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_late_sibling_failure_leaves_an_issued_order_valid() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
-        let passing = profile(&database, bypassing());
-        let failing = profile(&database, refusing());
+        let passing = endpoint(&database, bypassing());
+        let failing = endpoint(&database, refusing());
         let audit = Auditor::offline(database.clone());
         let account = account(&database).await;
         let (mut order, mut authzs) = pending_order(&database, &account, &["a.example.com"]).await;
@@ -1525,10 +1528,10 @@ pub(crate) mod tests {
             .await
             .unwrap();
 
-        let on = |profile| OrderService {
+        let on = |endpoint| OrderService {
             database: &database,
             audit: &audit,
-            profile,
+            endpoint,
         };
         assert_eq!(
             on(&passing)
@@ -1583,12 +1586,12 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_verdict_after_deactivation_leaves_the_authorization_deactivated() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
-        let profile = profile(&database, bypassing());
+        let endpoint = endpoint(&database, bypassing());
         let audit = Auditor::offline(database.clone());
         let orders = OrderService {
             database: &database,
             audit: &audit,
-            profile: &profile,
+            endpoint: &endpoint,
         };
         let account = account(&database).await;
         let (mut order, mut authzs) = pending_order(&database, &account, &["a.example.com"]).await;
@@ -1628,12 +1631,12 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn an_account_over_its_validation_cap_is_rate_limited() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
-        let profile = profile(&database, bypassing().with_max_in_flight_per_account(1));
+        let endpoint = endpoint(&database, bypassing().with_max_in_flight_per_account(1));
         let audit = Auditor::offline(database.clone());
         let orders = OrderService {
             database: &database,
             audit: &audit,
-            profile: &profile,
+            endpoint: &endpoint,
         };
         let account = account(&database).await;
         let (first_order, mut first) = pending_order(&database, &account, &["a.example.com"]).await;
@@ -1697,12 +1700,12 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_trigger_under_an_invalid_order_is_refused() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
-        let profile = profile(&database, refusing());
+        let endpoint = endpoint(&database, refusing());
         let audit = Auditor::offline(database.clone());
         let orders = OrderService {
             database: &database,
             audit: &audit,
-            profile: &profile,
+            endpoint: &endpoint,
         };
         let account = account(&database).await;
         let (mut order, mut authzs) =
@@ -1754,12 +1757,12 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_trigger_that_straddles_its_own_verdict_is_answered_with_the_challenge() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
-        let profile = profile(&database, refusing());
+        let endpoint = endpoint(&database, refusing());
         let audit = Auditor::offline(database.clone());
         let orders = OrderService {
             database: &database,
             audit: &audit,
-            profile: &profile,
+            endpoint: &endpoint,
         };
         let account = account(&database).await;
         let (mut order, mut authzs) = pending_order(&database, &account, &["a.example.com"]).await;
@@ -1815,7 +1818,7 @@ pub(crate) mod tests {
     async fn a_replaces_collision_is_told_apart_from_other_unique_violations() {
         let database = Database::connect_in_memory().await.unwrap();
         sqlx::query(
-            "INSERT INTO accounts (id, profile, pubkey, contact, status, created_at) \
+            "INSERT INTO accounts (id, endpoint, pubkey, contact, status, created_at) \
              VALUES ('acct', 'default', X'00', '[]', 'valid', 0);",
         )
         .execute(database.raw_pool())
@@ -1826,7 +1829,7 @@ pub(crate) mod tests {
             let pool = database.raw_pool().clone();
             async move {
                 sqlx::query(
-                    "INSERT INTO orders (id, profile, account_id, status, identifiers, expires, \
+                    "INSERT INTO orders (id, endpoint, account_id, status, identifiers, expires, \
                      replaces, created_at) VALUES (?, 'default', 'acct', 'pending', '[]', 0, ?, 0);",
                 )
                 .bind(id)
@@ -1904,12 +1907,12 @@ pub(crate) mod tests {
     /// it was, and what `finalize` answered.
     async fn finalize_ready() -> (Arc<Database>, Order, Result<Order, Error>) {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
-        let profile = profile(&database, ChallengeRegistry::default());
+        let endpoint = endpoint(&database, ChallengeRegistry::default());
         let audit = Auditor::offline(database.clone());
         let orders = OrderService {
             database: &database,
             audit: &audit,
-            profile: &profile,
+            endpoint: &endpoint,
         };
         let account = account(&database).await;
         let (order, csr) = ready_order(&database, &account).await;
@@ -1949,7 +1952,7 @@ pub(crate) mod tests {
         .unwrap()
         .expect("the issuance is queued");
         assert_eq!(job.payload["order_id"], order.id.to_string());
-        assert_eq!(job.payload["profile"], "default");
+        assert_eq!(job.payload["endpoint"], "default");
         assert!(
             job.payload["csr"]
                 .as_str()
@@ -1963,12 +1966,12 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_second_finalize_loses_the_claim() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
-        let profile = profile(&database, ChallengeRegistry::default());
+        let endpoint = endpoint(&database, ChallengeRegistry::default());
         let audit = Auditor::offline(database.clone());
         let orders = OrderService {
             database: &database,
             audit: &audit,
-            profile: &profile,
+            endpoint: &endpoint,
         };
         let account = account(&database).await;
         let (order, csr) = ready_order(&database, &account).await;
@@ -2009,12 +2012,12 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_failed_enqueue_leaves_the_order_ready() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
-        let profile = profile(&database, ChallengeRegistry::default());
+        let endpoint = endpoint(&database, ChallengeRegistry::default());
         let audit = Auditor::offline(database.clone());
         let orders = OrderService {
             database: &database,
             audit: &audit,
-            profile: &profile,
+            endpoint: &endpoint,
         };
         let account = account(&database).await;
         let (order, csr) = ready_order(&database, &account).await;
@@ -2049,12 +2052,12 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn the_trigger_predicate_agrees_with_the_claim() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
-        let profile = profile(&database, ChallengeRegistry::default());
+        let endpoint = endpoint(&database, ChallengeRegistry::default());
         let audit = Auditor::offline(database.clone());
         let orders = OrderService {
             database: &database,
             audit: &audit,
-            profile: &profile,
+            endpoint: &endpoint,
         };
         let account = account(&database).await;
         type Mutation = fn(&mut Authorization, &mut Order);

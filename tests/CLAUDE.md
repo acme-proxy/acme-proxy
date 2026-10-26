@@ -15,7 +15,7 @@ before adding a case, and put a new case in the suite whose header claims it.
   `ACME_PROXY_*` and `ACME_PROXY_CONFIG` are process state.
 - **Build apps only through `tests/common/mod.rs`** (`test_app_*`,
   `test_admin_app*`) and drive them with `common::acme` (`post`, `register`,
-  `finalize`, `trigger`, …). Its `//!` holds the harness rules: profiles served
+  `finalize`, `trigger`, …). Its `//!` holds the harness rules: endpoints served
   from the read side, a real worker in every app, `ConnectInfo` inserted by hand
   because `oneshot` has no socket.
 - **`trigger` and `finalize` decide nothing.** Poll with `await_challenge` /

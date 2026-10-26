@@ -1,6 +1,6 @@
 //! `[jobs]` — the durable background-work queue.
 //!
-//! Process-wide: no profile can override it. Each key, its default and its
+//! Process-wide: no endpoint can override it. Each key, its default and its
 //! environment variable are documented once, in the book's
 //! `configuration/reference.md` under `[jobs]`.
 
@@ -8,9 +8,9 @@ use serde::Deserialize;
 
 /// Governs the `jobs` table and the one runner that drains it.
 ///
-/// Process-wide, so deliberately absent from `PROFILE_SECTIONS`: there is one
+/// Process-wide, so deliberately absent from `ENDPOINT_SECTIONS`: there is one
 /// queue, one table and one runner for the process, and a per-endpoint retry
-/// budget would mean a job's pacing depended on which profile happened to
+/// budget would mean a job's pacing depended on which endpoint happened to
 /// enqueue it rather than on what the work is. The per-job knobs that genuinely
 /// vary — how long one attempt may take, how many times to try, when to give up
 /// altogether — are set by the handler and by whoever enqueues, not here.

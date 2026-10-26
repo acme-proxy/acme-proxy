@@ -168,7 +168,7 @@ side. The harness helpers live in `tests/common/mod.rs`:
 | `admin_request(app, method, path, session, body)` | one request, optionally authenticated |
 | `admin_login`, `session_cookie_token`, `json_body` | |
 
-`test_admin_app` and `test_app_full` share `one_profile`, so the two cannot
+`test_admin_app` and `test_app_full` share `one_endpoint`, so the two cannot
 drift into mounting subtly different endpoints.
 
 **The CSRF table is the regression suite.** `mutating_endpoints()` in

@@ -22,7 +22,7 @@ that, and it decides the same way whichever product answered.
 | `phpipam` | [phpIPAM](https://phpipam.net) | [phpIPAM](phpipam.md) |
 | `custom` | an operator script | [Custom Script](custom.md) |
 
-One backend per profile. `[ipam]` is a per-profile section, so two endpoints
+One backend per endpoint. `[ipam]` is a per-endpoint section, so two endpoints
 served by the same process may consult different inventories.
 
 ## Sources

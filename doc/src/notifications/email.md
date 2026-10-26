@@ -88,7 +88,7 @@ Sender email address.
 
 **`to`** (`Array`) — *Default: `[]` | Env: `ACME_PROXY_NOTIFY__EMAIL__TO`*
 
-List of recipient email addresses. Required for a per-profile `[notify]`
+List of recipient email addresses. Required for a per-endpoint `[notify]`
 backend. Under `[admin.notify]` it is the **fallback**: the web-admin security
 events (`admin_sign_in`, `admin_credential_changed`) are delivered to the
 affected operator's own contact address, and `to` is used only when that

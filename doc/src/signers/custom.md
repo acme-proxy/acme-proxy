@@ -137,8 +137,8 @@ no CRL rather than taking the endpoint down.
 | `ACME_SIGNER_IDENTIFIERS` | `issue` | Comma-joined identifier values |
 | `ACME_SIGNER_REASON` | `revoke` | RFC 5280 reason code, empty when none given |
 
-There is no `ACME_SIGNER_PROFILE`; the signer backend is never told which
-profile it is serving. (Backends are shared between profiles with identical
+There is no `ACME_SIGNER_ENDPOINT`; the signer backend is never told which
+endpoint it is serving. (Backends are shared between endpoints with identical
 `[signer]` configuration, so there would not always be one answer.)
 
 ## Security & process isolation

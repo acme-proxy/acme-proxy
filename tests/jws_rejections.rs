@@ -18,7 +18,7 @@ use tower::ServiceExt;
 mod common;
 use common::{EcSigner, TestSigner, body_json, build_jws, fetch_nonce, flattened_jws, p, test_app};
 
-const NEW_ACCOUNT_URL: &str = "http://localhost:3000/profile/default/newAccount";
+const NEW_ACCOUNT_URL: &str = "http://localhost:3000/endpoint/default/newAccount";
 
 async fn post(app: &axum::Router, body: String) -> Response {
     app.clone()
@@ -163,10 +163,10 @@ async fn cases(app: &axum::Router) -> Vec<Case> {
 
     // A `kid` that is not an account URL this endpoint minted. Checked before
     // any signature work, since there is no account to check a signature
-    // against — a `kid` naming another profile lands here too.
+    // against — a `kid` naming another endpoint lands here too.
     let protected = json!({
         "alg": "ES256",
-        "kid": "http://localhost:3000/profile/other/acct/1",
+        "kid": "http://localhost:3000/endpoint/other/acct/1",
         "nonce": "n",
         "url": NEW_ACCOUNT_URL,
     });
@@ -353,7 +353,7 @@ async fn jwk_and_kid_must_be_exactly_one() {
             json!({
                 "alg": "ES256",
                 "jwk": signer.jwk(),
-                "kid": "http://localhost:3000/profile/default/acct/whatever",
+                "kid": "http://localhost:3000/endpoint/default/acct/whatever",
                 "nonce": "n",
                 "url": NEW_ACCOUNT_URL,
             }),
@@ -390,7 +390,7 @@ async fn a_jwk_is_refused_where_the_rfc_requires_a_kid() {
     let _ = common::acme::register(&app, &signer).await;
 
     let nonce = fetch_nonce(&app).await;
-    let order_url = "http://localhost:3000/profile/default/newOrder";
+    let order_url = "http://localhost:3000/endpoint/default/newOrder";
     let body = signer.sign(
         order_url,
         &nonce,
@@ -486,9 +486,9 @@ async fn a_jws_addressed_elsewhere_is_refused_before_the_account_is_looked_up() 
     // a different endpoint than the one the request is sent to.
     let protected = json!({
         "alg": "ES256",
-        "kid": "http://localhost:3000/profile/default/acct/00000000-0000-4000-8000-000000000000",
+        "kid": "http://localhost:3000/endpoint/default/acct/00000000-0000-4000-8000-000000000000",
         "nonce": nonce,
-        "url": "http://localhost:3000/profile/default/newOrder",
+        "url": "http://localhost:3000/endpoint/default/newOrder",
     });
     let protected_b64 = BASE64_URL_SAFE_NO_PAD.encode(serde_json::to_vec(&protected).unwrap());
     let payload_b64 = BASE64_URL_SAFE_NO_PAD.encode(b"{}");
@@ -550,7 +550,7 @@ async fn a_kid_signed_by_another_key_is_refused() {
     let intruder = EcSigner::new();
 
     let nonce = fetch_nonce(&app).await;
-    let new_order = "http://localhost:3000/profile/default/newOrder";
+    let new_order = "http://localhost:3000/endpoint/default/newOrder";
     let body = intruder.sign_kid(
         &owner_url,
         new_order,
@@ -572,20 +572,20 @@ async fn a_kid_signed_by_another_key_is_refused() {
 }
 
 /// A `kid` is this server's account URL, so one under any other prefix — a
-/// different host, or another profile's path — names no account here and is
+/// different host, or another endpoint's path — names no account here and is
 /// refused as `malformed` before any lookup, rather than having its trailing
 /// id looked up as if it were ours.
 #[tokio::test]
-async fn a_kid_outside_this_profile_s_account_prefix_is_malformed() {
+async fn a_kid_outside_this_endpoint_s_account_prefix_is_malformed() {
     let app = test_app().await;
     let signer = EcSigner::new();
     let account_url = common::acme::register(&app, &signer).await;
     let id = account_url.rsplit('/').next().unwrap();
-    let new_order = "http://localhost:3000/profile/default/newOrder";
+    let new_order = "http://localhost:3000/endpoint/default/newOrder";
 
     for kid in [
-        format!("https://elsewhere.example/profile/default/acct/{id}"),
-        format!("http://localhost:3000/profile/other/acct/{id}"),
+        format!("https://elsewhere.example/endpoint/default/acct/{id}"),
+        format!("http://localhost:3000/endpoint/other/acct/{id}"),
     ] {
         let nonce = fetch_nonce(&app).await;
         let body = signer.sign_kid(

@@ -14,7 +14,7 @@ use acme_proxy_net::tls;
 use super::sockets::{Role, SocketPlans, check_metrics_config, plan_sockets};
 use super::supervisor::Cells;
 use super::{Assembly, GenerationParts};
-use acme_proxy_protocol::profile::Profile;
+use acme_proxy_protocol::endpoint::Endpoint;
 use acme_proxy_protocol::router::build_app;
 
 /// Everything one configuration generation contributes, built and validated
@@ -25,8 +25,8 @@ use acme_proxy_protocol::router::build_app;
 /// construction rather than by remembering.
 pub(crate) struct Generation {
     /// Kept so startup can announce them; a reload drops them on the floor,
-    /// since `profile_mounted` is a lifecycle event and not a heartbeat.
-    pub(super) profiles: Vec<Arc<Profile>>,
+    /// since `endpoint_mounted` is a lifecycle event and not a heartbeat.
+    pub(super) endpoints: Vec<Arc<Endpoint>>,
     pub(super) acme_app: axum::Router,
     pub(super) admin_app: Option<axum::Router>,
     pub(super) job_registry: acme_proxy_jobs::jobs::JobRegistry,
@@ -34,7 +34,7 @@ pub(crate) struct Generation {
     pub(super) admin_tls: Option<tls::TlsSettings>,
 }
 
-/// Builds one generation: profiles, both routers, the job registry, the audit
+/// Builds one generation: endpoints, both routers, the job registry, the audit
 /// trail and both TLS acceptors.
 ///
 /// Fallible throughout and side-effect-free on the *serving* state: nothing here
@@ -56,7 +56,7 @@ pub(crate) struct Generation {
 pub(crate) fn build_generation(
     roles: crate::RoleSet,
     config: &Arc<Config>,
-    resolved: &[acme_proxy_core::config::ProfileConfig],
+    resolved: &[acme_proxy_core::config::EndpointConfig],
     assembly: &Assembly,
     parts: &GenerationParts,
 ) -> anyhow::Result<Generation> {
@@ -67,7 +67,7 @@ pub(crate) fn build_generation(
     // reloads.
     let admin_enabled = config.admin.enabled && roles.has(crate::ProcessRole::Admin);
     let database = assembly.database.clone();
-    let profiles = crate::profile::build_all_with(config, resolved, parts)?;
+    let endpoints = crate::endpoint::build_all_with(config, resolved, parts)?;
 
     let tls = tls::from_config(&config.server)
         .inspect_err(|error| {
@@ -95,11 +95,11 @@ pub(crate) fn build_generation(
     };
 
     let job_registry =
-        job_registry_for(config, resolved, assembly, parts, &profiles, admin_enabled)?;
+        job_registry_for(config, resolved, assembly, parts, &endpoints, admin_enabled)?;
 
-    // The CA's audit trail: one per process, shared by every profile's router
+    // The CA's audit trail: one per process, shared by every endpoint's router
     // and by the web admin listener, because `[audit]` is process-wide. Built
-    // here rather than in `server::profile::build_all` for exactly that reason — it is
+    // here rather than in `server::endpoint::build_all` for exactly that reason — it is
     // not a per-endpoint subsystem.
     let auditor = Arc::new(
         acme_proxy_jobs::auditor::Auditor::from_config(
@@ -116,8 +116,8 @@ pub(crate) fn build_generation(
         })?,
     );
 
-    // Built **before** `build_app`, which consumes `profiles`. The admin state
-    // needs the same profiles (revoking an order resolves that order's own
+    // Built **before** `build_app`, which consumes `endpoints`. The admin state
+    // needs the same endpoints (revoking an order resolves that order's own
     // signer), and `build_admin_app` takes a slice precisely so the ordering
     // is a signature constraint rather than a borrow error to rediscover.
     let admin_app = match admin_enabled {
@@ -141,7 +141,7 @@ pub(crate) fn build_generation(
             let router = acme_proxy_admin::webadmin::build_admin_app_from_parts(
                 database.clone(),
                 config.clone(),
-                &profiles,
+                &endpoints,
                 auditor.clone(),
                 assembly.notifiers.clone(),
                 assembly.jobs.clone(),
@@ -154,14 +154,14 @@ pub(crate) fn build_generation(
     let acme_app = build_app(
         database,
         config.clone(),
-        profiles.clone(),
+        endpoints.clone(),
         auditor,
         assembly.metrics.clone(),
         assembly.jobs.clone(),
     );
 
     Ok(Generation {
-        profiles,
+        endpoints,
         acme_app,
         admin_app,
         job_registry,
@@ -177,17 +177,17 @@ pub(crate) fn build_generation(
 /// registers is pinned by `tests::a_generation_registers_the_sweeps_its_configuration_asks_for`.
 fn job_registry_for(
     config: &Config,
-    resolved: &[acme_proxy_core::config::ProfileConfig],
+    resolved: &[acme_proxy_core::config::EndpointConfig],
     assembly: &Assembly,
     parts: &GenerationParts,
-    profiles: &[Arc<Profile>],
+    endpoints: &[Arc<Endpoint>],
     admin_enabled: bool,
 ) -> anyhow::Result<acme_proxy_jobs::jobs::JobRegistry> {
     let database = assembly.database.clone();
     // Every subsystem with background work, in one registry. **Nothing here
     // registers a handler per backend**: the registry refuses a second handler
     // for one kind outright, since two would each claim about half the rows, and
-    // two profiles over different `[signer]` sections are two backends that
+    // two endpoints over different `[signer]` sections are two backends that
     // `build_backends` deliberately does not collapse. So each backend hands
     // over *state* and one handler is built over all of it.
     // Collected first and registered in one place below, so a registration
@@ -199,16 +199,16 @@ fn job_registry_for(
         acme_proxy_jobs::auditor::Auditor::offline(database.clone())
             .with_metrics(assembly.metrics.clone()),
     );
-    // The CRLs are collected once per distinct backend, since two profiles
+    // The CRLs are collected once per distinct backend, since two endpoints
     // sharing one CA share one CRL and refreshing it twice a day would be
     // pointless work. The identity is kept as a `usize` rather than the
     // pointer itself, so this function's caller stays `Send`; it is spawned.
     let mut registered: Vec<usize> = Vec::new();
     let mut refreshers: Vec<Arc<dyn acme_proxy_signer::CrlRefresher>> = Vec::new();
-    // The relay backends are collected per *profile*, because that is the key a
-    // job row is dispatched on — and because taking the profile list from the
+    // The relay backends are collected per *endpoint*, because that is the key a
+    // job row is dispatched on — and because taking the endpoint list from the
     // backend would take a stale one: a backend whose configuration did not
-    // move is reused verbatim across a reload, so a profile newly mounted onto
+    // move is reused verbatim across a reload, so an endpoint newly mounted onto
     // it is not in any list it remembers.
     //
     // Both come from this generation's **backends**, which only a process
@@ -216,10 +216,10 @@ fn job_registry_for(
     // none of these handlers has a backend to reach, and none of them runs
     // there anyway.
     let mut relays: Vec<(String, acme_proxy_signer::relay::RelayState)> = Vec::new();
-    let mut backends = parts.signers.by_profile();
+    let mut backends = parts.signers.by_endpoint();
     backends.sort_by(|a, b| a.0.cmp(&b.0));
-    for (profile, backend) in &backends {
-        relays.extend(backend.relay_state().map(|state| (profile.clone(), state)));
+    for (endpoint, backend) in &backends {
+        relays.extend(backend.relay_state().map(|state| (endpoint.clone(), state)));
         let identity = Arc::as_ptr(backend).cast::<()>() as usize;
         if registered.contains(&identity) {
             continue;
@@ -240,8 +240,8 @@ fn job_registry_for(
             acme_proxy_signer::local_ca::sweep::CrlSweepJob::new(refreshers),
         ));
     }
-    // Relayed issuance, over every relay profile at once. Registered only when
-    // some profile relays, for `CrlSweepJob`'s reason: a deployment with none
+    // Relayed issuance, over every relay endpoint at once. Registered only when
+    // some endpoint relays, for `CrlSweepJob`'s reason: a deployment with none
     // has no row of this kind to claim.
     if !relays.is_empty() {
         handlers.push(Arc::new(acme_proxy_signer::relay::flow::RelayJob::new(
@@ -252,7 +252,7 @@ fn job_registry_for(
     // Revocations the host CLI queued for a backend it does not build (`relay`,
     // `custom`). Registered unconditionally, `NotifyJob`'s reason below: a row
     // queued before a configuration change must still find a handler, and one
-    // naming a profile this generation does not mount is retried rather than
+    // naming an endpoint this generation does not mount is retried rather than
     // lost.
     handlers.push(Arc::new(
         acme_proxy_protocol::acme::revoke::SignerRevokeJob::new(
@@ -279,23 +279,23 @@ fn job_registry_for(
     // an admission permit for the length of `challenge.timeout_ms`. Registered
     // unconditionally for `SignerRevokeJob`'s reason above — a row queued
     // before a configuration change must still find a handler — and holding the
-    // profiles rather than one profile, since the registry refuses a second
+    // endpoints rather than one endpoint, since the registry refuses a second
     // handler for one kind.
     handlers.push(Arc::new(
         acme_proxy_protocol::acme::validate::ChallengeValidateJob::new(
             database.clone(),
             auditor.clone(),
-            profiles
+            endpoints
                 .iter()
-                .map(|profile| (profile.name.clone(), profile.clone()))
+                .map(|endpoint| (endpoint.name.clone(), endpoint.clone()))
                 .collect(),
         ),
     ));
 
     // Notification delivery. The same shape as the two above and the reason it
-    // is: one handler for every profile, holding the whole
-    // `profile name -> dispatcher` map, with a job row naming its own profile.
-    // Registered unconditionally — a profile with no `[notify]`
+    // is: one handler for every endpoint, holding the whole
+    // `endpoint name -> dispatcher` map, with a job row naming its own endpoint.
+    // Registered unconditionally — an endpoint with no `[notify]`
     // backends queues nothing, so the handler simply never claims a row, and
     // making the registration conditional would mean a row queued before a
     // configuration change had nobody to run it.
@@ -307,13 +307,13 @@ fn job_registry_for(
         assembly.notifiers.clone(),
     )));
 
-    // The expiry digest, registered only when some profile asked for one
+    // The expiry digest, registered only when some endpoint asked for one
     // (`notify.expiry.lead_days`), the way `CrlSweepJob` is registered only
     // when there is a ledger to prune. It takes the `Notifiers` handle rather
-    // than the profiles' own dispatchers for `NotifyJob`'s reason above, and
-    // the queue because its per-profile rows are something it maintains on
+    // than the endpoints' own dispatchers for `NotifyJob`'s reason above, and
+    // the queue because its per-endpoint rows are something it maintains on
     // every pass rather than only at `recover`.
-    if let Some(digest) = acme_proxy_jobs::notify::expiry::ExpiryDigestJob::from_profiles(
+    if let Some(digest) = acme_proxy_jobs::notify::expiry::ExpiryDigestJob::from_endpoints(
         resolved,
         assembly.notifiers.clone(),
         database.clone(),
@@ -346,13 +346,18 @@ fn job_registry_for(
             config.jobs.retention_days,
         ));
     }
-    // One handler covering every mounted profile, since the registry refuses a
-    // second handler for one kind. A profile keeping everything (`0`) is left
+    // One handler covering every mounted endpoint, since the registry refuses a
+    // second handler for one kind. An endpoint keeping everything (`0`) is left
     // out of the list rather than swept with a cutoff at the epoch.
     let order_retention: Vec<(String, u64)> = resolved
         .iter()
-        .filter(|profile| profile.sections.order.retention_days > 0)
-        .map(|profile| (profile.name.clone(), profile.sections.order.retention_days))
+        .filter(|endpoint| endpoint.sections.order.retention_days > 0)
+        .map(|endpoint| {
+            (
+                endpoint.name.clone(),
+                endpoint.sections.order.retention_days,
+            )
+        })
         .collect();
     if !order_retention.is_empty() {
         sweeps.push(acme_proxy_jobs::jobs::SweepJob::orders(
@@ -362,9 +367,9 @@ fn job_registry_for(
     }
     // Only where some backend publishes http-01 tokens: the table stays empty
     // otherwise, and the CRL refresh's rule applies.
-    if profiles
+    if endpoints
         .iter()
-        .any(|profile| profile.signer_info.http01_tokens().is_some())
+        .any(|endpoint| endpoint.signer_info.http01_tokens().is_some())
     {
         sweeps.push(acme_proxy_jobs::jobs::SweepJob::http01_tokens(
             database.clone(),
@@ -399,11 +404,11 @@ fn job_registry_for(
 /// A struct rather than the tuple this used to return — which needed
 /// `#[allow(clippy::type_complexity)]` and left the caller destructuring four
 /// same-shaped values positionally, where swapping two would still compile.
-/// The same move `ProfileParts` made, for the same reason.
+/// The same move `EndpointParts` made, for the same reason.
 pub(super) struct Reloaded {
     pub(super) report: crate::reload::ReloadReport,
     pub(super) config: Arc<Config>,
-    pub(super) resolved: Vec<acme_proxy_core::config::ProfileConfig>,
+    pub(super) resolved: Vec<acme_proxy_core::config::EndpointConfig>,
     /// Each socket this reload bound, with the address it landed on. Announced
     /// by the supervisor rather than here, because saying a listener is up
     /// reaches the database (the panel's "nobody can sign in yet" warning) and
@@ -411,9 +416,9 @@ pub(super) struct Reloaded {
     /// being what keeps its publishing run uninterruptible.
     pub(super) opened: Vec<(Role, String)>,
     /// The endpoints this reload **added**, for the same reason and announced in
-    /// the same place: `profile_mounted` is dispatched to the `[notify]`
+    /// the same place: `endpoint_mounted` is dispatched to the `[notify]`
     /// backends, which queues a job row.
-    pub(super) mounted: Vec<Arc<Profile>>,
+    pub(super) mounted: Vec<Arc<Endpoint>>,
 }
 
 /// Everything a reload built and validated, waiting to be published.
@@ -426,7 +431,7 @@ pub(super) struct Reloaded {
 /// point is what makes a generation unobservable half-applied.
 pub(super) struct Prepared {
     config: Arc<Config>,
-    resolved: Vec<acme_proxy_core::config::ProfileConfig>,
+    resolved: Vec<acme_proxy_core::config::EndpointConfig>,
     parts: GenerationParts,
     generation: Generation,
     sockets: SocketPlans,
@@ -436,7 +441,7 @@ pub(super) struct Prepared {
     /// two outranking layers is why.
     logging_filter_source: logging::FilterSource,
     /// The endpoints in this generation that the previous one did not mount.
-    mounted: Vec<Arc<Profile>>,
+    mounted: Vec<Arc<Endpoint>>,
     /// The endpoints the previous generation mounted and this one does not.
     unmounted: Vec<String>,
 }
@@ -465,7 +470,7 @@ impl Prepared {
 pub(super) fn prepare_reload(
     roles: crate::RoleSet,
     config: &Arc<Config>,
-    resolved: &[acme_proxy_core::config::ProfileConfig],
+    resolved: &[acme_proxy_core::config::EndpointConfig],
     assembly: &Assembly,
 ) -> Result<Prepared, crate::reload::ReloadError> {
     use crate::reload::{Applied, ReloadError, check_frozen};
@@ -475,17 +480,17 @@ pub(super) fn prepare_reload(
     // see if it restarted right now.
     let next = Arc::new(Config::load().map_err(|error| ReloadError::Load(error.to_string()))?);
     let next_resolved = next
-        .resolve_profiles()
+        .resolve_endpoints()
         .map_err(|error| ReloadError::Load(error.to_string()))?;
 
     check_frozen(
         &Applied {
             config,
-            profiles: resolved,
+            endpoints: resolved,
         },
         &Applied {
             config: &next,
-            profiles: &next_resolved,
+            endpoints: &next_resolved,
         },
     )?;
 
@@ -529,7 +534,7 @@ pub(super) fn prepare_reload(
     // in-memory state — see `signer::build_backends`. It is also the one step
     // that can make a network call, hence this whole function's blocking thread.
     //
-    // A worker checks each `local_ca` profile's CA against the issuer the
+    // A worker checks each `local_ca` endpoint's CA against the issuer the
     // database records for it, before (so a missing CA is refused rather than
     // generated) and after (so one just generated is recorded) — startup's
     // two passes, `local_ca::identity`. On this blocking thread, so the async
@@ -555,25 +560,25 @@ pub(super) fn prepare_reload(
         .map_err(|error| ReloadError::Build(error.to_string()))?;
 
     // Compared by name against what is running, not against what is written
-    // down: `resolve_profiles` has already dropped every `enabled = false`
+    // down: `resolve_endpoints` has already dropped every `enabled = false`
     // entry, so this is the set of endpoints actually served.
     let running: std::collections::HashSet<&str> = resolved
         .iter()
-        .map(|profile| profile.name.as_str())
+        .map(|endpoint| endpoint.name.as_str())
         .collect();
     let mounted = generation
-        .profiles
+        .endpoints
         .iter()
-        .filter(|profile| !running.contains(profile.name.as_str()))
+        .filter(|endpoint| !running.contains(endpoint.name.as_str()))
         .cloned()
         .collect();
     let next_names: std::collections::HashSet<&str> = next_resolved
         .iter()
-        .map(|profile| profile.name.as_str())
+        .map(|endpoint| endpoint.name.as_str())
         .collect();
     let unmounted = resolved
         .iter()
-        .map(|profile| profile.name.clone())
+        .map(|endpoint| endpoint.name.clone())
         .filter(|name| !next_names.contains(name.as_str()))
         .collect();
 
@@ -633,10 +638,10 @@ pub(super) fn publish_reload(
 
     let report = ReloadReport {
         generation,
-        profiles: built
-            .profiles
+        endpoints: built
+            .endpoints
             .iter()
-            .map(|profile| profile.name.clone())
+            .map(|endpoint| endpoint.name.clone())
             .collect(),
         job_kinds: built.job_registry.kinds(),
         tls_reloaded: built.tls.is_some(),
@@ -684,11 +689,11 @@ pub(super) fn publish_reload(
 
     // Said here rather than by the supervisor because it needs nothing but a
     // name, unlike the mounting half, which dispatches a notification.
-    for profile in unmounted {
+    for endpoint in unmounted {
         warn!(
-            event = "profile_unmounted",
+            event = "endpoint_unmounted",
             outcome = "advisory",
-            profile = %profile,
+            endpoint = %endpoint,
             "the endpoint is no longer served: its accounts and orders stay in the \
              database and come back if it is mounted again, but any issuance still in \
              flight for it has no handler left to finish it"
@@ -724,22 +729,22 @@ pub(super) fn publish_reload(
 /// a `[notify]` lifecycle event.
 ///
 /// Shared by startup and by a reload that mounted a new endpoint, so the two
-/// cannot drift — before the profile set could reload there was only one caller
+/// cannot drift — before the endpoint set could reload there was only one caller
 /// and the sharing was not needed.
-pub(super) async fn announce_profile(profile: &Arc<Profile>) {
+pub(super) async fn announce_endpoint(endpoint: &Arc<Endpoint>) {
     info!(
-        event = "profile_mounted",
+        event = "endpoint_mounted",
         outcome = "success",
-        profile = %profile.name,
-        directory = %profile.directory_url(),
-        challenge_bypass = profile.challenges.is_bypassed(),
-        eab_enabled = profile.eab.enabled
+        endpoint = %endpoint.name,
+        directory = %endpoint.directory_url(),
+        challenge_bypass = endpoint.challenges.is_bypassed(),
+        eab_enabled = endpoint.eab.enabled
     );
-    profile
+    endpoint
         .notify
-        .dispatch(acme_proxy_jobs::notify::NotifyEvent::ProfileMounted(
-            acme_proxy_jobs::notify::ProfileMountedData {
-                profile: profile.name.clone(),
+        .dispatch(acme_proxy_jobs::notify::NotifyEvent::EndpointMounted(
+            acme_proxy_jobs::notify::EndpointMountedData {
+                endpoint: endpoint.name.clone(),
             },
         ))
         .await;

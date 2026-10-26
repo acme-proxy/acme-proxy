@@ -2,14 +2,14 @@
 {% block content %}
   <h1>Filter policy</h1>
   <p class="small">
-    What <code>{{ policy.profile }}</code> is enforcing <em>right now</em>:
+    What <code>{{ policy.endpoint }}</code> is enforcing <em>right now</em>:
     <code>[filter]</code> is rebuilt and swapped on <code>SIGHUP</code>, so this
     is the running policy rather than the file on disk. <code>acme-proxy filter
-    show --profile {{ policy.profile }}</code> on the host builds one from
+    show --endpoint {{ policy.endpoint }}</code> on the host builds one from
     configuration instead — it reports what a restart <em>would</em> enforce,
     and every startup refusal with it. Read-only: a policy is configuration, and
     configuration is not edited through a browser.
-    <a href="/ui/profiles">Back to endpoints</a>.
+    <a href="/ui/endpoints">Back to endpoints</a>.
   </p>
 
   {#- Repeated here rather than only on the list: this is the page an operator

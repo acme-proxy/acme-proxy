@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 /// a response or a captured log line says whether it was recorded or what with.
 /// Both halves of the deferred-record pattern are collected — `on_new_span` for
 /// the fields set at creation, `on_record` for the ones a later layer fills in
-/// (`client_ip`, `profile`, `alg`, `account_id`).
+/// (`client_ip`, `endpoint`, `alg`, `account_id`).
 #[derive(Clone)]
 pub struct SpanFields {
     name: &'static str,

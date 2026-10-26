@@ -8,7 +8,7 @@ use tower::ServiceExt;
 mod common;
 use common::{EcSigner, RsaSigner, TestSigner, body_json, fetch_nonce, p, test_app};
 
-const NEW_ACCOUNT_URL: &str = "http://localhost:3000/profile/default/newAccount";
+const NEW_ACCOUNT_URL: &str = "http://localhost:3000/endpoint/default/newAccount";
 
 fn account_payload() -> Value {
     json!({
@@ -39,7 +39,7 @@ async fn assert_created(res: Response) -> String {
         .expect("newAccount must set a Location header")
         .to_string();
     assert!(
-        location.starts_with("http://localhost:3000/profile/default/acct/"),
+        location.starts_with("http://localhost:3000/endpoint/default/acct/"),
         "unexpected Location: {location}"
     );
     let account = body_json(res).await;
@@ -173,7 +173,7 @@ async fn wrong_url_is_rejected() {
     let nonce = fetch_nonce(&app).await;
     // Correctly signed and fresh nonce, but the JWS `url` does not match the endpoint.
     let body = signer.sign(
-        "http://localhost:3000/profile/default/wrongUrl",
+        "http://localhost:3000/endpoint/default/wrongUrl",
         &nonce,
         &account_payload(),
     );

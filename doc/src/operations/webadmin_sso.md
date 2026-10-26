@@ -302,7 +302,7 @@ only for an extra scope (`groups`).
 The ID-token claim the operator's name comes from. Lowercased; it may hold
 letters, digits, `-`, `_`, `.` and `@`. A token without it is refused. Pick a
 claim the provider **assigns**, not one its users can edit in their own
-profile: names are first come, first served across every realm, so a
+endpoint: names are first come, first served across every realm, so a
 self-chosen name can take one a real operator would have needed. `email` is
 accepted only with `email_verified` true.
 

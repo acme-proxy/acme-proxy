@@ -92,8 +92,8 @@ The list is derived from your own configuration, not fixed:
 | Always | `acme`, `proxy` |
 | The operator's username | Split on anything that is not a letter or a digit |
 | `server.base_url`, `admin.base_url` | The **host** only, split on `.` and `-` |
-| `[signer.local_ca.subject]` — global and each profile's own | `common_name`, `organization`, `organizational_unit`, `state`, `locality`, each split into words |
-| Each `[profiles.<name>]` name | The name, which appears in every `kid` and order URL that endpoint issues |
+| `[signer.local_ca.subject]` — global and each endpoint's own | `common_name`, `organization`, `organizational_unit`, `state`, `locality`, each split into words |
+| Each `[endpoints.<name>]` name | The name, which appears in every `kid` and order URL that endpoint issues |
 
 So a CA at `https://ca.example.com` with a CommonName of "Example Corp Issuing
 CA", managed by `operator`, refuses any password containing `acme`, `proxy`,
@@ -108,7 +108,7 @@ Two limits are deliberate:
 - **`country` is not read**, being two characters and so below the floor
   whatever it holds.
 
-If no profile resolves — which is every `admin user create` run against a
+If no endpoint resolves — which is every `admin user create` run against a
 configuration that has none yet — the rest of the list still applies. A missing
 section is never a reason to refuse a password change.
 

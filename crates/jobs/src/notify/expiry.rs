@@ -1,4 +1,4 @@
-//! The periodic expiry digest: one message per profile, listing the
+//! The periodic expiry digest: one message per endpoint, listing the
 //! certificates approaching their notAfter.
 //!
 //! ## Why a digest, and not one message per certificate
@@ -14,7 +14,7 @@
 //! channel that reports healthy automation as if it were a problem is one an
 //! operator learns to filter.
 //!
-//! So the unit is the profile and the period, not the certificate. Two things
+//! So the unit is the endpoint and the period, not the certificate. Two things
 //! fall out of that:
 //!
 //! - **There is no "already reminded" column.** The per-certificate shape
@@ -30,29 +30,29 @@
 //!   wrong "not renewed" is one line of noise. Every rule below therefore errs
 //!   towards *not* claiming supersession.
 //!
-//! ## One row per profile
+//! ## One row per endpoint
 //!
-//! One registered kind, one job row per profile, keyed on the profile name.
-//! Each profile keeps its own `interval_days` and produces its own message,
-//! which is what "one summary per profile" means.
+//! One registered kind, one job row per endpoint, keyed on the endpoint name.
+//! Each endpoint keeps its own `interval_days` and produces its own message,
+//! which is what "one summary per endpoint" means.
 //!
 //! That makes the rows something this handler has to maintain, because
 //! [`JobHandler::recover`] does not run on every reload — `recover_new_kinds`
 //! in [`crate::jobs::runner`] runs it only for kinds the previous generation
-//! did not have, so a profile mounted by a `SIGHUP` into a process that
+//! did not have, so an endpoint mounted by a `SIGHUP` into a process that
 //! already had this kind registered would never get a row. Each pass therefore
-//! re-enqueues for every profile it knows about; the enqueue is `INSERT OR
-//! IGNORE` against the partial identity index, so a profile that already has a
+//! re-enqueues for every endpoint it knows about; the enqueue is `INSERT OR
+//! IGNORE` against the partial identity index, so an endpoint that already has a
 //! live row costs one statement and changes nothing. The bound is that a newly
-//! mounted profile is noticed on the next pass of an existing one — its row is
+//! mounted endpoint is noticed on the next pass of an existing one — its row is
 //! then `run_at = now`, so it fires as soon as it exists.
 //!
-//! A row whose profile is *gone* is the one case that answers
+//! A row whose endpoint is *gone* is the one case that answers
 //! [`JobOutcome::Done`] rather than rescheduling. [`crate::jobs::sweep`]'s law
 //! is *never [`JobOutcome::Failed`]* — a retired periodic job never
 //! re-enqueues itself, so one transient database error would stop the digest
 //! for the life of the process — and that is a different statement from
-//! *always reschedule*: an unmounted profile has nothing left to report, and
+//! *always reschedule*: an unmounted endpoint has nothing left to report, and
 //! retiring its row is how it stops.
 //!
 //! ## Addressed to the account
@@ -112,7 +112,7 @@ pub const EXPIRY_JOB_KIND: &str = "notify_expiry_digest";
 /// for minutes on the first one.
 const BACKFILL_BATCH: i64 = 500;
 
-/// One profile's digest settings, snapshotted from its resolved `[notify]`.
+/// One endpoint's digest settings, snapshotted from its resolved `[notify]`.
 #[derive(Debug, Clone)]
 pub struct ExpirySettings {
     lead: Duration,
@@ -171,8 +171,8 @@ impl ContactPolicy {
 }
 
 impl ExpirySettings {
-    /// The settings for a profile, or `None` when `lead_days` is `0` — which is
-    /// off, and is why a profile with the default configuration never gets a
+    /// The settings for an endpoint, or `None` when `lead_days` is `0` — which is
+    /// off, and is why an endpoint with the default configuration never gets a
     /// row.
     #[must_use]
     pub fn from_config(config: &acme_proxy_core::config::ExpiryNotifyConfig) -> Option<Self> {
@@ -198,42 +198,42 @@ impl ExpirySettings {
     }
 }
 
-/// The digest, over every profile that configured one.
+/// The digest, over every endpoint that configured one.
 pub struct ExpiryDigestJob {
-    profiles: HashMap<String, ExpirySettings>,
+    endpoints: HashMap<String, ExpirySettings>,
     notifiers: Notifiers,
     database: Arc<Database>,
-    /// The queue, held so [`Self::run`] can reconcile the per-profile rows.
+    /// The queue, held so [`Self::run`] can reconcile the per-endpoint rows.
     /// [`JobHandler::run`] is handed only the row it claimed, and the
     /// reconcile cannot wait for `recover` — see the module docs.
     queue: JobQueue,
 }
 
 impl ExpiryDigestJob {
-    /// Builds the handler from the resolved profiles, or `None` when not one of
+    /// Builds the handler from the resolved endpoints, or `None` when not one of
     /// them asked for a digest — registering a handler whose every pass finds
     /// nothing to do is a row an operator has to learn to ignore, the reasoning
     /// `CrlSweepJob` and `SweepJob::audit` are both registered conditionally
     /// for.
     #[must_use]
-    pub fn from_profiles(
-        resolved: &[acme_proxy_core::config::ProfileConfig],
+    pub fn from_endpoints(
+        resolved: &[acme_proxy_core::config::EndpointConfig],
         notifiers: Notifiers,
         database: Arc<Database>,
         queue: JobQueue,
     ) -> Option<Self> {
-        let profiles: HashMap<String, ExpirySettings> = resolved
+        let endpoints: HashMap<String, ExpirySettings> = resolved
             .iter()
-            .filter_map(|profile| {
-                ExpirySettings::from_config(&profile.sections.notify.expiry)
-                    .map(|settings| (profile.name.clone(), settings))
+            .filter_map(|endpoint| {
+                ExpirySettings::from_config(&endpoint.sections.notify.expiry)
+                    .map(|settings| (endpoint.name.clone(), settings))
             })
             .collect();
-        if profiles.is_empty() {
+        if endpoints.is_empty() {
             return None;
         }
         Some(Self {
-            profiles,
+            endpoints,
             notifiers,
             database,
             queue,
@@ -246,11 +246,11 @@ impl ExpiryDigestJob {
     /// the sentinel so the next pass skips it, and a failure to *write* is
     /// logged and dropped, since the digest below is still worth sending
     /// without it.
-    async fn backfill(&self, profile: &str) {
-        let rows = match Order::find_unstamped(profile, BACKFILL_BATCH, &self.database).await {
+    async fn backfill(&self, endpoint: &str) {
+        let rows = match Order::find_unstamped(endpoint, BACKFILL_BATCH, &self.database).await {
             Ok(rows) => rows,
             Err(error) => {
-                error!(event = "notify_expiry_backfill_failed", outcome = "failure", profile = %profile, error = %error);
+                error!(event = "notify_expiry_backfill_failed", outcome = "failure", endpoint = %endpoint, error = %error);
                 return;
             }
         };
@@ -268,27 +268,27 @@ impl ExpiryDigestJob {
                 stamped += 1;
             }
             if let Err(error) = Order::set_cert_not_after(id, not_after, &self.database).await {
-                error!(event = "notify_expiry_backfill_failed", outcome = "failure", profile = %profile, order_id = %id, error = %error);
+                error!(event = "notify_expiry_backfill_failed", outcome = "failure", endpoint = %endpoint, order_id = %id, error = %error);
                 return;
             }
         }
         info!(
             event = "notify_expiry_backfilled",
             outcome = "success",
-            profile = %profile,
+            endpoint = %endpoint,
             rows_stamped = stamped,
             rows_unparsable = unparsable
         );
     }
 
-    /// Builds one profile's digest, or `None` when nothing is expiring.
+    /// Builds one endpoint's digest, or `None` when nothing is expiring.
     ///
     /// Silence is the design: a message that arrives every week whether or not
     /// anything is wrong is one nobody opens, so the *absence* of a digest is
     /// what "everything is renewed" looks like.
     async fn collect(
         &self,
-        profile: &str,
+        endpoint: &str,
         settings: &ExpirySettings,
     ) -> Result<Option<CertificatesExpiringData>, sqlx::Error> {
         let now = now_secs();
@@ -300,7 +300,7 @@ impl ExpiryDigestJob {
         // is always `true` here: supersession is an annotation and never a
         // filter, for the reason in this module's docs.
         let query = ExpiringQuery {
-            profile: Some(profile.to_string()),
+            endpoint: Some(endpoint.to_string()),
             account: None,
             before: acme_proxy_store::expiring::horizon_from(now, settings.lead.as_secs()),
             include_superseded: true,
@@ -314,7 +314,7 @@ impl ExpiryDigestJob {
         }
 
         Ok(Some(CertificatesExpiringData {
-            profile: profile.to_string(),
+            endpoint: endpoint.to_string(),
             generated_at: now,
             lead_days: settings.lead_days,
             total,
@@ -330,7 +330,7 @@ impl ExpiryDigestJob {
     /// operator's cannot come to disagree about a certificate.
     async fn collect_for_accounts(
         &self,
-        profile: &str,
+        endpoint: &str,
         settings: &ExpirySettings,
         policy: &ContactPolicy,
     ) -> Result<Vec<AccountCertificatesExpiringData>, sqlx::Error> {
@@ -338,21 +338,21 @@ impl ExpiryDigestJob {
         let before = acme_proxy_store::expiring::horizon_from(now, settings.lead.as_secs());
         let mut digests = Vec::new();
 
-        for account_id in Order::expiring_accounts(profile, before, &self.database).await? {
+        for account_id in Order::expiring_accounts(endpoint, before, &self.database).await? {
             let account =
-                Account::find_by_id(profile, &account_id.to_string(), &self.database).await?;
+                Account::find_by_id(endpoint, &account_id.to_string(), &self.database).await?;
             let Some(account) = account.filter(|account| !account.is_deactivated()) else {
-                debug!(event = "notify_expiry_account_digest_skipped", outcome = "success", profile = %profile, account_id = %account_id, reason = "deactivated");
+                debug!(event = "notify_expiry_account_digest_skipped", outcome = "success", endpoint = %endpoint, account_id = %account_id, reason = "deactivated");
                 continue;
             };
             let recipients = policy.recipients(&account.contact);
             if recipients.is_empty() {
-                debug!(event = "notify_expiry_account_digest_skipped", outcome = "success", profile = %profile, account_id = %account_id, reason = "no_contact");
+                debug!(event = "notify_expiry_account_digest_skipped", outcome = "success", endpoint = %endpoint, account_id = %account_id, reason = "no_contact");
                 continue;
             }
 
             let query = ExpiringQuery {
-                profile: Some(profile.to_string()),
+                endpoint: Some(endpoint.to_string()),
                 account: Some(account_id),
                 before,
                 include_superseded: true,
@@ -362,12 +362,12 @@ impl ExpiryDigestJob {
             let (entries, total, _hidden) =
                 acme_proxy_store::expiring::list_expiring(&query, self.database.clone()).await?;
             if !worth_telling(&entries, total) {
-                debug!(event = "notify_expiry_account_digest_skipped", outcome = "success", profile = %profile, account_id = %account_id, reason = "renewed");
+                debug!(event = "notify_expiry_account_digest_skipped", outcome = "success", endpoint = %endpoint, account_id = %account_id, reason = "renewed");
                 continue;
             }
 
             digests.push(AccountCertificatesExpiringData {
-                profile: profile.to_string(),
+                endpoint: endpoint.to_string(),
                 account_id: account_id.to_string(),
                 recipients,
                 generated_at: now,
@@ -385,18 +385,18 @@ impl ExpiryDigestJob {
     /// the operator digest beside it — the pass reschedules regardless.
     async fn send_to_accounts(
         &self,
-        profile: &str,
+        endpoint: &str,
         settings: &ExpirySettings,
         policy: &ContactPolicy,
     ) {
-        let digests = match self.collect_for_accounts(profile, settings, policy).await {
+        let digests = match self.collect_for_accounts(endpoint, settings, policy).await {
             Ok(digests) => digests,
             Err(error) => {
-                error!(event = "notify_expiry_account_digest_failed", outcome = "failure", profile = %profile, error = %error);
+                error!(event = "notify_expiry_account_digest_failed", outcome = "failure", endpoint = %endpoint, error = %error);
                 return;
             }
         };
-        let Some(dispatcher) = self.notifiers.get(profile) else {
+        let Some(dispatcher) = self.notifiers.get(endpoint) else {
             return;
         };
         for data in digests {
@@ -409,7 +409,7 @@ impl ExpiryDigestJob {
             info!(
                 event = "notify_expiry_account_digest_sent",
                 outcome = "success",
-                profile = %profile,
+                endpoint = %endpoint,
                 account_id = %account_id,
                 certificates_listed = listed,
                 certificates_total = total
@@ -417,15 +417,15 @@ impl ExpiryDigestJob {
         }
     }
 
-    /// Enqueues a row for every profile that wants one.
+    /// Enqueues a row for every endpoint that wants one.
     ///
-    /// Idempotent — the identity index refuses a second live row per profile —
+    /// Idempotent — the identity index refuses a second live row per endpoint —
     /// which is what lets this run from both `recover` and every pass. See the
     /// module docs for why the second caller is needed at all.
     async fn reconcile(&self, queue: &JobQueue) {
-        for profile in self.profiles.keys() {
+        for endpoint in self.endpoints.keys() {
             queue
-                .enqueue_or_log(JobSpec::now(EXPIRY_JOB_KIND, profile.clone()))
+                .enqueue_or_log(JobSpec::now(EXPIRY_JOB_KIND, endpoint.clone()))
                 .await;
         }
     }
@@ -473,54 +473,54 @@ impl JobHandler for ExpiryDigestJob {
     }
 
     async fn run(&self, job: &Job) -> JobOutcome {
-        let profile = job.dedup_key.clone();
-        let Some(settings) = self.profiles.get(&profile).cloned() else {
-            // The profile was unmounted, or its `lead_days` went back to zero.
+        let endpoint = job.dedup_key.clone();
+        let Some(settings) = self.endpoints.get(&endpoint).cloned() else {
+            // The endpoint was unmounted, or its `lead_days` went back to zero.
             // The one case that retires the row rather than rescheduling it —
             // see the module docs.
             info!(
                 event = "notify_expiry_digest_retired",
                 outcome = "success",
-                profile = %profile
+                endpoint = %endpoint
             );
             return JobOutcome::Done;
         };
 
         // Before the work, not after: a pass that fails below still leaves the
-        // other profiles' rows in place.
+        // other endpoints' rows in place.
         self.reconcile(&self.queue).await;
 
-        self.backfill(&profile).await;
+        self.backfill(&endpoint).await;
 
-        match self.collect(&profile, &settings).await {
+        match self.collect(&endpoint, &settings).await {
             Ok(None) => debug!(
                 event = "notify_expiry_digest_skipped",
                 outcome = "success",
-                profile = %profile
+                endpoint = %endpoint
             ),
             Ok(Some(data)) => {
                 let listed = data.certificates.len();
                 let total = data.total;
-                if let Some(dispatcher) = self.notifiers.get(&profile) {
+                if let Some(dispatcher) = self.notifiers.get(&endpoint) {
                     dispatcher
                         .dispatch(NotifyEvent::CertificatesExpiring(data))
                         .await;
                     info!(
                         event = "notify_expiry_digest_sent",
                         outcome = "success",
-                        profile = %profile,
+                        endpoint = %endpoint,
                         certificates_listed = listed,
                         certificates_total = total
                     );
                 }
             }
             Err(error) => {
-                error!(event = "notify_expiry_digest_failed", outcome = "failure", profile = %profile, error = %error);
+                error!(event = "notify_expiry_digest_failed", outcome = "failure", endpoint = %endpoint, error = %error);
             }
         }
 
         if let Some(policy) = &settings.contact {
-            self.send_to_accounts(&profile, &settings, policy).await;
+            self.send_to_accounts(&endpoint, &settings, policy).await;
         }
 
         // **Never `Failed`**, whatever happened above — see the module docs.
@@ -544,12 +544,12 @@ mod tests {
 
     const DAY: i64 = 24 * 60 * 60;
 
-    /// A claimed row for `profile`, as the runner would hand one to `run`.
-    fn row(profile: &str) -> Job {
+    /// A claimed row for `endpoint`, as the runner would hand one to `run`.
+    fn row(endpoint: &str) -> Job {
         Job {
             id: acme_proxy_store::id::mint(),
             kind: EXPIRY_JOB_KIND.to_string(),
-            dedup_key: profile.to_string(),
+            dedup_key: endpoint.to_string(),
             payload: json!({}),
             status: "running".to_string(),
             run_at: now_secs(),
@@ -571,12 +571,12 @@ mod tests {
         }
     }
 
-    /// A handler over one profile, plus the queue its rows live in.
+    /// A handler over one endpoint, plus the queue its rows live in.
     async fn harness(lead_days: u64) -> (ExpiryDigestJob, Arc<Database>) {
         harness_with(&settings(lead_days), Vec::new()).await
     }
 
-    /// [`harness`] over a whole `[notify.expiry]` and the profile's backends.
+    /// [`harness`] over a whole `[notify.expiry]` and the endpoint's backends.
     async fn harness_with(
         config: &ExpiryNotifyConfig,
         slots: Vec<BackendSlot>,
@@ -589,7 +589,7 @@ mod tests {
         )]);
         let (_tx, notifiers) = super::super::notifiers_channel(dispatchers);
         let job = ExpiryDigestJob {
-            profiles: HashMap::from([(
+            endpoints: HashMap::from([(
                 "default".to_string(),
                 ExpirySettings::from_config(config).unwrap(),
             )]),
@@ -600,7 +600,7 @@ mod tests {
         (job, database)
     }
 
-    /// An issued order on the `default` profile. The real signing lives in
+    /// An issued order on the `default` endpoint. The real signing lives in
     /// [`acme_proxy_store::testutil::issued_order`], hoisted there when `admin::ops`
     /// gained the supersession annotation and needed the same row.
     async fn issued(
@@ -629,7 +629,7 @@ mod tests {
             .unwrap();
 
         let data = job
-            .collect("default", &job.profiles["default"])
+            .collect("default", &job.endpoints["default"])
             .await
             .unwrap()
             .expect("something is expiring");
@@ -658,7 +658,7 @@ mod tests {
         issued(&db, acct, &["fine.example.com"], 60).await;
 
         assert!(
-            job.collect("default", &job.profiles["default"])
+            job.collect("default", &job.endpoints["default"])
                 .await
                 .unwrap()
                 .is_none()
@@ -691,7 +691,7 @@ mod tests {
 
     /// The handler's own contact policy, which `from_config` built.
     fn policy(job: &ExpiryDigestJob) -> ContactPolicy {
-        job.profiles["default"]
+        job.endpoints["default"]
             .contact
             .clone()
             .expect("contact is on")
@@ -709,7 +709,7 @@ mod tests {
         issued(&db, bob.id, &["fine.example.org"], 60).await;
 
         let mut digests = job
-            .collect_for_accounts("default", &job.profiles["default"], &policy(&job))
+            .collect_for_accounts("default", &job.endpoints["default"], &policy(&job))
             .await
             .unwrap();
         digests.sort_by(|a, b| a.recipients.cmp(&b.recipients));
@@ -796,7 +796,7 @@ mod tests {
         }
 
         let digests = job
-            .collect_for_accounts("default", &job.profiles["default"], &policy(&job))
+            .collect_for_accounts("default", &job.endpoints["default"], &policy(&job))
             .await
             .unwrap();
         assert!(digests.is_empty(), "{digests:?}");
@@ -814,14 +814,14 @@ mod tests {
         issued(&db, alice.id, &["www.example.com"], 80).await;
 
         let digests = job
-            .collect_for_accounts("default", &job.profiles["default"], &policy(&job))
+            .collect_for_accounts("default", &job.endpoints["default"], &policy(&job))
             .await
             .unwrap();
         assert!(digests.is_empty(), "{digests:?}");
 
         issued(&db, alice.id, &["api.example.com"], 5).await;
         let digests = job
-            .collect_for_accounts("default", &job.profiles["default"], &policy(&job))
+            .collect_for_accounts("default", &job.endpoints["default"], &policy(&job))
             .await
             .unwrap();
         assert_eq!(digests.len(), 1);
@@ -845,7 +845,7 @@ mod tests {
         issued(&db, alice.id, &["api.example.com"], 5).await;
 
         let digests = job
-            .collect_for_accounts("default", &job.profiles["default"], &policy(&job))
+            .collect_for_accounts("default", &job.endpoints["default"], &policy(&job))
             .await
             .unwrap();
         assert_eq!(digests.len(), 1);
@@ -935,10 +935,10 @@ mod tests {
         );
     }
 
-    /// A row for a profile that is no longer mounted retires. The one case
+    /// A row for an endpoint that is no longer mounted retires. The one case
     /// that does not reschedule — see the module docs.
     #[tokio::test]
-    async fn a_row_for_an_unmounted_profile_retires() {
+    async fn a_row_for_an_unmounted_endpoint_retires() {
         let (job, _db) = harness(14).await;
         assert!(matches!(job.run(&row("gone")).await, JobOutcome::Done));
     }
@@ -969,11 +969,11 @@ mod tests {
         ));
     }
 
-    /// `recover` puts one row per configured profile in the queue, and running
+    /// `recover` puts one row per configured endpoint in the queue, and running
     /// again is safe — the identity index refuses a second live row, which is
     /// what lets the reconcile also run on every pass.
     #[tokio::test]
-    async fn recovery_queues_one_row_per_profile_however_often_it_runs() {
+    async fn recovery_queues_one_row_per_endpoint_however_often_it_runs() {
         let (job, db) = harness(14).await;
         job.recover(&job.queue).await;
         job.recover(&job.queue).await;

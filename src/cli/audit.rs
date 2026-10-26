@@ -24,7 +24,7 @@ pub enum AuditCommand {
     List {
         /// Only rows about this ACME endpoint.
         #[arg(long)]
-        profile: Option<String>,
+        endpoint: Option<String>,
         /// Only rows about this account.
         #[arg(long = "account-id")]
         account_id: Option<String>,
@@ -84,7 +84,7 @@ pub async fn run_audit_command(
 ) -> Result<(), CliError> {
     match command {
         AuditCommand::List {
-            profile,
+            endpoint,
             account_id,
             order_id,
             cert_serial,
@@ -97,7 +97,7 @@ pub async fn run_audit_command(
         } => {
             let window = Window::resolve(limit, offset);
             let query = AuditQuery {
-                profile,
+                endpoint,
                 account_id,
                 order_id,
                 // See `order list --cert-serial`: the same fold, for the same
@@ -197,7 +197,7 @@ mod tests {
         let db = db_with_rows().await;
         let refused = |event: Option<&str>, outcome: Option<&str>| {
             let command = AuditCommand::List {
-                profile: None,
+                endpoint: None,
                 account_id: None,
                 order_id: None,
                 cert_serial: None,
@@ -234,7 +234,7 @@ mod tests {
     /// record update to lean on — each shape is spelled out.
     fn list(json: bool) -> AuditCommand {
         AuditCommand::List {
-            profile: None,
+            endpoint: None,
             account_id: None,
             order_id: None,
             cert_serial: None,
@@ -249,7 +249,7 @@ mod tests {
 
     fn list_window(limit: i64, offset: i64) -> AuditCommand {
         AuditCommand::List {
-            profile: None,
+            endpoint: None,
             account_id: None,
             order_id: None,
             cert_serial: None,
@@ -266,7 +266,7 @@ mod tests {
     /// build once combined.
     fn list_every_filter() -> AuditCommand {
         AuditCommand::List {
-            profile: Some("default".to_string()),
+            endpoint: Some("default".to_string()),
             account_id: Some("acct-1".to_string()),
             order_id: Some("order-1".to_string()),
             cert_serial: Some("0a0b".to_string()),

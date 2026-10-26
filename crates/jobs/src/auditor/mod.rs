@@ -55,7 +55,7 @@ impl Auditor {
     /// Builds the auditor, and with it the **cached** resolver its PTR lookups
     /// go through.
     ///
-    /// Cached, unlike the shared resolver `server::profile::build_all` threads through
+    /// Cached, unlike the shared resolver `server::endpoint::build_all` threads through
     /// the challenge and signer subsystems, and for the reason
     /// `filter::reverse_dns` makes the same choice: a PTR record for an address
     /// that keeps connecting is exactly what a cache is for, and there is no
@@ -64,7 +64,7 @@ impl Auditor {
     /// at the time".
     ///
     /// A second cached resolver rather than sharing `reverse_dns`'s: that one
-    /// is per-profile and built only when the filter is enabled, and reaching
+    /// is per-endpoint and built only when the filter is enabled, and reaching
     /// across for it would tie the audit trail's completeness to whether an
     /// unrelated filter happens to be switched on.
     /// `metrics` is a required argument and deliberately not a builder step.
@@ -215,9 +215,9 @@ impl Auditor {
     ///
     /// Beside [`Auditor::record`] because every issuance already reaches the
     /// auditor, and the auditor is what carries the registry into the worker.
-    pub fn observe_issuance(&self, profile: &str, elapsed: std::time::Duration) {
+    pub fn observe_issuance(&self, endpoint: &str, elapsed: std::time::Duration) {
         if let Some(metrics) = &self.metrics {
-            metrics.observe_issuance(profile, elapsed);
+            metrics.observe_issuance(endpoint, elapsed);
         }
     }
 }
@@ -240,14 +240,14 @@ impl Auditor {
 /// identifying fields, so the trail survives in the log even when the table did
 /// not get it.
 pub(crate) async fn write(record: AuditRecord, database: &Database) {
-    let (event, profile) = (record.event, record.profile.clone());
+    let (event, endpoint) = (record.event, record.endpoint.clone());
     let (order_id, serial) = (record.order_id.clone(), record.cert_serial.clone());
     if let Err(error) = AuditEntry::insert(record, database).await {
         error!(
             event = "audit_write_failed",
             outcome = "failure",
             audit_event = event.as_str(),
-            profile = %profile,
+            endpoint = %endpoint,
             order_id = ?order_id,
             cert_serial = ?serial,
             error = %error,

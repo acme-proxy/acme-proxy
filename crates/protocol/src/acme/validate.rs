@@ -9,10 +9,10 @@
 //! needs: a challenge "transitions to the `processing` state when the client
 //! responds to the challenge", and §8.2 pairs that with a `Retry-After`.
 //!
-//! **One handler over every profile**, the [`SignerRevokeJob`] shape: a row names
+//! **One handler over every endpoint**, the [`SignerRevokeJob`] shape: a row names
 //! its challenge, the challenge walks up to its order, and the order names the
-//! profile whose validators and notifier decide it. The registry refuses a
-//! second handler for one kind, so one per profile could not be registered
+//! endpoint whose validators and notifier decide it. The registry refuses a
+//! second handler for one kind, so one per endpoint could not be registered
 //! anyway.
 //!
 //! [`SignerRevokeJob`]: super::revoke::SignerRevokeJob
@@ -24,7 +24,7 @@ use std::time::Duration;
 use tracing::{error, warn};
 
 use super::order::OrderService;
-use crate::profile::Profile;
+use crate::endpoint::Endpoint;
 use acme_proxy_jobs::auditor::Auditor;
 use acme_proxy_jobs::jobs::JobHandler;
 use acme_proxy_jobs::jobs::JobOutcome;
@@ -75,7 +75,7 @@ pub fn challenge_validate_spec(
 pub struct ChallengeValidateJob {
     database: Arc<Database>,
     audit: Arc<Auditor>,
-    profiles: Vec<(String, Arc<Profile>)>,
+    endpoints: Vec<(String, Arc<Endpoint>)>,
 }
 
 /// Everything one row needs, read back from the database when it runs.
@@ -84,27 +84,27 @@ struct Subject {
     authz: Authorization,
     order: Order,
     account: Account,
-    profile: Arc<Profile>,
+    endpoint: Arc<Endpoint>,
 }
 
 impl ChallengeValidateJob {
-    /// `profiles` is this generation's profile per name.
+    /// `endpoints` is this generation's endpoint per name.
     #[must_use]
     pub fn new(
         database: Arc<Database>,
         audit: Arc<Auditor>,
-        profiles: Vec<(String, Arc<Profile>)>,
+        endpoints: Vec<(String, Arc<Endpoint>)>,
     ) -> Self {
         Self {
             database,
             audit,
-            profiles,
+            endpoints,
         }
     }
 
-    /// The profile this process mounts under `name`, if any.
-    fn profile(&self, name: &str) -> Option<&Arc<Profile>> {
-        super::mounted(&self.profiles, name)
+    /// The endpoint this process mounts under `name`, if any.
+    fn endpoint(&self, name: &str) -> Option<&Arc<Endpoint>> {
+        super::mounted(&self.endpoints, name)
     }
 
     /// Walks a row back to everything deciding it needs.
@@ -158,17 +158,17 @@ impl ChallengeValidateJob {
                 }
             };
 
-        // Before the account, because an unmounted profile is the one answer
+        // Before the account, because an unmounted endpoint is the one answer
         // that is about *this process* rather than about the row.
-        let Some(profile) = self.profile(&order.profile) else {
+        let Some(endpoint) = self.endpoint(&order.endpoint) else {
             return Err(JobOutcome::Retry(format!(
-                "profile `{}` is not mounted by this process",
-                order.profile
+                "endpoint `{}` is not mounted by this process",
+                order.endpoint
             )));
         };
 
         let account = match Account::find_by_id(
-            &order.profile,
+            &order.endpoint,
             order.account_id.to_string().as_str(),
             &self.database,
         )
@@ -192,7 +192,7 @@ impl ChallengeValidateJob {
             authz,
             order,
             account,
-            profile: profile.clone(),
+            endpoint: endpoint.clone(),
         })
     }
 }
@@ -210,7 +210,7 @@ impl JobHandler for ChallengeValidateJob {
     /// transaction with its authorization and order, exactly as it was when this
     /// ran inside the request — so the job is `Done`. [`JobOutcome::Retry`] is
     /// reserved for the attempt never having happened: a database that would not
-    /// answer, or a profile this process does not mount. That keeps
+    /// answer, or an endpoint this process does not mount. That keeps
     /// `challenge_failed` meaning what it has always meant, and keeps a client's
     /// order reaching `invalid` as promptly as it used to.
     async fn run(&self, job: &Job) -> JobOutcome {
@@ -226,7 +226,7 @@ impl JobHandler for ChallengeValidateJob {
             mut authz,
             mut order,
             account,
-            profile,
+            endpoint,
         } = match self.load(challenge_id).await {
             Ok(subject) => subject,
             Err(outcome) => return outcome,
@@ -242,7 +242,7 @@ impl JobHandler for ChallengeValidateJob {
         let orders = OrderService {
             database: &self.database,
             audit: &self.audit,
-            profile: &profile,
+            endpoint: &endpoint,
         };
         match orders
             .run_validation(&account, &mut challenge, &mut authz, &mut order, client_ip)
@@ -259,16 +259,16 @@ impl JobHandler for ChallengeValidateJob {
 
     /// One attempt may take a whole `challenge.timeout_ms`.
     ///
-    /// Which profile's is not knowable here — the row names a challenge, and
+    /// Which endpoint's is not knowable here — the row names a challenge, and
     /// walking it up to its order is a database read this synchronous hook
-    /// cannot make — so the budget is the widest any mounted profile allows.
+    /// cannot make — so the budget is the widest any mounted endpoint allows.
     /// Erring long costs only a longer wait before another runner may reclaim a
     /// stranded row; erring short would let two runners probe one client's host
     /// at once, which is the thing the claim exists to prevent.
     fn lease(&self, _job: &Job) -> Option<Duration> {
-        self.profiles
+        self.endpoints
             .iter()
-            .map(|(_, profile)| profile.challenges.timeout())
+            .map(|(_, endpoint)| endpoint.challenges.timeout())
             .max()
             .map(|timeout| timeout + LEASE_HEADROOM)
     }
@@ -296,7 +296,7 @@ impl JobHandler for ChallengeValidateJob {
             mut challenge,
             mut authz,
             mut order,
-            profile,
+            endpoint,
             ..
         } = match self.load(challenge_id).await {
             Ok(subject) => subject,
@@ -323,7 +323,7 @@ impl JobHandler for ChallengeValidateJob {
         let orders = OrderService {
             database: &self.database,
             audit: &self.audit,
-            profile: &profile,
+            endpoint: &endpoint,
         };
         if orders
             .abandon_validation(&mut challenge, &mut authz, &mut order, reason)
@@ -383,7 +383,7 @@ const LEASE_HEADROOM: Duration = Duration::from_secs(30);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::acme::order::tests::{account, profile};
+    use crate::acme::order::tests::{account, endpoint};
     use acme_proxy_core::identifier::Identifier;
     use acme_proxy_net::challenge::ChallengeError;
     use acme_proxy_net::challenge::ChallengeRegistry;
@@ -436,13 +436,13 @@ mod tests {
         (order, authz, challenge)
     }
 
-    /// The handler over one `default` profile with `challenges`.
+    /// The handler over one `default` endpoint with `challenges`.
     fn handler(database: &Arc<Database>, challenges: ChallengeRegistry) -> ChallengeValidateJob {
-        let profile = Arc::new(profile(database, challenges));
+        let endpoint = Arc::new(endpoint(database, challenges));
         ChallengeValidateJob::new(
             database.clone(),
             Arc::new(Auditor::offline(database.clone())),
-            vec![(profile.name.clone(), profile)],
+            vec![(endpoint.name.clone(), endpoint)],
         )
     }
 
@@ -531,7 +531,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_unmounted_profile_is_retried() {
+    async fn an_unmounted_endpoint_is_retried() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         let account = account(&database).await;
         let (_, _, mut challenge) = subject(&database, &account).await;
@@ -540,7 +540,7 @@ mod tests {
             acme_proxy_store::authz::ValidationClaim::Claimed
         );
 
-        // A handler mounting nothing: the row's profile is somebody else's.
+        // A handler mounting nothing: the row's endpoint is somebody else's.
         let job = ChallengeValidateJob::new(
             database.clone(),
             Arc::new(Auditor::offline(database.clone())),
@@ -548,7 +548,7 @@ mod tests {
         );
         let JobOutcome::Retry(reason) = job.run(&row(challenge.id.to_string().as_str())).await
         else {
-            panic!("an unmounted profile must be retried, never failed");
+            panic!("an unmounted endpoint must be retried, never failed");
         };
         assert!(reason.contains("not mounted"), "{reason}");
     }

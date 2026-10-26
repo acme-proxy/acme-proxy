@@ -102,8 +102,8 @@ nothing about revocation until you set this.
 Nothing derives it, deliberately. The URL is frozen into every certificate
 signed while it is set, so a value read from `server.base_url` would silently
 break certificates already issued the day that changed. And this server's own
-copy is served at `{base_url}/profile/<name>/crl`, *inside* the profile router
-and therefore behind that profile's filter policy — an address-based rule would
+copy is served at `{base_url}/endpoint/<name>/crl`, *inside* the endpoint router
+and therefore behind that endpoint's filter policy — an address-based rule would
 refuse it to exactly the relying parties the extension exists for. Name a URL
 you know is publicly reachable; a webroot or CDN copy of `crl_path` is the usual
 answer.
@@ -116,10 +116,10 @@ scheme, and any value the URL parser would normalize (a missing trailing `/`, a
 leading space from an environment-variable list) are each a startup error naming
 the key and the value.
 
-Note that two profiles sharing one CA share this list too: they share one
+Note that two endpoints sharing one CA share this list too: they share one
 `[signer]` section, one set of revocations and one CRL, so there is one place
 that CRL is published. Giving them different URLs while they share `ca.key` is
-refused at startup — see [Profiles & Routing](../core/profiles.md).
+refused at startup — see [Endpoints & Routing](../core/endpoints.md).
 
 **`ca_issuer_urls`** (`Array<String>`) — *Default: `[]` | Env: `ACME_PROXY_SIGNER__LOCAL_CA__CA_ISSUER_URLS`*
 
@@ -189,25 +189,25 @@ organization = "Example Corp"
 country      = "US"
 ```
 
-## One CA per profile
+## One CA per endpoint
 
-The database records the CA each `local_ca` profile issues from, by the
+The database records the CA each `local_ca` endpoint issues from, by the
 SHA-256 of its public key (the `issuer` id the CRL uses), and **a worker checks
 its CA against that record before it signs anything**:
 
 - **The first run records it.** `acme-proxy init`, or the first worker, records
   whatever CA it loads or generates. A deployment upgraded from an earlier
   release records its existing CA the first time a worker starts.
-- **A worker with another CA refuses to start**, naming the profile, both
+- **A worker with another CA refuses to start**, naming the endpoint, both
   issuer ids and the command below. Two hosts that each ran `init` would
-  otherwise issue for one profile from two CAs, each trusted only by the
+  otherwise issue for one endpoint from two CAs, each trusted only by the
   clients that installed it.
 - **A worker with no CA refuses rather than generating one**, once an issuer is
   recorded. Copy `ca.pem` and `ca.key` from an existing worker (or attach the
   same token) instead.
 
-To change a profile's CA on purpose, replace its files, then run
-[`acme-proxy profile issuer accept <name>`](../operations/cli.md#profiles)
+To change an endpoint's CA on purpose, replace its files, then run
+[`acme-proxy endpoint issuer accept <name>`](../operations/cli.md#endpoints)
 before restarting the workers. A reload that would load another CA is refused
 the same way, with the running configuration left serving.
 

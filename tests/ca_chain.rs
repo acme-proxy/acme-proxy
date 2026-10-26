@@ -1,5 +1,5 @@
 //! `GET /ca.pem`: the trust anchor a client installs to accept what this
-//! profile issues. Like `GET /crl` it is CA infrastructure rather than an ACME
+//! endpoint issues. Like `GET /crl` it is CA infrastructure rather than an ACME
 //! resource — unauthenticated, no JWS/nonce dance, and never advertised in the
 //! directory (pinned in `tests/basic_endpoints.rs`).
 

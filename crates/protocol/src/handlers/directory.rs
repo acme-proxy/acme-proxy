@@ -73,8 +73,8 @@ pub async fn get_readiness(State(database): State<Arc<Database>>) -> Response {
 pub async fn get_directory(State(state): State<AppState>) -> Json<Value> {
     debug!(event = "directory_requested", outcome = "progress");
     // Every advertised URL is the *endpoint's* own, prefix included: this is
-    // where a client learns which profile it is talking to.
-    let base = &state.profile.base_url;
+    // where a client learns which endpoint it is talking to.
+    let base = &state.endpoint.base_url;
     // Every path comes from `acme_proxy_core::routes`, the same constants `build_router`
     // mounts: a directory advertising something nothing serves is a client that
     // fails on its first request.
@@ -89,9 +89,9 @@ pub async fn get_directory(State(state): State<AppState>) -> Json<Value> {
     // RFC 8555 §7.1.1's `meta`, assembled from whatever this endpoint actually
     // has to say. Every member is optional and an unset one is omitted rather
     // than sent empty — `"website": ""` says less than saying nothing.
-    let meta = &state.profile.meta;
+    let meta = &state.endpoint.meta;
     let mut object = serde_json::Map::new();
-    if state.profile.eab.enabled {
+    if state.endpoint.eab.enabled {
         object.insert("externalAccountRequired".to_string(), json!(true));
     }
     if !meta.terms_of_service.is_empty() {

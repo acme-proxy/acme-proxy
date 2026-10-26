@@ -4,12 +4,12 @@
 2026 expects to find. This page is the conformance summary: what a client can
 call, which RFC section governs it, and what is deliberately not implemented.
 
-Everything here is served **per profile**, under `/profile/<name>/`. There is no
-ACME at the bare root — see [Profiles & Routing](../core/profiles.md).
+Everything here is served **per endpoint**, under `/endpoint/<name>/`. There is
+no ACME at the bare root — see [Endpoints & Routing](../core/endpoints.md).
 
 ## Resources
 
-Every row is reachable at `{base_url}/profile/<name><path>`. The **Advertised**
+Every row is reachable at `{base_url}/endpoint/<name><path>`. The **Advertised**
 column says whether the directory object names it: a client is expected to find
 advertised resources by reading the directory rather than by constructing paths.
 
@@ -30,9 +30,9 @@ advertised resources by reading the directory rather than by constructing paths.
 | `/revokeCert` | `POST` | §7.6 | yes | [Revocation & CRL](../operations/revocation.md). |
 | `/renewalInfo/{certID}` | `GET` | RFC 9773 §4.1 | yes | Unauthenticated. Advertised **without** the id — §4.1 has the client append it. |
 | `/crl` | `GET` | RFC 5280 | **no** | Routed but not advertised: a CRL is CA infrastructure, not an ACME resource. |
-| `/ca.pem` | `GET` | — | **no** | The profile's trust anchor, so installing it is one `curl`. `404` unless the backend has one of its own. Not advertised, for the same reason as `/crl`. See [Trusting the CA](../getting_started/trusting_the_ca.md). |
+| `/ca.pem` | `GET` | — | **no** | The endpoint's trust anchor, so installing it is one `curl`. `404` unless the backend has one of its own. Not advertised, for the same reason as `/crl`. See [Trusting the CA](../getting_started/trusting_the_ca.md). |
 
-Three paths sit outside every profile, on the root router:
+Three paths sit outside every endpoint, on the root router:
 
 | Path | Purpose |
 | --- | --- |
@@ -82,7 +82,7 @@ The directory's `meta` object carries only what is configured. An unset member
 is **omitted**, never sent empty — `"website": ""` says less than saying
 nothing.
 
-- `externalAccountRequired` appears as `true` when EAB is on for that profile.
+- `externalAccountRequired` appears as `true` when EAB is on for that endpoint.
 - `termsOfService`, `website` and `caaIdentities` come from `[meta]`.
 
 `meta.terms_of_service` is the one with teeth: setting it turns on §7.3.3, so

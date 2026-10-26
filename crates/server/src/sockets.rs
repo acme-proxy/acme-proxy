@@ -107,7 +107,7 @@ pub(super) async fn bind_metrics(config: &Arc<Config>) -> anyhow::Result<Option<
 /// The three sockets a process may be handed, already bound.
 ///
 /// A struct rather than three positional `Option<TcpListener>` parameters, the
-/// `ProfileParts` and `tests/reload.rs::Sockets` convention: they are the same
+/// `EndpointParts` and `tests/reload.rs::Sockets` convention: they are the same
 /// shape, so a caller swapping two would still compile, in a function whose
 /// whole subject is which socket answers what.
 ///

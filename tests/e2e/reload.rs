@@ -15,7 +15,7 @@
 //! until something re-reads it — which makes it exactly the right lever here.
 //! Environment beats file, so the file only ever writes keys the lab left
 //! unset: `meta.website` (the cheapest proof a reload landed), a whole
-//! `[profiles.extra]` section, and `database.url` — the one key that is still
+//! `[endpoints.extra]` section, and `database.url` — the one key that is still
 //! refused.
 
 use crate::common::Lab;
@@ -28,7 +28,7 @@ use crate::common::Lab;
 ///
 /// Returns whether it succeeded rather than asserting, because one caller
 /// fetches an endpoint that is *expected* to be absent at first: `urlopen`
-/// raises on a 404, so a missing profile is a non-zero exit, not an empty body.
+/// raises on a 404, so a missing endpoint is a non-zero exit, not an empty body.
 async fn fetch(lab: &Lab, url: &str) -> (bool, String) {
     let (ok, stdout, _) = lab
         .exec_in_with_output(
@@ -42,7 +42,7 @@ async fn fetch(lab: &Lab, url: &str) -> (bool, String) {
     (ok, stdout)
 }
 
-/// Reads the default profile's directory object, which must always be there.
+/// Reads the default endpoint's directory object, which must always be there.
 ///
 /// `Lab::proxy_url` is already that **directory** URL (that is what a client
 /// takes as `--server`), so it is fetched as-is rather than with a path
@@ -56,18 +56,18 @@ async fn directory(lab: &Lab) -> String {
 /// The `{scheme}://{host}:{port}` the lab's directory URL sits under.
 ///
 /// Derived rather than spelled a second time: a scenario naming a *different*
-/// profile has to reach the same server, and two independent renderings of one
+/// endpoint has to reach the same server, and two independent renderings of one
 /// address are what let them drift.
 fn base(lab: &Lab) -> &str {
     lab.proxy_url
-        .strip_suffix("/profile/default/directory")
-        .expect("the lab's proxy URL is the default profile's directory")
+        .strip_suffix("/endpoint/default/directory")
+        .expect("the lab's proxy URL is the default endpoint's directory")
 }
 
 /// Sends `SIGHUP` to the server and waits for the Nth reload to land.
 ///
 /// The binary is the container's `ENTRYPOINT`, so it is PID 1. Polls the log
-/// rather than sleeping a fixed interval: a reload rebuilds every profile and
+/// rather than sleeping a fixed interval: a reload rebuilds every endpoint and
 /// both TLS acceptors, and how long that takes is not something a test should
 /// be guessing at.
 ///
@@ -164,8 +164,8 @@ async fn test_reload_on_sighup_twice() {
 /// cannot change is refused **by name** with the old generation left serving.
 ///
 /// The two halves belong in one scenario because they are the same decision
-/// seen from both sides. Mounting a profile became possible once a signer
-/// backend's state stopped living in its own memory — the profile set was
+/// seen from both sides. Mounting an endpoint became possible once a signer
+/// backend's state stopped living in its own memory — the endpoint set was
 /// frozen only because a `LocalCa` rebuilt its CRL from an in-memory ledger and
 /// a relay's `http-01` store would have come back empty. `database.url` is what is left, and it is
 /// the only entry ever frozen *physically*: the pool is open, and the accounts
@@ -174,22 +174,22 @@ async fn test_reload_on_sighup_twice() {
 /// answerable, so both the refusal and the untouched generation are asserted.
 #[tokio::test]
 #[ignore]
-async fn test_a_profile_mounts_and_a_frozen_key_is_refused() {
+async fn test_a_endpoint_mounts_and_a_frozen_key_is_refused() {
     let lab = Lab::new(vec![]).await;
 
-    let extra = format!("{}/profile/extra/directory", base(&lab));
+    let extra = format!("{}/endpoint/extra/directory", base(&lab));
     let (ok, _) = fetch(&lab, &extra).await;
     assert!(
         !ok,
         "the server must start without the endpoint it is about to be given"
     );
 
-    // `meta.website` proves the reload ran at all; the profile is the half that
+    // `meta.website` proves the reload ran at all; the endpoint is the half that
     // used to be refused by name.
     lab.exec_in(
         &lab.proxy,
         "printf '[meta]\\nwebsite = \"https://live.example\"\\n\
-         [profiles.extra]\\nenabled = true\\n' > /data/config.toml",
+         [endpoints.extra]\\nenabled = true\\n' > /data/config.toml",
     )
     .await;
     reloads_reach(&lab, 1).await;
@@ -197,8 +197,8 @@ async fn test_a_profile_mounts_and_a_frozen_key_is_refused() {
     assert!(directory(&lab).await.contains("https://live.example"));
     let (ok, body) = fetch(&lab, &extra).await;
     assert!(
-        ok && body.contains("/profile/extra/"),
-        "a profile added to a running server must serve, not merely be accepted: {body}"
+        ok && body.contains("/endpoint/extra/"),
+        "an endpoint added to a running server must serve, not merely be accepted: {body}"
     );
 
     // Serving is the claim; the log line is the lifecycle event beside it. One
@@ -206,7 +206,7 @@ async fn test_a_profile_mounts_and_a_frozen_key_is_refused() {
     // what makes it a notification rather than a heartbeat.
     let logs = lab.get_proxy_logs().await;
     assert_eq!(
-        logs.matches("profile_mounted").count(),
+        logs.matches("endpoint_mounted").count(),
         2,
         "the new endpoint must be announced exactly once: {logs}"
     );
@@ -219,7 +219,7 @@ async fn test_a_profile_mounts_and_a_frozen_key_is_refused() {
         &lab.proxy,
         "printf '[database]\\nurl = \"sqlite:///data/other.db\"\\n\
          [meta]\\nwebsite = \"https://refused.example\"\\n\
-         [profiles.extra]\\nenabled = true\\n' > /data/config.toml",
+         [endpoints.extra]\\nenabled = true\\n' > /data/config.toml",
     )
     .await;
     // Not `reloads_reach`, which treats a refusal as fatal — a refusal is the

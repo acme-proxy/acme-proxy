@@ -25,12 +25,12 @@ use acme_proxy_jobs::jobs::JobSpec;
 use acme_proxy_jobs::jobs::SweepJob;
 use acme_proxy_jobs::jobs::spawn_runner;
 use acme_proxy_jobs::notify::BackendSlot;
+use acme_proxy_jobs::notify::EndpointMountedData;
 use acme_proxy_jobs::notify::NotifyBackend;
 use acme_proxy_jobs::notify::NotifyDispatcher;
 use acme_proxy_jobs::notify::NotifyError;
 use acme_proxy_jobs::notify::NotifyEvent;
 use acme_proxy_jobs::notify::NotifyJob;
-use acme_proxy_jobs::notify::ProfileMountedData;
 use acme_proxy_store::db::Database;
 use acme_proxy_store::job::Job;
 use async_trait::async_trait;
@@ -298,8 +298,8 @@ async fn a_dispatched_notification_is_delivered_through_the_queue() {
     );
 
     dispatcher
-        .dispatch(NotifyEvent::ProfileMounted(ProfileMountedData {
-            profile: "le".to_string(),
+        .dispatch(NotifyEvent::EndpointMounted(EndpointMountedData {
+            endpoint: "le".to_string(),
         }))
         .await;
 

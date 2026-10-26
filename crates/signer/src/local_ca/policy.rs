@@ -9,8 +9,8 @@
 //!
 //! Nothing derives these from `server.base_url`. The value is frozen into every
 //! certificate signed while it is set — for `leaf_validity_days`, long after a
-//! rename — and this server's own `/crl` sits inside a profile router, behind
-//! that profile's filter chain, so an address-based policy refuses it to
+//! rename — and this server's own `/crl` sits inside an endpoint router, behind
+//! that endpoint's filter chain, so an address-based policy refuses it to
 //! exactly the relying parties the extension exists for. The operator names a
 //! URL they know is reachable.
 //!

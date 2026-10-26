@@ -21,7 +21,7 @@ use crate::webadmin::pages::{ListFilters, chrome, page_value, pager, respond, vo
 use acme_proxy_store::status::UpstreamOrderStatus;
 use acme_proxy_store::upstream_order::UpstreamOrder;
 
-/// `GET /ui/upstream-orders?profile=&status=&limit=&offset=`
+/// `GET /ui/upstream-orders?endpoint=&status=&limit=&offset=`
 pub async fn list_upstream_orders(
     State(state): State<AdminState>,
     Query(params): Query<UpstreamOrderListParams>,
@@ -29,7 +29,7 @@ pub async fn list_upstream_orders(
 ) -> Result<Html<String>, PageError> {
     let page = PageParams::from(params.limit, params.offset).resolve(&state.config);
     let filters = ListFilters::new()
-        .with("profile", params.profile.as_deref())
+        .with("endpoint", params.endpoint.as_deref())
         .with("status", params.status.as_deref());
     // The API's own query, so a bad `status=` is its `invalid_status`.
     let query = crate::webadmin::handlers::upstream_orders::upstream_order_query(&params, page)?;
@@ -54,8 +54,8 @@ pub async fn list_upstream_orders(
         vocabulary(UpstreamOrderStatus::ALL, |status| status.as_str()),
     );
     context.insert(
-        "profiles".to_string(),
-        Value::Array(crate::webadmin::handlers::misc::profile_rows(&state)),
+        "endpoints".to_string(),
+        Value::Array(crate::webadmin::handlers::misc::endpoint_rows(&state)),
     );
 
     respond(

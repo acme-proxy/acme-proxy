@@ -51,16 +51,16 @@ what it made to the others:
 
 | Material | Hosts that need it |
 | --- | --- |
-| `ca.pem` (each `local_ca` profile's `cert_path`) | every host, all roles |
+| `ca.pem` (each `local_ca` endpoint's `cert_path`) | every host, all roles |
 | `ca.key` (`key_path`), or access to the same PKCS#11 token and key | every `worker` |
-| A relay profile's upstream account key and its `kid` sidecar | every `worker` |
+| A relay endpoint's upstream account key and its `kid` sidecar | every `worker` |
 | The listener TLS certificates (`server.tls`, `admin.tls`) | every `acme` / `admin` |
 | `config.toml`, identical apart from per-host addresses | every host |
 
 **Do not run `init` on the second host.** Each run would generate its own CA.
-The database records the CA each profile issues from, so a worker with another
+The database records the CA each endpoint issues from, so a worker with another
 CA, or with none, refuses to start rather than issuing from a second one
-([Local CA → One CA per profile](../signers/local_ca.md#one-ca-per-profile)).
+([Local CA → One CA per endpoint](../signers/local_ca.md#one-ca-per-endpoint)).
 Use real certificates for the listeners, not the self-signed ones `init`
 generates per host. Behind one name, every node must present a certificate
 clients trust for that name.

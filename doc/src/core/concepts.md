@@ -4,26 +4,26 @@ Nine words carry most of the meaning in the rest of this book. This page
 defines them once, in the order you meet them, so that every other page can use
 them without re-explaining.
 
-## Profile
+## Endpoint
 
-A **profile** is an independent ACME endpoint, and the isolation boundary
+An **endpoint** is an independent ACME endpoint, and the isolation boundary
 everything else sits inside. Rather than running one process per environment,
-you define several profiles in one; each is served at
-`/profile/<name>/directory`.
+you define several endpoints in one; each is served at
+`/endpoint/<name>/directory`.
 
-Accounts and orders are isolated per profile — the same client key at two
-profiles is two unrelated accounts — and each profile carries its own signer,
-filters, challenge validation and EAB policy. A `dev` profile backed by a local
-CA can sit beside a `prod` profile relaying to Let's Encrypt under strict NetBox
-filtering, in one process, over one socket and one database.
+Accounts and orders are isolated per endpoint — the same client key at two
+endpoints is two unrelated accounts — and each endpoint carries its own signer,
+filters, challenge validation and EAB policy. A `dev` endpoint backed by a local
+CA can sit beside a `prod` endpoint relaying to Let's Encrypt under strict
+NetBox filtering, in one process, over one socket and one database.
 
-See [Profiles & Routing](profiles.md).
+See [Endpoints & Routing](endpoints.md).
 
 ## Signer
 
 A **signer** is what actually produces the certificate once a client has been
-authorized. Which one runs is a per-profile configuration choice, and the client
-never sees the difference.
+authorized. Which one runs is a per-endpoint configuration choice, and the
+client never sees the difference.
 
 - **Local CA** — an embedded certificate authority signing directly. The issuing
   key is a file, or a PKCS#11 token.

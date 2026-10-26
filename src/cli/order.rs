@@ -31,7 +31,7 @@ use acme_proxy_store::status::OrderStatus;
 pub struct OrderListArgs {
     /// Restrict the listing to one ACME endpoint.
     #[arg(long)]
-    pub profile: Option<String>,
+    pub endpoint: Option<String>,
     /// Only this account's orders.
     #[arg(long = "account-id")]
     pub account_id: Option<String>,
@@ -100,7 +100,7 @@ pub enum OrderCommand {
         /// revocation carries no reason.
         #[arg(long)]
         reason: Option<u32>,
-        /// For a `relay` or `custom` profile, how many seconds to wait for a
+        /// For a `relay` or `custom` endpoint, how many seconds to wait for a
         /// running server to perform the queued revocation before returning.
         /// `0` queues it and returns at once. A local CA's revocation is
         /// recorded immediately and does not wait.
@@ -169,16 +169,16 @@ pub async fn run_order_command(
         }
         OrderCommand::Revoke { id, reason, wait } => {
             // Revocation goes through the endpoint that issued the certificate:
-            // another profile's backend holds a different CA, or none at all.
+            // another endpoint's backend holds a different CA, or none at all.
             let Some(order) = Order::find_by_id(&id, &database).await? else {
                 return Err(not_found(&id));
             };
-            let profiles = config
-                .resolve_profiles()
+            let endpoints = config
+                .resolve_endpoints()
                 .map_err(|error| CliError::failed(format!("configuration error: {error}")))?;
-            let Some(profile) = profiles.iter().find(|p| p.name == order.profile) else {
+            let Some(endpoint) = endpoints.iter().find(|p| p.name == order.endpoint) else {
                 return Err(CliError::bad_request(
-                    admin::order_profile_unmounted_refusal(&id, &order.profile),
+                    admin::order_endpoint_unmounted_refusal(&id, &order.endpoint),
                 ));
             };
             // Before anything reads the signer's configuration: an order with
@@ -192,13 +192,13 @@ pub async fn run_order_command(
             // `certificate_revoked` notification this revocation owes.
             let notifiers = super::offline_notifiers(config, database.clone())?;
             let notify = notifiers
-                .get(&order.profile)
+                .get(&order.endpoint)
                 .map(|dispatcher| dispatcher.as_ref());
             let audit = acme_proxy_jobs::auditor::Auditor::offline(database.clone());
             // A queue this process never drains: what it enqueues, a running
             // server's job runner works off.
             let jobs = acme_proxy_jobs::jobs::JobQueue::new(database.clone(), &config.jobs);
-            let route = signer::revocation_route(&profile.sections.signer)
+            let route = signer::revocation_route(&endpoint.sections.signer)
                 .map_err(|error| CliError::failed(format!("signer error: {error}")))?;
             // `Actor::cli` and an empty client context: there is no request
             // here, and the audit row says so rather than inventing an address.
@@ -287,7 +287,7 @@ async fn run_list(
     database: Arc<Database>,
 ) -> Result<(), CliError> {
     let OrderListArgs {
-        profile,
+        endpoint,
         account_id,
         status,
         identifier,
@@ -318,7 +318,7 @@ async fn run_list(
         )?;
         return run_expiring(
             days,
-            profile,
+            endpoint,
             hide_superseded,
             window,
             json,
@@ -345,7 +345,7 @@ async fn run_list(
     // fields in Rust, which is one policy written twice — and the two
     // could drift into disagreeing about what `--status` means.
     let query = OrderQuery {
-        profile,
+        endpoint,
         account_id,
         status,
         identifier,
@@ -395,7 +395,7 @@ async fn run_list(
 /// a single busy account from re-reading its history fifty times.
 async fn run_expiring(
     days: u64,
-    profile: Option<String>,
+    endpoint: Option<String>,
     hide_superseded: bool,
     window: Window,
     json: bool,
@@ -403,7 +403,7 @@ async fn run_expiring(
     database: Arc<Database>,
 ) -> Result<(), CliError> {
     let query = acme_proxy_store::expiring::ExpiringQuery {
-        profile,
+        endpoint,
         account: None,
         before: acme_proxy_store::expiring::expiring_horizon(days),
         include_superseded: !hide_superseded,
@@ -484,10 +484,10 @@ mod tests {
     use acme_proxy_signer::SignerBackend;
     use acme_proxy_store::account::Account;
 
-    /// A configuration whose single `default` profile signs with a local CA
+    /// A configuration whose single `default` endpoint signs with a local CA
     /// living under `dir` — what `Revoke` needs, since it rebuilds the signer
-    /// from the profile that issued the certificate.
-    fn config_in(dir: impl AsRef<std::path::Path>, profile: &str) -> Config {
+    /// from the endpoint that issued the certificate.
+    fn config_in(dir: impl AsRef<std::path::Path>, endpoint: &str) -> Config {
         let dir = dir.as_ref();
         let _lock = acme_proxy_core::config::ENV_LOCK
             .lock()
@@ -497,7 +497,7 @@ mod tests {
             dir.join("config.toml"),
             format!(
                 r#"
-                [profiles.{profile}]
+                [endpoints.{endpoint}]
                 signer.local_ca.cert_path = "{ca}.pem"
                 signer.local_ca.key_path = "{ca}.key"
                 signer.local_ca.crl_path = "{ca}.crl"
@@ -582,7 +582,7 @@ mod tests {
         assert_eq!(total, 1);
         assert_eq!(rows[0].event, "order_deleted");
         assert_eq!(rows[0].actor_kind, "cli");
-        assert_eq!(rows[0].profile, "default");
+        assert_eq!(rows[0].endpoint, "default");
         assert_eq!(rows[0].order_id.as_deref(), Some(id.as_str()));
         // The row outlives the order it names — `audit_log` has no foreign
         // keys, which is the whole reason it can record a deletion.
@@ -592,9 +592,9 @@ mod tests {
         );
     }
 
-    async fn seed_order(database: &Arc<Database>, profile: &str) -> Order {
+    async fn seed_order(database: &Arc<Database>, endpoint: &str) -> Order {
         let (account, _) = Account::find_or_create(
-            profile,
+            endpoint,
             &[4, 5, 6],
             vec![],
             &ClientContext::default(),
@@ -603,7 +603,7 @@ mod tests {
         .await
         .unwrap();
         Order::create(
-            profile,
+            endpoint,
             account.id,
             vec![acme_proxy_core::identifier::Identifier::dns("example.com")],
             acme_proxy_store::nonce::now_secs() + 3600,
@@ -624,12 +624,12 @@ mod tests {
         config: &Config,
         database: Arc<Database>,
     ) -> Arc<dyn SignerBackend> {
-        let profile = &config.resolve_profiles().unwrap()[0];
+        let endpoint = &config.resolve_endpoints().unwrap()[0];
         let resolver = acme_proxy_net::dns::resolver_addr(&config.dns)
             .and_then(acme_proxy_net::challenge::build_resolver)
             .expect("the default dns configuration must build a resolver");
         let signer: Arc<dyn SignerBackend> = signer::from_config(
-            &profile.sections.signer,
+            &endpoint.sections.signer,
             &acme_proxy_signer::testutil::signer_parts(database.clone(), resolver),
         )
         .unwrap();
@@ -758,11 +758,11 @@ mod tests {
         .unwrap();
     }
 
-    /// `revoke` needs the endpoint that signed the certificate. A profile the
+    /// `revoke` needs the endpoint that signed the certificate. An endpoint the
     /// running configuration no longer defines says so, rather than silently
-    /// revoking against some other profile's CA.
+    /// revoking against some other endpoint's CA.
     #[tokio::test]
-    async fn revoking_an_order_from_an_undefined_profile_is_refused() {
+    async fn revoking_an_order_from_an_undefined_endpoint_is_refused() {
         let dir = temp_dir();
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         // The order belongs to `default`; the configuration only mounts `other`.
@@ -783,7 +783,7 @@ mod tests {
             database,
         )
         .await
-        .expect_err("a profile this configuration does not define must be refused");
+        .expect_err("an endpoint this configuration does not define must be refused");
         assert!(
             error.to_string().contains("which this configuration"),
             "{error}"
@@ -878,7 +878,7 @@ mod tests {
             database.clone(),
         )
         .await
-        .expect("a certificate issued by this profile's CA must revoke");
+        .expect("a certificate issued by this endpoint's CA must revoke");
 
         let revoked = Order::find_by_id(order.id.to_string().as_str(), &database)
             .await
@@ -969,7 +969,7 @@ mod tests {
         );
     }
 
-    /// A `custom` profile's revocation is the script's to perform, so the CLI
+    /// A `custom` endpoint's revocation is the script's to perform, so the CLI
     /// queues it for a running server instead of running the script itself:
     /// `--wait 0` returns with the order untouched and one `signer_revoke` row
     /// queued, a second ask waits on that row rather than queueing another, and
@@ -999,7 +999,7 @@ mod tests {
             std::fs::write(
                 dir.join("config.toml"),
                 format!(
-                    "[profiles.default]\nsigner.backend = \"custom\"\nsigner.custom.script_path = \"{}\"\n",
+                    "[endpoints.default]\nsigner.backend = \"custom\"\nsigner.custom.script_path = \"{}\"\n",
                     script.display()
                 ),
             )
@@ -1060,12 +1060,12 @@ mod tests {
         );
         assert!(!marker.exists(), "the CLI must not run the script itself");
 
-        let profile = &config.resolve_profiles().unwrap()[0];
+        let endpoint = &config.resolve_endpoints().unwrap()[0];
         let resolver = acme_proxy_net::dns::resolver_addr(&config.dns)
             .and_then(acme_proxy_net::challenge::build_resolver)
             .unwrap();
         let signer = signer::from_config(
-            &profile.sections.signer,
+            &endpoint.sections.signer,
             &acme_proxy_signer::testutil::signer_parts(database.clone(), resolver),
         )
         .unwrap();
@@ -1165,7 +1165,7 @@ mod tests {
         let mut reader: &[u8] = &[];
         for command in [
             OrderCommand::List(OrderListArgs {
-                profile: Some("default".to_string()),
+                endpoint: Some("default".to_string()),
                 account_id: None,
                 status: None,
                 identifier: None,
@@ -1179,7 +1179,7 @@ mod tests {
             }),
             // The identifier and serial filters walk the same render paths.
             OrderCommand::List(OrderListArgs {
-                profile: None,
+                endpoint: None,
                 account_id: None,
                 status: None,
                 identifier: Some("seeded.example.com".to_string()),
@@ -1192,7 +1192,7 @@ mod tests {
                 json: true,
             }),
             OrderCommand::List(OrderListArgs {
-                profile: None,
+                endpoint: None,
                 account_id: None,
                 status: None,
                 identifier: None,
@@ -1239,7 +1239,7 @@ mod tests {
         let mut reader: &[u8] = &[];
         let error = run_order_command(
             OrderCommand::List(OrderListArgs {
-                profile: None,
+                endpoint: None,
                 account_id: None,
                 status: Some("readyy".to_string()),
                 identifier: None,
@@ -1286,7 +1286,7 @@ mod tests {
         for status in OrderStatus::ALL {
             run_order_command(
                 OrderCommand::List(OrderListArgs {
-                    profile: None,
+                    endpoint: None,
                     account_id: None,
                     status: Some(status.as_str().to_string()),
                     identifier: None,
@@ -1326,7 +1326,7 @@ mod tests {
         let mut reader: &[u8] = &[];
         run_order_command(
             OrderCommand::List(OrderListArgs {
-                profile: None,
+                endpoint: None,
                 account_id: account_id.map(str::to_string),
                 status: status.map(str::to_string),
                 identifier: identifier.map(str::to_string),
@@ -1415,7 +1415,7 @@ mod tests {
             {
                 run_order_command(
                     OrderCommand::List(OrderListArgs {
-                        profile: None,
+                        endpoint: None,
                         account_id: None,
                         status: None,
                         identifier: None,

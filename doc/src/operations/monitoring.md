@@ -16,13 +16,13 @@ able to accept a connection, and it has no other failure mode. Treat it as a
 holding `sqlite.db` filled up.
 
 What makes it worth polling is *where* it is mounted. `/health` lives on the
-root router, not inside a profile, which means it is deliberately outside:
+root router, not inside an endpoint, which means it is deliberately outside:
 
 - the admission-control layer, so a saturated server still answers the probe
   (inside the limit, the probe was starved exactly when it mattered, and a load
   balancer would go on reporting the node healthy right up to the point where
   the probe could no longer get a slot);
-- every profile's filter chain, so an IP allowlist never has to be widened for
+- every endpoint's filter chain, so an IP allowlist never has to be widened for
   your load balancer;
 - the `Replay-Nonce` middleware, so probing costs no database write; and
 - the `Link: rel="index"` middleware.
@@ -68,27 +68,27 @@ to the internet does not expose this.
 $ curl -s localhost:3002/metrics
 # HELP acme_proxy_requests Requests served, by endpoint, matched route and response status.
 # TYPE acme_proxy_requests counter
-acme_proxy_requests_total{role="acme,admin,worker",profile="default",route="/newOrder",status="201"} 42
-acme_proxy_requests_total{role="acme,admin,worker",profile="none",route="/health",status="200"} 8613
+acme_proxy_requests_total{role="acme,admin,worker",endpoint="default",route="/newOrder",status="201"} 42
+acme_proxy_requests_total{role="acme,admin,worker",endpoint="none",route="/health",status="200"} 8613
 # HELP acme_proxy_request_duration_seconds Time to answer a request, by endpoint and matched route.
 # TYPE acme_proxy_request_duration_seconds histogram
 # UNIT acme_proxy_request_duration_seconds seconds
-acme_proxy_request_duration_seconds_sum{role="acme,admin,worker",profile="default",route="/newOrder"} 0.84
-acme_proxy_request_duration_seconds_count{role="acme,admin,worker",profile="default",route="/newOrder"} 42
-acme_proxy_request_duration_seconds_bucket{role="acme,admin,worker",le="0.005",profile="default",route="/newOrder"} 3
+acme_proxy_request_duration_seconds_sum{role="acme,admin,worker",endpoint="default",route="/newOrder"} 0.84
+acme_proxy_request_duration_seconds_count{role="acme,admin,worker",endpoint="default",route="/newOrder"} 42
+acme_proxy_request_duration_seconds_bucket{role="acme,admin,worker",le="0.005",endpoint="default",route="/newOrder"} 3
 …
-acme_proxy_request_duration_seconds_bucket{role="acme,admin,worker",le="+Inf",profile="default",route="/newOrder"} 42
+acme_proxy_request_duration_seconds_bucket{role="acme,admin,worker",le="+Inf",endpoint="default",route="/newOrder"} 42
 # HELP acme_proxy_certificates_issued Certificates signed, by endpoint.
 # TYPE acme_proxy_certificates_issued counter
-acme_proxy_certificates_issued_total{role="acme,admin,worker",profile="default"} 41
+acme_proxy_certificates_issued_total{role="acme,admin,worker",endpoint="default"} 41
 # HELP acme_proxy_certificate_issue_failures Issuance attempts the CA refused, by endpoint and ACME problem type.
 # TYPE acme_proxy_certificate_issue_failures counter
-acme_proxy_certificate_issue_failures_total{role="acme,admin,worker",profile="default",reason="badCSR"} 1
+acme_proxy_certificate_issue_failures_total{role="acme,admin,worker",endpoint="default",reason="badCSR"} 1
 # HELP acme_proxy_certificate_issue_duration_seconds Time from an accepted finalize to a stored certificate, by endpoint.
 # TYPE acme_proxy_certificate_issue_duration_seconds histogram
 # UNIT acme_proxy_certificate_issue_duration_seconds seconds
-acme_proxy_certificate_issue_duration_seconds_sum{role="acme,admin,worker",profile="default"} 45.0
-acme_proxy_certificate_issue_duration_seconds_count{role="acme,admin,worker",profile="default"} 41
+acme_proxy_certificate_issue_duration_seconds_sum{role="acme,admin,worker",endpoint="default"} 45.0
+acme_proxy_certificate_issue_duration_seconds_count{role="acme,admin,worker",endpoint="default"} 41
 …
 # HELP acme_proxy_database_pool_connections Connections in the database pool.
 # TYPE acme_proxy_database_pool_connections gauge
@@ -102,11 +102,11 @@ requires; its series, which is what a query names, keep the suffix.
 
 | Metric | Type | Labels |
 | --- | --- | --- |
-| `acme_proxy_requests_total` | counter | `role`, `profile`, `route`, `status` |
-| `acme_proxy_request_duration_seconds` | histogram | `role`, `profile`, `route` |
-| `acme_proxy_certificates_issued_total` | counter | `role`, `profile` |
-| `acme_proxy_certificate_issue_failures_total` | counter | `role`, `profile`, `reason` |
-| `acme_proxy_certificate_issue_duration_seconds` | histogram | `role`, `profile` |
+| `acme_proxy_requests_total` | counter | `role`, `endpoint`, `route`, `status` |
+| `acme_proxy_request_duration_seconds` | histogram | `role`, `endpoint`, `route` |
+| `acme_proxy_certificates_issued_total` | counter | `role`, `endpoint` |
+| `acme_proxy_certificate_issue_failures_total` | counter | `role`, `endpoint`, `reason` |
+| `acme_proxy_certificate_issue_duration_seconds` | histogram | `role`, `endpoint` |
 | `acme_proxy_database_pool_connections` | gauge | `role`, `state` |
 
 Six things are worth knowing about the numbers.
@@ -119,11 +119,11 @@ is several scrape targets reporting the same family names, and this is what
 tells them apart. Each process also needs its own `metrics.bind_address`.
 
 **`route` is the matched route pattern, not the URI.** A request for
-`/profile/le/order/9f3c…` is counted under `route="/order/{id}"`, and the
-endpoint it reached becomes the `profile` label. Anything that matched no route
+`/endpoint/le/order/9f3c…` is counted under `route="/order/{id}"`, and the
+endpoint it reached becomes the `endpoint` label. Anything that matched no route
 at all — a scanner, a typo — collapses into a single `route="<unmatched>"`
 series rather than one series per path tried. Root-router requests such as
-`/health` carry `profile="none"`.
+`/health` carry `endpoint="none"`.
 
 **`reason` is the ACME problem type the CA refused with** (`badCSR`,
 `serverInternal`), the same vocabulary
@@ -220,12 +220,12 @@ back, so it is replaced by a generated id and a `request_id_header_invalid` line
 at `debug` says so.
 
 The span carries `method`, `uri`, `version`, `request_id`, `client_ip` and —
-for a request that reached an ACME endpoint rather than `/health` — `profile`.
+for a request that reached an ACME endpoint rather than `/health` — `endpoint`.
 
 `client_ip` is the peer address of the connection, replaced by the address
 resolved from `filter.forwarded_header` where `filter.trusted_proxies` says the
-peer is a reverse proxy. Both are per-profile settings, so a request that never
-reaches a profile — `/health`, the `http-01` responder, anything admission
+peer is a reverse proxy. Both are per-endpoint settings, so a request that never
+reaches an endpoint — `/health`, the `http-01` responder, anything admission
 control sheds — always shows the peer. A request arriving over a socket with no
 peer address at all leaves the field absent rather than reporting a placeholder.
 
@@ -279,9 +279,9 @@ The events worth building alerts on:
 | Event | Level | Meaning |
 | --- | --- | --- |
 | `request_completed` | info / warn / debug | One per request. See "The access line" above for the level. |
-| `server_listening`, `profile_mounted` | info | Startup completed; one `profile_mounted` per enabled profile. `server_listening` is repeated by a reload that moved this socket, carrying the address it moved to. A reload emits `profile_mounted` only for an endpoint that was not previously served. |
-| `profile_unmounted` | warn | A reload stopped serving an endpoint. Its accounts and orders stay in the database; an issuance still waiting on an upstream has no handler left to finish it. |
-| `server_fatal_error`, `profile_init_failed` | error | The process is not serving. |
+| `server_listening`, `endpoint_mounted` | info | Startup completed; one `endpoint_mounted` per enabled endpoint. `server_listening` is repeated by a reload that moved this socket, carrying the address it moved to. A reload emits `endpoint_mounted` only for an endpoint that was not previously served. |
+| `endpoint_unmounted` | warn | A reload stopped serving an endpoint. Its accounts and orders stay in the database; an issuance still waiting on an upstream has no handler left to finish it. |
+| `server_fatal_error`, `endpoint_init_failed` | error | The process is not serving. |
 | `server_socket_bind_failed`, `admin_socket_bind_failed`, `metrics_socket_bind_failed` | error | The ACME, admin or metrics socket could not be bound. At startup the process does not serve; on a reload nothing is applied and whatever was already listening keeps listening. |
 | `metrics_listening` | info | The metrics listener started. Its message is the reminder that the endpoint is unauthenticated by design, so the port must be firewalled. |
 | `metrics_config_invalid` | error | `metrics.bind_address` names the same socket as the ACME or admin listener. The process did not start. |
@@ -311,8 +311,8 @@ The events worth building alerts on:
 | `order_finalize_authority_withdrawn` | warn | The account, or one of the order's authorizations, was deactivated after `finalize` queued the signing. The order goes `invalid` with `unauthorized` and nothing is signed. |
 | `order_finalize_abandoned` | warn | The queue gave up on an issuance — the attempts ran out, or the order expired under it — and marked the order `invalid` so the client stops polling. Carries the last reason. A steady stream means the backend is down; alert on it. |
 | `certificate_revoked`, `certificate_revoke_signer_failed` | info / error | Revocation succeeded, or the signer refused it — in which case the order is left un-revoked for a retry. |
-| `local_ca_issuer_recorded` | info | The first CA a `local_ca` profile has loaded or generated was recorded as its issuer. Logged once per profile, by `init` or the first worker. |
-| `local_ca_issuer_mismatch`, `local_ca_issuer_missing` | error | A worker refused to start (or a reload was refused) because its CA is not the one recorded for the profile, or because it has none and would have generated a second. Carries `profile`, `cert_path` and the issuer ids. See [Local CA → One CA per profile](../signers/local_ca.md#one-ca-per-profile). |
+| `local_ca_issuer_recorded` | info | The first CA a `local_ca` endpoint has loaded or generated was recorded as its issuer. Logged once per endpoint, by `init` or the first worker. |
+| `local_ca_issuer_mismatch`, `local_ca_issuer_missing` | error | A worker refused to start (or a reload was refused) because its CA is not the one recorded for the endpoint, or because it has none and would have generated a second. Carries `endpoint`, `cert_path` and the issuer ids. See [Local CA → One CA per endpoint](../signers/local_ca.md#one-ca-per-endpoint). |
 | `local_ca_crl_republished` | info | A revocation `acme-proxy order revoke` recorded without the CA key was signed into the CRL by the `local_ca_crl_regenerate` job. Carries the CA's `issuer` id. |
 | `certificate_revoke_queued` | info | A revocation for a `relay` or `custom` backend was queued for the worker by a process that holds no backend — `revokeCert`, the panel or the CLI — which then waits on the job. Carries `order_id` and `job_id`. |
 | `certificate_revoke_abandoned` | error | A queued revocation for a `relay` or `custom` backend was given up after its attempts ran out: the certificate is **still trusted**. Carries `order_id` and the last reason. Alert on it. |
@@ -336,7 +336,7 @@ The events worth building alerts on:
 | `job_runner_started`, `job_runner_stopped` | info | The queue runner's lifecycle. `job_runner_stopped` carries how many leases it released on the way out; a *missing* one after a restart is why work waits out a lease instead of resuming immediately. Note the six table sweeps and every notification run through this runner, so a runner that is not started is a server that is not sweeping or notifying either. |
 | `upstream_bad_nonce_retry` | debug | Normal ACME churn against the upstream; only interesting in bulk. |
 | `notify_delivery_failed` | warn | One delivery attempt did not land. Never affects the ACME response, and no longer the end of the story: it carries `retryable`, and a `true` there means the delivery went back in the queue. |
-| `notify_delivery_target_missing` | warn | A queued delivery names a profile or backend this process does not have. It is retried rather than dropped, since another process over the same database may be on a newer configuration; a target that really is gone ends in `notify_delivery_abandoned` once the attempts run out. |
+| `notify_delivery_target_missing` | warn | A queued delivery names an endpoint or backend this process does not have. It is retried rather than dropped, since another process over the same database may be on a newer configuration; a target that really is gone ends in `notify_delivery_abandoned` once the attempts run out. |
 | `notify_delivery_abandoned` | warn | A notification was given up on — the attempts ran out, or a backend reported a failure that could never succeed. **This is the line that means an operator was not told something.** Alert on it; `notify_delivery_failed` on its own is usually just a bad minute. |
 | `notify_delivered` | info | One delivery landed. Carries the `backend`, the event `kind` and the attempt it succeeded on. |
 | `notify_delivery_queued` | info | A delivery was written to the queue, one line per backend that wanted the event. Carries a `delivery_id` shared by that event's rows, which is how they are correlated. |
@@ -345,12 +345,12 @@ The events worth building alerts on:
 | `audit_write_failed` | warn | An [audit](audit.md) row could not be written. The failure is **swallowed deliberately** — a certificate the CA has already signed must not become a `500` the client retries into a second issuance — so this line is the *only* evidence that the trail has a hole in it. Alert on it. |
 | `audit_reverse_dns_failed`, `audit_reverse_dns_timeout` | debug | A PTR lookup for a client address found nothing in time. Costs a `NULL` in one column, never a refused request. Routine where no reverse zone exists; turn `audit.reverse_dns` off there. |
 | `job_retention_sweep_failed` | warn | The daily sweep of finished jobs past `jobs.retention_days` failed. Nothing is lost; the table grows until the next one succeeds. |
-| `notify_expiry_account_digest_sent` | info | With `notify.expiry.contact`, one account's own digest was queued. Carries `profile`, `account_id` and the certificates listed and matched. |
+| `notify_expiry_account_digest_sent` | info | With `notify.expiry.contact`, one account's own digest was queued. Carries `endpoint`, `account_id` and the certificates listed and matched. |
 | `notify_expiry_account_digest_skipped` | debug | An account with something expiring was not written to. `reason` is `deactivated`, `no_contact` (none that `contact_domains` admits) or `renewed` (every listed certificate is already replaced). |
-| `notify_expiry_account_digest_failed` | error | The per-account half of a pass could not be built, usually because of the database. Carries `profile`. No account digest is sent that pass, the operator digest is unaffected, and the pass is rescheduled as usual. |
-| `notify_expiry_digest_failed` | error | The `[notify.expiry]` digest for one profile could not be built — usually the database. Carries `profile`. The digest is rescheduled at its interval regardless, so one failure costs one digest, not the schedule. |
+| `notify_expiry_account_digest_failed` | error | The per-account half of a pass could not be built, usually because of the database. Carries `endpoint`. No account digest is sent that pass, the operator digest is unaffected, and the pass is rescheduled as usual. |
+| `notify_expiry_digest_failed` | error | The `[notify.expiry]` digest for one endpoint could not be built — usually the database. Carries `endpoint`. The digest is rescheduled at its interval regardless, so one failure costs one digest, not the schedule. |
 | `audit_reaper_swept`, `audit_reaper_failed` | debug / warn | The daily retention sweep, only with a non-zero `audit.retention_days`. `audit_reaper_swept` carries the rows removed and the cutoff. Runs as the `audit_sweep` job. |
-| `order_reaper_swept`, `order_reaper_failed` | info / error | The daily order-retention sweep, one line **per profile**, carrying that profile's rows removed and cutoff. Runs as the `order_sweep` job, and only for profiles with a non-zero `order.retention_days`. It deletes expired, non-`valid` orders and cascades to their authorizations and challenges; a `valid` order is never swept, so revocation and renewal information stay available for every certificate actually issued. |
+| `order_reaper_swept`, `order_reaper_failed` | info / error | The daily order-retention sweep, one line **per endpoint**, carrying that endpoint's rows removed and cutoff. Runs as the `order_sweep` job, and only for endpoints with a non-zero `order.retention_days`. It deletes expired, non-`valid` orders and cascades to their authorizations and challenges; a `valid` order is never swept, so revocation and renewal information stay available for every certificate actually issued. |
 | `ipam_netbox_tls_verification_disabled` | warn | Emitted on **every** start while `insecure_skip_verify` is set, deliberately not once-only. |
 | `proxy_configured` | info | Emitted once at startup when [`[proxy]`](../configuration/reference.md#proxy) resolves to anything, and not at all otherwise. Carries `source` (`config`, `environment` or both), the two proxy URLs **with any password redacted**, and the `no_proxy` rule count. Worth reading on a first start: an inherited shell `https_proxy` is otherwise an invisible reason for every outbound call to behave differently. |
 
@@ -446,5 +446,5 @@ different response:
   renewal interval → silent breakage.
 - Any `audit_write_failed` → the audit trail is silently incomplete, and nothing
   else will tell you. See [Audit Trail](audit.md).
-- `server_fatal_error`, `db_migration_failed`, `profile_init_failed` → page
+- `server_fatal_error`, `db_migration_failed`, `endpoint_init_failed` → page
   immediately.

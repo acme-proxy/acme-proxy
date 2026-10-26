@@ -68,14 +68,14 @@ pub async fn record_cli_actions(
 
 fn base(
     event: AuditEvent,
-    profile: impl Into<String>,
+    endpoint: impl Into<String>,
     actor: Actor,
     client: ClientContext,
 ) -> AuditRecord {
-    AuditRecord::new(event, profile, actor).with_client(client)
+    AuditRecord::new(event, endpoint, actor).with_client(client)
 }
 
-/// An action with no ACME subject and no profile — an operator, a session, or a
+/// An action with no ACME subject and no endpoint — an operator, a session, or a
 /// table swept whole.
 fn process_wide(
     event: AuditEvent,
@@ -90,12 +90,12 @@ fn process_wide(
 
 // --- accounts -------------------------------------------------------------
 
-/// `account_deactivated`, under the account's profile.
+/// `account_deactivated`, under the account's endpoint.
 #[must_use]
 pub fn account_deactivated(actor: Actor, client: ClientContext, account: &Account) -> AuditRecord {
     base(
         AuditEvent::AccountDeactivated,
-        &account.profile,
+        &account.endpoint,
         actor,
         client,
     )
@@ -117,7 +117,7 @@ pub fn account_contact_updated(
     };
     base(
         AuditEvent::AccountContactUpdated,
-        &account.profile,
+        &account.endpoint,
         actor,
         client,
     )
@@ -133,7 +133,7 @@ pub fn account_deleted(
     account: &Account,
     cascaded: u64,
 ) -> AuditRecord {
-    base(AuditEvent::AccountDeleted, &account.profile, actor, client)
+    base(AuditEvent::AccountDeleted, &account.endpoint, actor, client)
         .with_account(account.id.to_string())
         .with_detail(format!("{cascaded} order(s) cascaded"))
 }
@@ -149,7 +149,7 @@ pub fn order_deleted(
     order: &Order,
     cascaded: u64,
 ) -> AuditRecord {
-    base(AuditEvent::OrderDeleted, &order.profile, actor, client)
+    base(AuditEvent::OrderDeleted, &order.endpoint, actor, client)
         .with_order(order.id, order.account_id, &order.identifiers)
         .with_detail(format!("{cascaded} authorization(s) cascaded"))
 }
@@ -157,13 +157,13 @@ pub fn order_deleted(
 // --- external account binding -----------------------------------------------
 
 /// `eab_created`, naming the `kid` and its label — never the secret. A
-/// credential scoped to no profile is written under the empty profile.
+/// credential scoped to no endpoint is written under the empty endpoint.
 #[must_use]
 pub fn eab_created(
     actor: Actor,
     client: ClientContext,
     kid: &str,
-    profile: Option<&str>,
+    endpoint: Option<&str>,
     label: Option<&str>,
 ) -> AuditRecord {
     let detail = match label {
@@ -172,7 +172,7 @@ pub fn eab_created(
     };
     base(
         AuditEvent::EabCreated,
-        profile.unwrap_or_default(),
+        endpoint.unwrap_or_default(),
         actor,
         client,
     )
@@ -185,11 +185,11 @@ pub fn eab_revoked(
     actor: Actor,
     client: ClientContext,
     kid: &str,
-    profile: Option<&str>,
+    endpoint: Option<&str>,
 ) -> AuditRecord {
     base(
         AuditEvent::EabRevoked,
-        profile.unwrap_or_default(),
+        endpoint.unwrap_or_default(),
         actor,
         client,
     )
@@ -224,7 +224,7 @@ pub fn eab_deleted(
     };
     base(
         AuditEvent::EabDeleted,
-        eab.profile.as_deref().unwrap_or_default(),
+        eab.endpoint.as_deref().unwrap_or_default(),
         actor,
         client,
     )
@@ -256,7 +256,7 @@ pub fn eab_deleted_records(
 // --- operators ---------------------------------------------------------------
 
 /// `operator_created`, naming the operator and their role. Process-wide, like
-/// every operator row: an operator belongs to no profile.
+/// every operator row: an operator belongs to no endpoint.
 #[must_use]
 pub fn operator_created(
     actor: Actor,
@@ -478,13 +478,13 @@ pub fn database_transferred(actor: Actor, client: ClientContext, rows: u64) -> A
     )
 }
 
-/// `profile_issuer_accepted`, under the profile whose CA changed, naming the
+/// `endpoint_issuer_accepted`, under the endpoint whose CA changed, naming the
 /// issuer recorded before (if any) and the one recorded now.
 #[must_use]
-pub fn profile_issuer_accepted(
+pub fn endpoint_issuer_accepted(
     actor: Actor,
     client: ClientContext,
-    profile: &str,
+    endpoint: &str,
     previous: Option<&str>,
     issuer: &str,
 ) -> AuditRecord {
@@ -492,7 +492,7 @@ pub fn profile_issuer_accepted(
         Some(previous) => format!("issuer {previous} replaced by {issuer}"),
         None => format!("issuer {issuer} recorded"),
     };
-    base(AuditEvent::ProfileIssuerAccepted, profile, actor, client).with_detail(detail)
+    base(AuditEvent::EndpointIssuerAccepted, endpoint, actor, client).with_detail(detail)
 }
 
 /// `nonce_cleanup_completed`, carrying how many nonces went. Both front ends
@@ -537,11 +537,11 @@ mod tests {
     }
 
     #[test]
-    fn a_process_wide_action_carries_no_profile_and_no_subject() {
+    fn a_process_wide_action_carries_no_endpoint_and_no_subject() {
         let (actor, client) = cli();
         let record = operator_status_changed(actor, client, "alice", false);
         assert_eq!(record.event, AuditEvent::OperatorDisabled);
-        assert_eq!(record.profile, "");
+        assert_eq!(record.endpoint, "");
         assert!(record.account_id.is_none());
         assert!(record.order_id.is_none());
         assert_eq!(record.detail.as_deref(), Some("alice"));
@@ -549,7 +549,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_account_action_keeps_the_account_id_and_its_profile() {
+    async fn an_account_action_keeps_the_account_id_and_its_endpoint() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         let account = acme_proxy_store::testutil::account_seen_from(
             &[9u8, 9, 9],
@@ -560,7 +560,7 @@ mod tests {
         let (actor, client) = cli();
         let record = account_contact_updated(actor, client, &account, &account.contact);
         assert_eq!(record.event, AuditEvent::AccountContactUpdated);
-        assert_eq!(record.profile, "default");
+        assert_eq!(record.endpoint, "default");
         assert_eq!(
             record.account_id.as_deref(),
             Some(account.id.to_string().as_str())
@@ -613,7 +613,7 @@ mod tests {
             [AuditEvent::AccountDeleted, AuditEvent::EabDeleted]
         );
         assert_eq!(records[0].detail.as_deref(), Some("4 order(s) cascaded"));
-        assert_eq!(records[1].profile, "default");
+        assert_eq!(records[1].endpoint, "default");
         assert_eq!(
             records[1].detail.as_deref(),
             Some(format!("kid {kid}, label \"team\", 1 account(s) deleted").as_str())

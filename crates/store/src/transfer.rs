@@ -95,7 +95,7 @@ pub const TABLES: &[TableSpec] = &[
             ("kid", Uuid),
             ("secret", Blob),
             ("label", Text),
-            ("profile", Text),
+            ("endpoint", Text),
             ("status", Text),
             ("created_at", I64),
         ],
@@ -128,7 +128,7 @@ pub const TABLES: &[TableSpec] = &[
             ("created_at", I64),
             ("event", Text),
             ("outcome", Text),
-            ("profile", Text),
+            ("endpoint", Text),
             ("actor_kind", Text),
             ("actor_id", Text),
             ("account_id", Text),
@@ -176,9 +176,9 @@ pub const TABLES: &[TableSpec] = &[
         ],
     },
     TableSpec {
-        name: "profile_issuers",
-        key: &["profile"],
-        columns: &[("profile", Text), ("issuer", Text), ("recorded_at", I64)],
+        name: "endpoint_issuers",
+        key: &["endpoint"],
+        columns: &[("endpoint", Text), ("issuer", Text), ("recorded_at", I64)],
     },
     TableSpec {
         name: "admin_login_buckets",
@@ -232,7 +232,7 @@ pub const TABLES: &[TableSpec] = &[
         key: &["id"],
         columns: &[
             ("id", Uuid),
-            ("profile", Text),
+            ("endpoint", Text),
             ("pubkey", Blob),
             ("contact", Text),
             ("status", Text),
@@ -251,7 +251,7 @@ pub const TABLES: &[TableSpec] = &[
         key: &["id"],
         columns: &[
             ("id", Uuid),
-            ("profile", Text),
+            ("endpoint", Text),
             ("account_id", Uuid),
             ("status", Text),
             ("identifiers", Text),

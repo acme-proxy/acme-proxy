@@ -32,7 +32,7 @@ pub struct RevokeForm {
     pub reason: String,
 }
 
-/// `GET /ui/orders?profile=&accountId=&status=&identifier=&identifierContains=&certSerial=&limit=&offset=`
+/// `GET /ui/orders?endpoint=&accountId=&status=&identifier=&identifierContains=&certSerial=&limit=&offset=`
 pub async fn list_orders(
     State(state): State<AdminState>,
     Query(params): Query<OrderListParams>,
@@ -40,7 +40,7 @@ pub async fn list_orders(
 ) -> Result<Html<String>, PageError> {
     let page = PageParams::from(params.limit, params.offset).resolve(&state.config);
     let filters = ListFilters::new()
-        .with("profile", params.profile.as_deref())
+        .with("endpoint", params.endpoint.as_deref())
         .with("status", params.status.as_deref())
         .with("accountId", params.account_id.as_deref())
         .with("identifier", params.identifier.as_deref())
@@ -66,8 +66,8 @@ pub async fn list_orders(
         }),
     );
     context.insert(
-        "profiles".to_string(),
-        Value::Array(crate::webadmin::handlers::misc::profile_rows(&state)),
+        "endpoints".to_string(),
+        Value::Array(crate::webadmin::handlers::misc::endpoint_rows(&state)),
     );
 
     respond(
@@ -153,8 +153,8 @@ pub async fn download_chain(
 /// `POST /ui/orders/{id}/revoke`
 ///
 /// The operator-side equivalent of `POST /revokeCert`, and it resolves *that
-/// order's own* profile's revocation route — revoking through whichever
-/// profile happened to be first would write the serial into the wrong CA's
+/// order's own* endpoint's revocation route — revoking through whichever
+/// endpoint happened to be first would write the serial into the wrong CA's
 /// ledger. Like every request, it never reaches a backend: a local CA's
 /// revocation is a ledger row the worker signs, anything else a queued job.
 ///

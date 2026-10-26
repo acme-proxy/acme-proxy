@@ -8,7 +8,7 @@
           <th>Row</th>
           <th>When</th>
           <th>Event</th>
-          <th>Profile</th>
+          <th>Endpoint</th>
           <th>Actor</th>
           <th>Client</th>
           <th>Identifiers</th>
@@ -20,7 +20,7 @@
             <td><a href="/ui/audit/{{ entry.id }}"><code>{{ entry.id }}</code></a></td>
             <td class="small"><time datetime="{{ entry.createdAt }}">{{ entry.createdAt }}</time><br><span class="muted">{{ entry.createdAt | ago }}</span></td>
             <td><span class="badge {{ entry.outcome }}">{{ entry.event }}</span></td>
-            <td><code>{{ entry.profile }}</code></td>
+            <td><code>{{ entry.endpoint }}</code></td>
             <td class="small">
               {{ entry.actorKind }}{% if entry.actorId %}:<code>{{ entry.actorId }}</code>{% endif %}
             </td>

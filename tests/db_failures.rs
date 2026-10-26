@@ -33,7 +33,7 @@ mod common;
 use common::{EcSigner, TestSigner, body_json, fetch_nonce, p, test_app_with_db};
 
 const BASE: &str = common::BASE;
-const NEW_ACCOUNT_URL: &str = "http://localhost:3000/profile/default/newAccount";
+const NEW_ACCOUNT_URL: &str = "http://localhost:3000/endpoint/default/newAccount";
 
 async fn post(app: &Router, path: &str, body: String) -> Response {
     app.clone()
@@ -342,7 +342,7 @@ async fn order_persistence_db_error_returns_500() {
 /// sign its next request with something that can never verify.
 ///
 /// Driven through `/newNonce`. This used to probe `/health`, which is a
-/// server-level route *outside* the profile router and therefore outside the
+/// server-level route *outside* the endpoint router and therefore outside the
 /// nonce middleware entirely — so it asserted nothing about the middleware and
 /// had been passing for free.
 #[tokio::test]

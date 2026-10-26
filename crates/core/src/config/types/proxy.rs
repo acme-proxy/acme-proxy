@@ -1,6 +1,6 @@
 //! `[proxy]` — the forward proxy every outbound client dials through.
 //!
-//! Process-wide: no profile can override it. Each key, its default and its
+//! Process-wide: no endpoint can override it. Each key, its default and its
 //! environment variable are documented once, in the book's
 //! `configuration/reference.md` under `[proxy]`.
 
@@ -8,9 +8,9 @@ use serde::Deserialize;
 
 /// Where this server's own outbound HTTP goes.
 ///
-/// Process-wide, so deliberately absent from `PROFILE_SECTIONS`: egress is a
+/// Process-wide, so deliberately absent from `ENDPOINT_SECTIONS`: egress is a
 /// property of the network position the process runs in, not of one of the ACME
-/// endpoints it serves. Two profiles cannot reach the internet differently.
+/// endpoints it serves. Two endpoints cannot reach the internet differently.
 ///
 /// There is no `enabled` key either — the presence of a URL is the switch, the
 /// same shape as `ipam.backend = ""` and an unset `dns.resolver`. Every key

@@ -82,7 +82,7 @@ fn assert_carries_a_fresh_nonce(world: &World, label: &str, response: &Response)
 /// §7.1: "The 'index' link relation is present on all resources other than
 /// the directory and indicates the URL of the directory." None of these
 /// routes is the directory, so every answer, a refusal included, links to this
-/// profile's directory.
+/// endpoint's directory.
 pub fn assert_links_to_the_directory(label: &str, response: &Response) {
     let expected = format!("<{}>;rel=\"index\"", url("/directory"));
     let links: Vec<&str> = response

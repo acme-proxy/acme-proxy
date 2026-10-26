@@ -1,7 +1,7 @@
 //! The `path` check: which request paths a rule applies to.
 //!
-//! Matched against the **profile-stripped** path, so `/directory` — not
-//! `/profile/default/directory` — is the value to list, and one check covers
+//! Matched against the **endpoint-stripped** path, so `/directory` — not
+//! `/endpoint/default/directory` — is the value to list, and one check covers
 //! every endpoint.
 //!
 //! ## What it replaces, and the trap it exists for
@@ -13,7 +13,7 @@
 //! sensitive path to one network. The old list could only say "skip the
 //! connection stage entirely for this exact string".
 //!
-//! The concrete reason an operator needs it: **`/crl` is served by the profile
+//! The concrete reason an operator needs it: **`/crl` is served by the endpoint
 //! router**, so it sits behind the policy like every other ACME resource. Turn
 //! on an address-based check without exempting it and every relying party
 //! outside the allowlist silently loses revocation checking — and relying
@@ -21,7 +21,7 @@
 //! `public-paths` check listing `/crl` is the companion to any address policy.
 //!
 //! Server-level routes (`GET /health`, `/`, the http-01 responder) are served
-//! by the *root* router, which no profile's policy ever sees, so they need no
+//! by the *root* router, which no endpoint's policy ever sees, so they need no
 //! entry here.
 //!
 //! ## Globs

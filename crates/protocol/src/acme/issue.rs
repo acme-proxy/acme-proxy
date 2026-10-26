@@ -11,8 +11,8 @@
 //! builds a backend, so the process parsing untrusted JWS and CSRs never holds
 //! one. This is the one place a backend is asked to issue.
 //!
-//! **One handler over every profile**, the [`SignerRevokeJob`] shape: a row names
-//! its order, the order names its profile, and the profile names the backend.
+//! **One handler over every endpoint**, the [`SignerRevokeJob`] shape: a row names
+//! its order, the order names its endpoint, and the endpoint names the backend.
 //!
 //! How each answer settles the row:
 //!
@@ -92,7 +92,7 @@ pub fn signer_issue_spec(
     JobSpec::now(SIGNER_ISSUE_KIND, order.id.to_string())
         .with_payload(serde_json::json!({
             "order_id": order.id.to_string(),
-            "profile": order.profile,
+            "endpoint": order.endpoint,
             "csr": BASE64_URL_SAFE_NO_PAD.encode(csr_der),
             "client": client.to_json(),
             "client_ip": client_ip.map(|ip| acme_proxy_core::client::canonical(ip).to_string()),
@@ -101,7 +101,7 @@ pub fn signer_issue_spec(
 }
 
 /// Issues the certificate a finalize request queued, at the backend of the
-/// order's profile.
+/// order's endpoint.
 pub struct SignerIssueJob {
     database: Arc<Database>,
     audit: Arc<Auditor>,
@@ -110,7 +110,7 @@ pub struct SignerIssueJob {
 }
 
 impl SignerIssueJob {
-    /// `signers` is this generation's backend per profile name — empty in a
+    /// `signers` is this generation's backend per endpoint name — empty in a
     /// process that runs no worker, which never claims a row.
     #[must_use]
     pub fn new(
@@ -127,9 +127,9 @@ impl SignerIssueJob {
         }
     }
 
-    /// The backend this process mounts for `profile`, if any.
-    fn signer(&self, profile: &str) -> Option<&Arc<dyn SignerBackend>> {
-        super::mounted(&self.signers, profile)
+    /// The backend this process mounts for `endpoint`, if any.
+    fn signer(&self, endpoint: &str) -> Option<&Arc<dyn SignerBackend>> {
+        super::mounted(&self.signers, endpoint)
     }
 
     /// A verdict on the order — its authority withdrawn, its CSR refused —
@@ -172,7 +172,7 @@ async fn authority_withdrawn(
     database: &Database,
 ) -> Result<Option<&'static str>, sqlx::Error> {
     let account =
-        Account::find_by_id(&order.profile, &order.account_id.to_string(), database).await?;
+        Account::find_by_id(&order.endpoint, &order.account_id.to_string(), database).await?;
     if account.is_none_or(|account| account.is_deactivated()) {
         return Ok(Some(
             "the account was deactivated before the certificate was issued",
@@ -247,10 +247,10 @@ impl JobHandler for SignerIssueJob {
                 return JobOutcome::Retry(format!("reading the order's authority failed: {error}"));
             }
         }
-        let Some(signer) = self.signer(&order.profile) else {
+        let Some(signer) = self.signer(&order.endpoint) else {
             return JobOutcome::Retry(format!(
-                "profile `{}` is not mounted by this process",
-                order.profile
+                "endpoint `{}` is not mounted by this process",
+                order.endpoint
             ));
         };
 
@@ -271,7 +271,7 @@ impl JobHandler for SignerIssueJob {
                 match record_issuance(&mut order, chain, &self.database).await {
                     Ok(serial) => {
                         info!(event = "order_finalized", outcome = "success", order_id = %order_id, cert_serial = %serial);
-                        let dispatcher = self.notifiers.get(&order.profile);
+                        let dispatcher = self.notifiers.get(&order.endpoint);
                         announce_issuance(
                             &order,
                             &serial,
@@ -712,11 +712,11 @@ mod tests {
         assert_eq!(reload(&database, &order).await.status, OrderStatus::Invalid);
     }
 
-    /// A profile this process does not mount is a question for another
+    /// An endpoint this process does not mount is a question for another
     /// process — or the next generation of this one — so it is asked again;
     /// a row that cannot be read is not.
     #[tokio::test]
-    async fn an_unmounted_profile_retries_and_a_broken_row_fails() {
+    async fn an_unmounted_endpoint_retries_and_a_broken_row_fails() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         let (_, job) = claimed(&database).await;
         let (_tx, notifiers) = acme_proxy_jobs::notify::notifiers_channel(

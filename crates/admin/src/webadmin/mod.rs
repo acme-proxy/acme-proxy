@@ -13,7 +13,7 @@
 //! The ACME listener is public, unauthenticated and often internet-facing.
 //! This one defaults to loopback, requires a session on every route but login,
 //! carries no admission control, and runs its own address policy,
-//! `[admin.filter]` (see [`filter`]), rather than the ACME profiles' one. Keeping them on one socket would have meant one
+//! `[admin.filter]` (see [`filter`]), rather than the ACME endpoints' one. Keeping them on one socket would have meant one
 //! set of defaults for two very different threat models.
 
 pub mod error;
@@ -41,23 +41,23 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use tracing::{info, warn};
 
 use acme_proxy_core::config::Config;
+use acme_proxy_protocol::endpoint::Endpoint;
 use acme_proxy_protocol::middlewares;
-use acme_proxy_protocol::profile::Profile;
 use acme_proxy_store::db::Database;
 
 /// Shared state for every admin route.
 ///
-/// Not [`acme_proxy_protocol::router::AppState`]: that one holds exactly one `Profile`, and
-/// this listener is cross-profile by nature — an operator lists accounts from
+/// Not [`acme_proxy_protocol::router::AppState`]: that one holds exactly one `Endpoint`, and
+/// this listener is cross-endpoint by nature — an operator lists accounts from
 /// every endpoint at once, and revoking an order needs *that order's own*
-/// profile's revocation route, which may name a different CA from the one the
+/// endpoint's revocation route, which may name a different CA from the one the
 /// request arrived through.
 #[derive(Clone)]
 pub struct AdminState {
     pub database: Arc<Database>,
     pub config: Arc<Config>,
-    /// Keyed by profile name — the lookup `orders.profile` needs.
-    pub profiles: Arc<HashMap<String, Arc<Profile>>>,
+    /// Keyed by endpoint name — the lookup `orders.endpoint` needs.
+    pub endpoints: Arc<HashMap<String, Arc<Endpoint>>>,
     /// Failed sign-ins per client address, counted in the database so every
     /// admin process shares one budget.
     pub logins: Arc<LoginLimiter>,
@@ -76,7 +76,7 @@ pub struct AdminState {
     /// than a second instance: an operator revoking through the panel writes
     /// into the one trail, and the reverse-lookup cache is worth sharing.
     pub audit: Arc<acme_proxy_jobs::auditor::Auditor>,
-    /// The `profile name -> dispatcher` map, as a reload-stable handle — the
+    /// The `endpoint name -> dispatcher` map, as a reload-stable handle — the
     /// same type `NotifyJob` and the signer backends hold. Used only to reach
     /// the process-wide security dispatcher under
     /// [`acme_proxy_jobs::notify::ADMIN_DISPATCHER_KEY`] via [`AdminState::notify_security`].
@@ -100,15 +100,15 @@ impl AdminState {
     pub fn new(
         database: Arc<Database>,
         config: Arc<Config>,
-        profiles: &[Arc<Profile>],
+        endpoints: &[Arc<Endpoint>],
         audit: Arc<acme_proxy_jobs::auditor::Auditor>,
         notifiers: acme_proxy_jobs::notify::Notifiers,
         jobs: acme_proxy_jobs::jobs::JobQueue,
         providers: Arc<crate::identity::Providers>,
     ) -> Self {
-        let by_name = profiles
+        let by_name = endpoints
             .iter()
-            .map(|profile| (profile.name.clone(), profile.clone()))
+            .map(|endpoint| (endpoint.name.clone(), endpoint.clone()))
             .collect();
         let max_attempts = config.admin.login_max_attempts;
         let window = config.admin.login_window_seconds;
@@ -123,7 +123,7 @@ impl AdminState {
         Self {
             database,
             config,
-            profiles: Arc::new(by_name),
+            endpoints: Arc::new(by_name),
             logins: Arc::new(logins),
             oidc_starts: Arc::new(oidc_starts),
             templates: Arc::new(templates),
@@ -382,7 +382,7 @@ pub(crate) fn user_agent_of(headers: &axum::http::HeaderMap) -> Option<String> {
 
 /// Builds the whole admin service: `/health`, then the JSON API under `/api`.
 ///
-/// Takes `profiles` as a **slice** so it can be called before `build_app`
+/// Takes `endpoints` as a **slice** so it can be called before `build_app`
 /// consumes the `Vec` in `server::generation::build_generation` — the ordering
 /// is a real constraint and the signature is where it is stated.
 ///
@@ -393,7 +393,7 @@ pub(crate) fn user_agent_of(headers: &axum::http::HeaderMap) -> Option<String> {
 ///   session on every route but login; the real availability concern is
 ///   credential brute force, which admission control would not touch and the
 ///   login limiter does.
-/// - **No profile filter.** The profiles' `[filter]` is an ACME concern, and
+/// - **No endpoint filter.** The endpoints' `[filter]` is an ACME concern, and
 ///   inheriting it would let an edit made for the ACME listener open or shut
 ///   this one. The listener's own policy is `[admin.filter]` ([`filter`]),
 ///   beside the bind address, TLS and the session.
@@ -407,7 +407,7 @@ pub(crate) fn user_agent_of(headers: &axum::http::HeaderMap) -> Option<String> {
 pub fn build_admin_app(
     database: Arc<Database>,
     config: Arc<Config>,
-    profiles: &[Arc<Profile>],
+    endpoints: &[Arc<Endpoint>],
     audit: Arc<acme_proxy_jobs::auditor::Auditor>,
     notifiers: acme_proxy_jobs::notify::Notifiers,
     jobs: acme_proxy_jobs::jobs::JobQueue,
@@ -420,7 +420,7 @@ pub fn build_admin_app(
             .expect("admin.auth must be valid"),
     );
     build_admin_app_from_parts(
-        database, config, profiles, audit, notifiers, jobs, policy, providers,
+        database, config, endpoints, audit, notifiers, jobs, policy, providers,
     )
 }
 
@@ -431,7 +431,7 @@ pub fn build_admin_app(
 pub fn build_admin_app_from_parts(
     database: Arc<Database>,
     config: Arc<Config>,
-    profiles: &[Arc<Profile>],
+    endpoints: &[Arc<Endpoint>],
     audit: Arc<acme_proxy_jobs::auditor::Auditor>,
     notifiers: acme_proxy_jobs::notify::Notifiers,
     jobs: acme_proxy_jobs::jobs::JobQueue,
@@ -441,7 +441,7 @@ pub fn build_admin_app_from_parts(
     let state = AdminState::new(
         database,
         config.clone(),
-        profiles,
+        endpoints,
         audit,
         notifiers,
         jobs,
@@ -565,14 +565,17 @@ pub fn build_admin_app_from_parts(
         .route("/expiring", get(handlers::list_expiring))
         .route("/nonces", get(handlers::get_nonces))
         .route("/nonces/cleanup", post(handlers::cleanup_nonces))
-        .route("/profiles", get(handlers::list_profiles))
+        .route("/endpoints", get(handlers::list_endpoints))
         // Read-only for a third reason again: a policy is *configuration*,
         // edited in `config.toml` and reloaded, so there is nothing here for a
         // route to write — hence its absence from `mutating_endpoints()`. Note
         // this is `filter show` and never `filter explain`: the latter runs the
         // operator's scripts and queries the inventory against caller-chosen
         // inputs, and has no web surface at all.
-        .route("/profiles/{name}/filter", get(handlers::get_profile_filter));
+        .route(
+            "/endpoints/{name}/filter",
+            get(handlers::get_endpoint_filter),
+        );
 
     Router::new()
         // Unauthenticated and touching no database: an orchestrator probing
@@ -649,8 +652,8 @@ pub fn build_admin_app_from_parts(
         ))
         // Outermost, and the same middleware the ACME listener uses: an admin
         // request gets an `x-request-id` and an access line on identical
-        // terms. Its `profile` field stays `field::Empty` and renders as
-        // absent, which is correct — an admin request belongs to no profile.
+        // terms. Its `endpoint` field stays `field::Empty` and renders as
+        // absent, which is correct — an admin request belongs to no endpoint.
         .layer(middleware::from_fn(
             middlewares::access::add_access_middleware,
         ))
@@ -660,7 +663,7 @@ pub fn build_admin_app_from_parts(
 /// shape.
 ///
 /// Without these, a typo'd path would fall through to an empty body — the same
-/// reasoning the profile routers already encode, except that there the fallback
+/// reasoning the endpoint routers already encode, except that there the fallback
 /// has to be an ACME problem document and here it must not be.
 fn api_with_fallbacks(api: Router<AdminState>) -> Router<AdminState> {
     Router::new().nest(

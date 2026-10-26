@@ -231,13 +231,13 @@ pub trait SignerBackend: Send + Sync {
     /// **State, not a [`JobHandler`](acme_proxy_jobs::jobs::JobHandler)** — the same
     /// distinction, and for the same reason, as
     /// [`crl_refresher`](SignerBackend::crl_refresher) below. This method replaced a
-    /// `jobs()` returning one handler per backend, which made two profiles
+    /// `jobs()` returning one handler per backend, which made two endpoints
     /// relaying to *different* upstreams — two backends, since
     /// [`build_backends`] deliberately does not collapse them — a startup
     /// error, `JobRegistry::register` refusing the second handler for
     /// `signer_relay_issue`. `server::generation::build_generation` now builds
-    /// one [`relay::flow::RelayJob`] over every relay profile in the process,
-    /// which picks the backend per row from the profile the row names.
+    /// one [`relay::flow::RelayJob`] over every relay endpoint in the process,
+    /// which picks the backend per row from the endpoint the row names.
     ///
     /// There is deliberately no general "here are my job handlers" hook left on
     /// this trait: every one it could return has this problem, and a subsystem
@@ -254,7 +254,7 @@ pub trait SignerBackend: Send + Sync {
     /// A getter handing over *state* rather than a
     /// [`JobHandler`](acme_proxy_jobs::jobs::JobHandler), and the distinction is not
     /// cosmetic: [`acme_proxy_jobs::jobs::JobRegistry::register`] refuses two handlers
-    /// for one `kind`, and two profiles with *different* `[signer.local_ca]`
+    /// for one `kind`, and two endpoints with *different* `[signer.local_ca]`
     /// sections are two distinct backends — so a handler returned from here
     /// would make a supported configuration a startup error. Handing over the
     /// state instead lets `server::generation::build_generation` build one
@@ -281,7 +281,7 @@ pub trait SignerBackend: Send + Sync {
 pub trait CrlRefresher: Send + Sync {
     /// Which CA this is, for logging: its issuer id
     /// ([`acme_proxy_core::cert::issuer_id`]), the key its revocation state is stored
-    /// under. Two profiles sharing one CA name one issuer.
+    /// under. Two endpoints sharing one CA name one issuer.
     fn issuer(&self) -> &str;
 
     /// Drops revocations whose certificates have expired, re-signs the CRL if
@@ -317,7 +317,7 @@ pub enum SignerError {
 /// The dependencies every backend is built from, minus its own `[signer]`
 /// section.
 ///
-/// A struct for `ProfileParts`' reason:
+/// A struct for `EndpointParts`' reason:
 /// [`from_config`] had reached seven positional parameters, which is where a
 /// reader starts counting commas and clippy starts complaining. Taken by reference and cloned field by field, since
 /// [`build_backends`] calls [`from_config`] in a loop.
@@ -326,9 +326,9 @@ pub enum SignerError {
 /// the `Order` update once the answer arrives, long after the handler that asked
 /// for it returned. `local_ca` ignores it. `notifiers` is the same kind of
 /// dependency for the same reason — a backend whose completion happens in a
-/// background task has no `Profile`/`AppState` to reach a notifier through, so it
-/// is handed the whole `profile name -> dispatcher` map and looks up the right
-/// one by `Order.profile` once it has something to report. It arrives as
+/// background task has no `Endpoint`/`AppState` to reach a notifier through, so it
+/// is handed the whole `endpoint name -> dispatcher` map and looks up the right
+/// one by `Order.endpoint` once it has something to report. It arrives as
 /// [`acme_proxy_jobs::notify::Notifiers`] rather than a bare `Arc` because a backend
 /// outlives the generation that built it while the map does not: a captured
 /// `Arc` would pin the backend to the dispatchers that existed when it was
@@ -433,7 +433,7 @@ fn unknown_backend(name: &str) -> anyhow::Error {
 /// The backends one configuration generation runs — or their read sides —
 /// in the two views that are needed of them.
 ///
-/// `by_profile` is what a `Profile` or a job handler
+/// `by_endpoint` is what an `Endpoint` or a job handler
 /// is handed and the only thing that serves. `by_identity` exists purely so the
 /// **next** reload can ask "is this one already built?" — see
 /// [`build_backends`], where answering yes is what keeps a `SIGHUP` from
@@ -445,14 +445,14 @@ fn unknown_backend(name: &str) -> anyhow::Error {
 /// read sides (`T = dyn SignerInfo`), built by every role through
 /// [`build_infos`]. Both follow one identity and one reuse rule.
 pub struct SignerSet<T: ?Sized = dyn SignerBackend> {
-    by_profile: HashMap<String, Arc<T>>,
+    by_endpoint: HashMap<String, Arc<T>>,
     by_identity: HashMap<String, Arc<T>>,
 }
 
 impl<T: ?Sized> Default for SignerSet<T> {
     fn default() -> Self {
         Self {
-            by_profile: HashMap::new(),
+            by_endpoint: HashMap::new(),
             by_identity: HashMap::new(),
         }
     }
@@ -461,31 +461,31 @@ impl<T: ?Sized> Default for SignerSet<T> {
 impl<T: ?Sized> Clone for SignerSet<T> {
     fn clone(&self) -> Self {
         Self {
-            by_profile: self.by_profile.clone(),
+            by_endpoint: self.by_endpoint.clone(),
             by_identity: self.by_identity.clone(),
         }
     }
 }
 
 impl<T: ?Sized> SignerSet<T> {
-    /// The instance serving `profile`, if that endpoint is mounted.
+    /// The instance serving `endpoint`, if that endpoint is mounted.
     #[must_use]
-    pub fn get(&self, profile: &str) -> Option<&Arc<T>> {
-        self.by_profile.get(profile)
+    pub fn get(&self, endpoint: &str) -> Option<&Arc<T>> {
+        self.by_endpoint.get(endpoint)
     }
 
-    /// Every mounted profile with its instance, for a job handler that picks
-    /// one per row by the profile the row names.
+    /// Every mounted endpoint with its instance, for a job handler that picks
+    /// one per row by the endpoint the row names.
     #[must_use]
-    pub fn by_profile(&self) -> Vec<(String, Arc<T>)> {
-        self.by_profile
+    pub fn by_endpoint(&self) -> Vec<(String, Arc<T>)> {
+        self.by_endpoint
             .iter()
-            .map(|(profile, instance)| (profile.clone(), instance.clone()))
+            .map(|(endpoint, instance)| (endpoint.clone(), instance.clone()))
             .collect()
     }
 
     /// How many distinct instances this set holds — one per distinct
-    /// `[signer]` configuration, not one per profile.
+    /// `[signer]` configuration, not one per endpoint.
     #[must_use]
     pub fn len(&self) -> usize {
         self.by_identity.len()
@@ -504,54 +504,54 @@ fn identity_key(cfg: &SignerConfig, parts: &SignerParts) -> String {
     format!("{cfg:?}|{}", parts.egress.identity)
 }
 
-/// One instance per profile, shared between identical configurations and
+/// One instance per endpoint, shared between identical configurations and
 /// reused from `previous` where the configuration did not move — the half of
 /// [`build_backends`] that [`build_infos`] shares.
 fn assemble_set<T: ?Sized>(
-    profiles: &[acme_proxy_core::config::ProfileConfig],
+    endpoints: &[acme_proxy_core::config::EndpointConfig],
     parts: &SignerParts,
     previous: &SignerSet<T>,
     build: impl Fn(&SignerConfig, &SignerParts) -> anyhow::Result<Arc<T>>,
     reused: impl Fn(&str),
 ) -> anyhow::Result<SignerSet<T>> {
     let mut set = SignerSet::<T>::default();
-    for profile in profiles {
-        let key = identity_key(&profile.sections.signer, parts);
+    for endpoint in endpoints {
+        let key = identity_key(&endpoint.sections.signer, parts);
         let instance = match (set.by_identity.get(&key), previous.by_identity.get(&key)) {
             (Some(instance), _) => instance.clone(),
             (None, Some(instance)) => {
-                reused(&profile.name);
+                reused(&endpoint.name);
                 let instance = instance.clone();
                 set.by_identity.insert(key, instance.clone());
                 instance
             }
             (None, None) => {
-                let instance = build(&profile.sections.signer, parts)
-                    .map_err(|error| anyhow::anyhow!("profile `{}`: {error}", profile.name))?;
+                let instance = build(&endpoint.sections.signer, parts)
+                    .map_err(|error| anyhow::anyhow!("endpoint `{}`: {error}", endpoint.name))?;
                 set.by_identity.insert(key, instance.clone());
                 instance
             }
         };
-        set.by_profile.insert(profile.name.clone(), instance);
+        set.by_endpoint.insert(endpoint.name.clone(), instance);
     }
     Ok(set)
 }
 
-/// The read side of every profile's signer, from configuration alone — what
+/// The read side of every endpoint's signer, from configuration alone — what
 /// every role serves `/crl`, `/ca.pem`, `renewalInfo` and `http-01` tokens
 /// from, and where it routes a revocation.
 ///
 /// Shared and reused exactly as [`build_backends`] shares and reuses backends,
 /// under the same identity. Never touches a key: see [`info_from_config`].
 pub fn build_infos(
-    profiles: &[acme_proxy_core::config::ProfileConfig],
+    endpoints: &[acme_proxy_core::config::EndpointConfig],
     parts: &SignerParts,
     previous: &SignerSet<dyn SignerInfo>,
 ) -> anyhow::Result<SignerSet<dyn SignerInfo>> {
-    assemble_set(profiles, parts, previous, info_from_config, |_| {})
+    assemble_set(endpoints, parts, previous, info_from_config, |_| {})
 }
 
-/// Builds one backend per profile, **sharing** the instance between profiles
+/// Builds one backend per endpoint, **sharing** the instance between endpoints
 /// whose signer configuration is identical, and **reusing** the instance the
 /// previous generation built for a configuration that has not moved.
 ///
@@ -568,10 +568,10 @@ pub fn build_infos(
 /// 1. **Already built** — the very same `Arc` comes back, and nothing is
 ///    constructed; this is the ordinary case, since most reloads touch
 ///    `[filter]` or `[notify]` and leave every signer alone.
-/// 2. **New** — built. This covers both a profile mounted for the first time
-///    and a live profile whose `[signer]` an operator edited; the rebuilt
+/// 2. **New** — built. This covers both an endpoint mounted for the first time
+///    and a live endpoint whose `[signer]` an operator edited; the rebuilt
 ///    backend finds its state where the outgoing one left it, in the database.
-/// 3. **Gone** — no longer named by any profile, so it is simply absent from the
+/// 3. **Gone** — no longer named by any endpoint, so it is simply absent from the
 ///    result and dropped once the caller publishes it.
 ///
 /// The identity a configuration is keyed by is its `Debug` rendering — every
@@ -583,20 +583,20 @@ pub fn build_infos(
 /// reload that changed either would keep dialling through the old policy with
 /// nothing saying so.
 pub fn build_backends(
-    profiles: &[acme_proxy_core::config::ProfileConfig],
+    endpoints: &[acme_proxy_core::config::EndpointConfig],
     parts: &SignerParts,
     previous: &SignerSet,
 ) -> anyhow::Result<SignerSet> {
     let mut owners: HashMap<String, String> = HashMap::new();
-    for profile in profiles {
-        let key = identity_key(&profile.sections.signer, parts);
-        for path in signer_paths(&profile.sections.signer) {
+    for endpoint in endpoints {
+        let key = identity_key(&endpoint.sections.signer, parts);
+        for path in signer_paths(&endpoint.sections.signer) {
             match owners.get(&path) {
                 Some(existing) if *existing != key => anyhow::bail!(
-                    "profile `{}` reuses `{path}` with a different signer configuration: \
+                    "endpoint `{}` reuses `{path}` with a different signer configuration: \
                      two backends over one file would overwrite each other's state \
-                     (give each profile its own paths, or make their [signer] sections identical)",
-                    profile.name
+                     (give each endpoint its own paths, or make their [signer] sections identical)",
+                    endpoint.name
                 ),
                 _ => {
                     owners.insert(path, key.clone());
@@ -605,18 +605,18 @@ pub fn build_backends(
         }
     }
 
-    assemble_set(profiles, parts, previous, from_config, |profile| {
+    assemble_set(endpoints, parts, previous, from_config, |endpoint| {
         debug!(
             event = "signer_backend_reused",
             outcome = "success",
-            profile = %profile,
+            endpoint = %endpoint,
             "the configuration did not move, so the running backend is carried \
              whole rather than rebuilt"
         );
     })
 }
 
-/// The files a signer configuration owns — what two profiles must not share
+/// The files a signer configuration owns — what two endpoints must not share
 /// unless they share the whole configuration.
 fn signer_paths(cfg: &SignerConfig) -> Vec<String> {
     match cfg.backend.as_str() {
@@ -651,7 +651,7 @@ fn signer_paths(cfg: &SignerConfig) -> Vec<String> {
 mod tests {
     use super::*;
 
-    /// The shared resolver `server::profile::build_all` supplies at startup. These
+    /// The shared resolver `server::endpoint::build_all` supplies at startup. These
     /// tests reach loopback by IP literal, which `dns::connect` short-circuits.
     fn test_resolver() -> std::sync::Arc<dyn acme_proxy_net::dns::Resolver> {
         std::sync::Arc::new(acme_proxy_net::dns::HickoryResolver::from_system_uncached().unwrap())
@@ -698,12 +698,12 @@ mod tests {
         parts
     }
 
-    fn profile(name: &str, signer: SignerConfig) -> acme_proxy_core::config::ProfileConfig {
-        acme_proxy_core::config::ProfileConfig {
+    fn endpoint(name: &str, signer: SignerConfig) -> acme_proxy_core::config::EndpointConfig {
+        acme_proxy_core::config::EndpointConfig {
             name: name.to_string(),
-            sections: acme_proxy_core::config::ProfileSections {
+            sections: acme_proxy_core::config::EndpointSections {
                 signer,
-                ..acme_proxy_core::config::ProfileSections::default()
+                ..acme_proxy_core::config::EndpointSections::default()
             },
         }
     }
@@ -722,11 +722,11 @@ mod tests {
     #[tokio::test]
     async fn a_configuration_that_did_not_move_is_reused_rather_than_rebuilt() {
         let (cfg, _dir) = config("local_ca");
-        let profiles = vec![profile("le", cfg)];
+        let endpoints = vec![endpoint("le", cfg)];
 
         let parts = parts().await;
-        let first = build_backends(&profiles, &parts, &SignerSet::default()).unwrap();
-        let second = build_backends(&profiles, &parts, &first).unwrap();
+        let first = build_backends(&endpoints, &parts, &SignerSet::default()).unwrap();
+        let second = build_backends(&endpoints, &parts, &first).unwrap();
 
         assert!(
             Arc::ptr_eq(first.get("le").unwrap(), second.get("le").unwrap()),
@@ -745,8 +745,12 @@ mod tests {
     async fn an_edited_configuration_is_rebuilt_over_the_same_revocations() {
         let (cfg, _dir) = config("local_ca");
         let parts = parts().await;
-        let running =
-            build_backends(&[profile("le", cfg.clone())], &parts, &SignerSet::default()).unwrap();
+        let running = build_backends(
+            &[endpoint("le", cfg.clone())],
+            &parts,
+            &SignerSet::default(),
+        )
+        .unwrap();
 
         // Something to lose: a certificate issued and revoked by the instance
         // that is about to be replaced.
@@ -774,7 +778,7 @@ mod tests {
         // The operator edits one key of `[signer]` and signals.
         let mut edited = cfg;
         edited.local_ca.leaf_validity_days = 30;
-        let reloaded = build_backends(&[profile("le", edited)], &parts, &running).unwrap();
+        let reloaded = build_backends(&[endpoint("le", edited)], &parts, &running).unwrap();
 
         let incoming = reloaded.get("le").unwrap();
         assert!(
@@ -824,15 +828,15 @@ mod tests {
     #[tokio::test]
     async fn a_changed_egress_rebuilds_a_backend_whose_signer_section_did_not_move() {
         let (cfg, _dir) = config("local_ca");
-        let profiles = vec![profile("le", cfg)];
+        let endpoints = vec![endpoint("le", cfg)];
 
         let first = build_backends(
-            &profiles,
+            &endpoints,
             &parts_with_egress("before").await,
             &SignerSet::default(),
         )
         .unwrap();
-        let second = build_backends(&profiles, &parts_with_egress("after").await, &first).unwrap();
+        let second = build_backends(&endpoints, &parts_with_egress("after").await, &first).unwrap();
 
         assert!(
             !Arc::ptr_eq(first.get("le").unwrap(), second.get("le").unwrap()),
@@ -840,19 +844,19 @@ mod tests {
         );
     }
 
-    /// A profile mounted by a reload gets a backend; one unmounted leaves its
+    /// An endpoint mounted by a reload gets a backend; one unmounted leaves its
     /// backend behind, and it is not carried into the next generation.
     ///
     /// Between them these are "mount an endpoint without a restart", which was
     /// the visible half of the whole freeze.
     #[tokio::test]
-    async fn mounting_and_unmounting_a_profile_adds_and_drops_its_backend() {
+    async fn mounting_and_unmounting_a_endpoint_adds_and_drops_its_backend() {
         let (first_cfg, _first_dir) = config("local_ca");
         let (second_cfg, _second_dir) = config("local_ca");
 
         let parts = parts().await;
         let one = build_backends(
-            &[profile("le", first_cfg.clone())],
+            &[endpoint("le", first_cfg.clone())],
             &parts,
             &SignerSet::default(),
         )
@@ -861,8 +865,8 @@ mod tests {
 
         let two = build_backends(
             &[
-                profile("le", first_cfg),
-                profile("staging", second_cfg.clone()),
+                endpoint("le", first_cfg),
+                endpoint("staging", second_cfg.clone()),
             ],
             &parts,
             &one,
@@ -874,7 +878,7 @@ mod tests {
             "and the endpoint that was already running kept its instance"
         );
 
-        let back_to_one = build_backends(&[profile("staging", second_cfg)], &parts, &two).unwrap();
+        let back_to_one = build_backends(&[endpoint("staging", second_cfg)], &parts, &two).unwrap();
         assert_eq!(back_to_one.len(), 1);
         assert!(back_to_one.get("le").is_none(), "the endpoint is unmounted");
         assert!(
@@ -890,13 +894,14 @@ mod tests {
     /// the old one's revocations.
     ///
     /// The safety half of keying revocation state on the CA's key: an operator
-    /// repointing a profile at a second CA must get that CA's revocation
+    /// repointing an endpoint at a second CA must get that CA's revocation
     /// history, not the first one's.
     #[tokio::test]
     async fn a_backend_rebuilt_over_different_files_adopts_nothing() {
         let (cfg, _dir) = config("local_ca");
         let parts = parts().await;
-        let running = build_backends(&[profile("le", cfg)], &parts, &SignerSet::default()).unwrap();
+        let running =
+            build_backends(&[endpoint("le", cfg)], &parts, &SignerSet::default()).unwrap();
 
         let outgoing = running.get("le").unwrap().clone();
         let key_pair = rcgen::KeyPair::generate().unwrap();
@@ -923,7 +928,7 @@ mod tests {
             .unwrap();
 
         let (elsewhere, _other_dir) = config("local_ca");
-        let reloaded = build_backends(&[profile("le", elsewhere)], &parts, &running).unwrap();
+        let reloaded = build_backends(&[endpoint("le", elsewhere)], &parts, &running).unwrap();
 
         assert_ne!(
             crate::testutil::served_crl(reloaded.get("le").unwrap().as_ref()).await,
@@ -940,9 +945,9 @@ mod tests {
     #[tokio::test]
     async fn identical_signer_configuration_yields_one_shared_backend() {
         let (cfg, _dir) = config("local_ca");
-        let profiles = vec![profile("a", cfg.clone()), profile("b", cfg)];
+        let endpoints = vec![endpoint("a", cfg.clone()), endpoint("b", cfg)];
 
-        let backends = build_backends(&profiles, &parts().await, &SignerSet::default()).unwrap();
+        let backends = build_backends(&endpoints, &parts().await, &SignerSet::default()).unwrap();
         assert_eq!(backends.len(), 1);
         assert!(
             Arc::ptr_eq(backends.get("a").unwrap(), backends.get("b").unwrap()),
@@ -954,9 +959,9 @@ mod tests {
     async fn differing_signer_configuration_yields_separate_backends() {
         let (first, dir_a) = config("local_ca");
         let (second, dir_b) = config("local_ca");
-        let profiles = vec![profile("a", first), profile("b", second)];
+        let endpoints = vec![endpoint("a", first), endpoint("b", second)];
 
-        let backends = build_backends(&profiles, &parts().await, &SignerSet::default()).unwrap();
+        let backends = build_backends(&endpoints, &parts().await, &SignerSet::default()).unwrap();
         assert!(
             !Arc::ptr_eq(backends.get("a").unwrap(), backends.get("b").unwrap()),
             "different CA material must mean different CAs"
@@ -975,8 +980,8 @@ mod tests {
         let mut second = first.clone();
         second.local_ca.leaf_validity_days = 7;
 
-        let profiles = vec![profile("a", first), profile("b", second)];
-        let error = match build_backends(&profiles, &parts().await, &SignerSet::default()) {
+        let endpoints = vec![endpoint("a", first), endpoint("b", second)];
+        let error = match build_backends(&endpoints, &parts().await, &SignerSet::default()) {
             Err(error) => error.to_string(),
             Ok(_) => panic!("two backends over one key file must not both be built"),
         };
@@ -988,8 +993,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_backend_failure_names_the_profile_it_came_from() {
-        let profiles = vec![profile(
+    async fn a_backend_failure_names_the_endpoint_it_came_from() {
+        let endpoints = vec![endpoint(
             "le",
             SignerConfig {
                 backend: "nope".to_string(),
@@ -997,11 +1002,11 @@ mod tests {
             },
         )];
 
-        let error = match build_backends(&profiles, &parts().await, &SignerSet::default()) {
+        let error = match build_backends(&endpoints, &parts().await, &SignerSet::default()) {
             Err(error) => error.to_string(),
             Ok(_) => panic!("an unknown backend is a startup error"),
         };
-        assert!(error.contains("profile `le`"), "{error}");
+        assert!(error.contains("endpoint `le`"), "{error}");
     }
 
     #[tokio::test]
@@ -1240,9 +1245,13 @@ mod tests {
         let parts = parts().await;
         from_config(&cfg, &parts).unwrap();
 
-        let first =
-            build_infos(&[profile("le", cfg.clone())], &parts, &SignerSet::default()).unwrap();
-        let second = build_infos(&[profile("le", cfg.clone())], &parts, &first).unwrap();
+        let first = build_infos(
+            &[endpoint("le", cfg.clone())],
+            &parts,
+            &SignerSet::default(),
+        )
+        .unwrap();
+        let second = build_infos(&[endpoint("le", cfg.clone())], &parts, &first).unwrap();
         assert!(Arc::ptr_eq(
             first.get("le").unwrap(),
             second.get("le").unwrap()
@@ -1250,12 +1259,12 @@ mod tests {
 
         let mut edited = cfg;
         edited.local_ca.leaf_validity_days = 30;
-        let third = build_infos(&[profile("le", edited)], &parts, &second).unwrap();
+        let third = build_infos(&[endpoint("le", edited)], &parts, &second).unwrap();
         assert!(!Arc::ptr_eq(
             second.get("le").unwrap(),
             third.get("le").unwrap()
         ));
-        assert_eq!(third.by_profile().len(), 1);
+        assert_eq!(third.by_endpoint().len(), 1);
     }
 
     /// Both variants render. `SignerError` is what a handler logs when

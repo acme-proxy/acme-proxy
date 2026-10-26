@@ -1,4 +1,4 @@
-{{ total }} certificate{{ "" if total == 1 else "s" }} issued on profile "{{ profile }}" expire within the next {{ lead_days }} day{{ "" if lead_days == 1 else "s" }}.
+{{ total }} certificate{{ "" if total == 1 else "s" }} issued on endpoint "{{ endpoint }}" expire within the next {{ lead_days }} day{{ "" if lead_days == 1 else "s" }}.
 {% for cert in certificates %}
 {{ cert.identifiers | join(", ") }}
   Expires in {{ cert.days_remaining }} day{{ "" if cert.days_remaining == 1 else "s" }}

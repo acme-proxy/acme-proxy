@@ -1,7 +1,7 @@
 //! The web admin's operators — the `admin_users` table — and their privilege
 //! tier, [`AdminRole`].
 //!
-//! An operator is a person, not an ACME client, and is scoped to no profile.
+//! An operator is a person, not an ACME client, and is scoped to no endpoint.
 //! The traps: usernames are lowercased on the way in; a `NULL` role reads as
 //! [`AdminRole::Admin`] so a row older than the column keeps its authority; and
 //! accepting a TOTP code is a guarded `UPDATE` on the last step used
@@ -152,7 +152,7 @@ impl FromStr for AdminRole {
 /// An operator of the web admin interface.
 ///
 /// Not an ACME concept and never joined to one: an [`AdminUser`] is a person
-/// with a password, an `accounts` row is a client key. There is no `profile`
+/// with a password, an `accounts` row is a client key. There is no `endpoint`
 /// column -- an admin user sees every endpoint this process serves.
 ///
 /// ## Methods

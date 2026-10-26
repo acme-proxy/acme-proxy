@@ -122,7 +122,7 @@ fn a_request_with_no_extensions_yields_an_empty_context() {
 #[test]
 fn a_record_carries_only_what_was_set_on_it() {
     let record = AuditRecord::new(AuditEvent::CertificateIssued, "le", Actor::admin("root"));
-    assert_eq!(record.profile, "le");
+    assert_eq!(record.endpoint, "le");
     assert!(record.account_id.is_none());
     assert!(record.order_id.is_none());
     assert!(record.cert_serial.is_none());

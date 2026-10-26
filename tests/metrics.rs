@@ -26,7 +26,7 @@ use common::{EcSigner, TestSigner, acme, make_csr, p, test_app_with_metrics};
 /// `/directory` rather than a signed route: this is about the middleware being
 /// mounted at all, and an unsigned GET keeps the assertion about one thing.
 #[tokio::test]
-async fn an_acme_request_is_counted_under_its_profile_and_route() {
+async fn an_acme_request_is_counted_under_its_endpoint_and_route() {
     let (app, _database, metrics) =
         test_app_with_metrics(Default::default(), Arc::new(common::memory_ca().await)).await;
 
@@ -42,14 +42,14 @@ async fn an_acme_request_is_counted_under_its_profile_and_route() {
     let rendered = metrics.render();
     assert!(
         rendered.contains(
-            "acme_proxy_requests_total{role=\"acme,admin,worker\",profile=\"default\",route=\"/directory\",status=\"200\"} 3\n"
+            "acme_proxy_requests_total{role=\"acme,admin,worker\",endpoint=\"default\",route=\"/directory\",status=\"200\"} 3\n"
         ),
         "{rendered}"
     );
     // Timed under the same route, without the status.
     assert!(
         rendered.contains(
-            "acme_proxy_request_duration_seconds_count{role=\"acme,admin,worker\",profile=\"default\",route=\"/directory\"} 3\n"
+            "acme_proxy_request_duration_seconds_count{role=\"acme,admin,worker\",endpoint=\"default\",route=\"/directory\"} 3\n"
         ),
         "{rendered}"
     );
@@ -71,14 +71,14 @@ async fn issuing_a_certificate_moves_the_issued_counter() {
 
     let rendered = metrics.render();
     assert!(
-        rendered.contains("acme_proxy_certificates_issued_total{role=\"acme,admin,worker\",profile=\"default\"} 1\n"),
+        rendered.contains("acme_proxy_certificates_issued_total{role=\"acme,admin,worker\",endpoint=\"default\"} 1\n"),
         "{rendered}"
     );
     // And timed: the `signer_issue` job that signed it observed the issuance
     // histogram once, from the finalize that enqueued it.
     assert!(
         rendered.contains(
-            "acme_proxy_certificate_issue_duration_seconds_count{role=\"acme,admin,worker\",profile=\"default\"} 1\n"
+            "acme_proxy_certificate_issue_duration_seconds_count{role=\"acme,admin,worker\",endpoint=\"default\"} 1\n"
         ),
         "{rendered}"
     );
@@ -123,7 +123,7 @@ async fn a_refused_csr_is_counted_with_its_reason() {
     let rendered = metrics.render();
     assert!(
         rendered.contains(
-            "acme_proxy_certificate_issue_failures_total{role=\"acme,admin,worker\",profile=\"default\",reason=\"badCSR\"} 1\n"
+            "acme_proxy_certificate_issue_failures_total{role=\"acme,admin,worker\",endpoint=\"default\",reason=\"badCSR\"} 1\n"
         ),
         "{rendered}"
     );

@@ -13,7 +13,7 @@ backend, and says what a restore does and does not bring back.
 | The CA key | `signer.local_ca.key_path` (`ca.key`) | Signs every certificate and CRL | **Not recoverable.** A new CA means distributing trust again — see [The CA key is the exception](../security/rotation.md#the-ca-key-is-the-exception) |
 | The CA certificate | `signer.local_ca.cert_path` (`ca.pem`) | The trust anchor clients installed | Recoverable only from wherever clients installed it |
 | The upstream account key | `signer.relay.account_key_path` (`upstream_account.key`) and its `.kid` sidecar | The relay's identity at the upstream CA | Register a new upstream account; with an EAB-only upstream, that needs a fresh credential from the CA |
-| The configuration | `config.toml`, or `ACME_PROXY_CONFIG` | Every profile, and the URLs clients stored | Rewritable, but every profile name and `server.base_url` must come back exactly, or clients' stored account URLs stop resolving |
+| The configuration | `config.toml`, or `ACME_PROXY_CONFIG` | Every endpoint, and the URLs clients stored | Rewritable, but every endpoint name and `server.base_url` must come back exactly, or clients' stored account URLs stop resolving |
 | Secrets held outside the configuration | environment files, `*_file` paths | TSIG, IPAM, SMTP, OIDC and LDAP credentials | Re-issue each at its source — see [Secret Rotation](../security/rotation.md) |
 
 Three files need **no** backup. `ca.crl` is an export the worker rewrites from

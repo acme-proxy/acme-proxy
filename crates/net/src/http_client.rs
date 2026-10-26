@@ -325,7 +325,7 @@ where
 /// The two travelled as separate parameters through some forty positions across
 /// `challenge/`, `ipam/`, `notify/webhook.rs` and `signer/relay/`, and they are
 /// never meaningfully apart: a caller holding one holds the other, and both
-/// come from the same `server::profile::build_all`. Bundling them is what retires the
+/// come from the same `server::endpoint::build_all`. Bundling them is what retires the
 /// crate's last `#[allow(clippy::too_many_arguments)]`
 /// (`notify::webhook::send_request`).
 ///
@@ -699,7 +699,7 @@ mod tests {
     }
 
     #[test]
-    fn an_endpoint_can_be_built_without_a_url() {
+    fn a_destination_can_be_built_without_a_url() {
         let destination = Destination::tls("example.com", 8443);
         assert!(destination.https);
         assert_eq!(destination.connect_authority(), "example.com:8443");

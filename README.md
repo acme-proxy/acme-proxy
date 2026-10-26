@@ -19,7 +19,7 @@ an upstream public CA, or a legacy PKI reached through a script.
 > **Current release: 0.7.0.** Before 1.0.0 the database schema is the *only*
 > compatibility guarantee: `crates/store/migrations/` is append-only, so upgrading is a
 > matter of starting the new binary against the existing database. Everything
-> else — configuration keys, profile names, the JSON admin API, log event names,
+> else — configuration keys, endpoint names, the JSON admin API, log event names,
 > the CLI — may still be renamed or removed, and every such change is listed
 > under `### Breaking` in
 > [CHANGELOG.md](https://github.com/acme-proxy/acme-proxy/blob/main/CHANGELOG.md#compatibility). Read that section before an
@@ -49,9 +49,9 @@ produced.
   certificate, plus revocation and `POST`-as-`GET`.
 - **All three challenge types** — `http-01`, `dns-01`, `tls-alpn-01`, with
   wildcard support via `dns-01`. Validation is on by default.
-- **Profiles** — several independent ACME endpoints in one process, over one
+- **Endpoints** — several independent ACME endpoints in one process, over one
   listener and one database, each with its own signer, filters, challenges and
-  EAB policy. Accounts and orders are isolated per profile.
+  EAB policy. Accounts and orders are isolated per endpoint.
 - **Access control** — a policy engine of named checks combined by boolean
   rules: IP allowlists, forward-confirmed reverse DNS, identifier allow/deny
   rules, request paths, EAB, an IPAM lookup (**NetBox** or **phpIPAM**) asking
@@ -81,7 +81,7 @@ produced.
   The separate port is
   the design: reaching it is the permission, so your firewall is the control.
 - **Configuration reload on `SIGHUP`** — a rebuild and a swap, not a mutation.
-  Listeners, TLS certificates, logging, profiles, signers and job pacing all
+  Listeners, TLS certificates, logging, endpoints, signers and job pacing all
   move without dropping a connection; `database.url` is the only key left that
   needs a restart.
 - **A durable job queue** — one row per unit of work the server owes itself, so
@@ -102,7 +102,7 @@ produced.
 [challenge]
 bypass = true          # testing only — see the docs before deploying
 
-[profiles.default]
+[endpoints.default]
 ```
 
 ```bash
@@ -111,10 +111,10 @@ cargo build --release
 ```
 
 The ACME directory is then at
-`http://localhost:3000/profile/default/directory`. Point a client at it:
+`http://localhost:3000/endpoint/default/directory`. Point a client at it:
 
 ```bash
-certbot certonly --server http://localhost:3000/profile/default/directory \
+certbot certonly --server http://localhost:3000/endpoint/default/directory \
   --standalone -d internal.example.com --agree-tos -m admin@example.com
 ```
 

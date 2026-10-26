@@ -46,11 +46,11 @@ pub async fn post_certificate(
         order_id = %id
     );
     let AppState {
-        database, profile, ..
+        database, endpoint, ..
     } = state;
 
     let account =
-        crate::acme::access::signer_account(account, &profile.name, &pubkey, &database).await?;
+        crate::acme::access::signer_account(account, &endpoint.name, &pubkey, &database).await?;
     let order = load_owned_order(&id, &account, &database).await?;
 
     match order.certificate {
@@ -95,7 +95,7 @@ pub async fn post_revoke_cert(
     info!(event = "certificate_revoke_requested", outcome = "progress",);
     let AppState {
         database,
-        profile,
+        endpoint,
         audit,
         config,
         jobs,
@@ -116,11 +116,11 @@ pub async fn post_revoke_cert(
     // Never the backend: only the `worker` role holds one. A local CA's
     // revocation is a ledger row the worker signs into the CRL; anything else
     // is queued, and this request waits on it within its own deadline.
-    let route = profile.signer_info.revocation_route();
+    let route = endpoint.signer_info.revocation_route();
     let revocations = Revocations {
         database: &database,
         audit: &audit,
-        notify: Some(&profile.notify),
+        notify: Some(&endpoint.notify),
         revoker: Revoker::for_route(
             &route,
             &jobs,
@@ -129,7 +129,7 @@ pub async fn post_revoke_cert(
     };
     match revocations
         .revoke_certificate(
-            &profile.name,
+            &endpoint.name,
             &cert_der,
             payload.reason,
             &pubkey,
@@ -157,7 +157,7 @@ pub async fn post_revoke_cert(
 /// stop checking, where a failure it retries later.
 #[instrument(name = "get_crl", skip_all)]
 pub async fn get_crl(State(state): State<AppState>) -> Response {
-    match state.profile.signer_info.crl_der().await {
+    match state.endpoint.signer_info.crl_der().await {
         Ok(Some(der)) => ([(header::CONTENT_TYPE, "application/pkix-crl")], der).into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         // Logged where the backend built it.
@@ -165,7 +165,7 @@ pub async fn get_crl(State(state): State<AppState>) -> Response {
     }
 }
 
-/// Serves the certificates a client must trust to accept what this profile
+/// Serves the certificates a client must trust to accept what this endpoint
 /// issues, PEM encoded — the trust anchor, so installing it is one `curl`
 /// rather than finding a file on the server's disk.
 ///
@@ -178,7 +178,7 @@ pub async fn get_crl(State(state): State<AppState>) -> Response {
 /// would be worse than saying nothing.
 #[instrument(name = "get_ca_chain", skip_all)]
 pub async fn get_ca_chain(State(state): State<AppState>) -> Response {
-    match state.profile.signer_info.ca_chain_pem().await {
+    match state.endpoint.signer_info.ca_chain_pem().await {
         // `application/x-pem-file` rather than `application/pem-certificate-chain`
         // (RFC 8555 §7.4.2): that media type names an *end-entity* chain, leaf
         // first, which is the opposite of what this is.

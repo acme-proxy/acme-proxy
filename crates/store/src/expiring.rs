@@ -55,7 +55,7 @@ pub struct ExpiringEntry {
 /// The window [`list_expiring`] answers.
 pub struct ExpiringQuery {
     /// `None` is every endpoint, the panel's default. The digest names one.
-    pub profile: Option<String>,
+    pub endpoint: Option<String>,
     /// `None` is every account. Only the digest addressed to an account's own
     /// `contact` names one.
     pub account: Option<Uuid>,
@@ -138,7 +138,8 @@ pub async fn superseded_by(
     //    certificate still doing the work.
     if let Some(chain) = order.certificate.as_deref()
         && let Some(cert_id) = ari_cert_id(chain)
-        && let Some(successor) = Order::find_by_replaces(&order.profile, &cert_id, database).await?
+        && let Some(successor) =
+            Order::find_by_replaces(&order.endpoint, &cert_id, database).await?
         && successor.certificate.is_some()
         && successor.revoked_at.is_none()
     {
@@ -243,7 +244,7 @@ pub async fn list_expiring(
     database: Arc<Database>,
 ) -> Result<(Vec<ExpiringEntry>, i64, i64), sqlx::Error> {
     let (orders, total) = Order::find_expiring(
-        query.profile.as_deref(),
+        query.endpoint.as_deref(),
         query.account,
         query.before,
         query.limit,
@@ -523,7 +524,7 @@ mod tests {
         issued(&db, acct, &["a.example.com"], 90).await;
 
         let query = |include: bool| ExpiringQuery {
-            profile: None,
+            endpoint: None,
             account: None,
             before: expiring_horizon(30),
             include_superseded: include,
@@ -547,10 +548,10 @@ mod tests {
         );
     }
 
-    /// The profile filter reaches through the operation layer, and the ordering
+    /// The endpoint filter reaches through the operation layer, and the ordering
     /// is the query's: soonest first.
     #[tokio::test]
-    async fn the_listing_scopes_by_profile_and_answers_soonest_first() {
+    async fn the_listing_scopes_by_endpoint_and_answers_soonest_first() {
         let db = db().await;
         let acct = account_id(&db).await;
         let here = issued_order(&db, "default", acct, &["a.example.com"], 5).await;
@@ -558,7 +559,7 @@ mod tests {
         issued_order(&db, "other", acct, &["c.example.com"], 1).await;
 
         let scoped = ExpiringQuery {
-            profile: Some("default".to_string()),
+            endpoint: Some("default".to_string()),
             account: None,
             before: expiring_horizon(30),
             include_superseded: true,
@@ -574,7 +575,7 @@ mod tests {
         assert_eq!(total, 2);
 
         let unscoped = ExpiringQuery {
-            profile: None,
+            endpoint: None,
             ..scoped
         };
         let (entries, total, _) = list_expiring(&unscoped, db).await.unwrap();

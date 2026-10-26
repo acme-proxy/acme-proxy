@@ -62,7 +62,7 @@ graph LR
 Clients speak ordinary ACME to `acme-proxy` and prove control of their names to
 *it*. Which of the three backends produces the certificate is a configuration
 choice they never see — and it can differ per endpoint, so one process can serve
-a local CA at `/profile/dev` and a Let's Encrypt relay at `/profile/prod`.
+a local CA at `/endpoint/dev` and a Let's Encrypt relay at `/endpoint/prod`.
 
 - **As a Proxy**: It intercepts ACME requests from internal clients, opens a
   corresponding order with Let's Encrypt, and safely solves the external DNS-01
@@ -74,9 +74,9 @@ a local CA at `/profile/dev` and a Let's Encrypt relay at `/profile/prod`.
   to proceed.
 - **As a Local CA**: It can operate entirely offline, issuing from an embedded
   ECDSA CA whose key is a file on disk or a PKCS#11 token.
-- **As a Multi-Tenant Server**: Through its Profile system, a single binary can
-  host a Local CA on `/profile/dev` and a strictly-filtered Let's Encrypt relay
-  on `/profile/prod`.
+- **As a Multi-Tenant Server**: Through its Endpoint system, a single binary can
+  host a Local CA on `/endpoint/dev` and a strictly-filtered Let's Encrypt relay
+  on `/endpoint/prod`.
 - **As a Record**: Every issuance *and every refusal* is written to an
   append-only [audit trail](operations/audit.md), naming the actor, the address
   it came from and the names it asked for — the question "who got this

@@ -26,8 +26,8 @@ use common::{
 use acme_proxy_core::config::Config;
 use acme_proxy_core::jws::signature::jwk_thumbprint;
 
-const NEW_ACCOUNT_URL: &str = "http://localhost:3000/profile/default/newAccount";
-const NEW_ORDER_URL: &str = "http://localhost:3000/profile/default/newOrder";
+const NEW_ACCOUNT_URL: &str = "http://localhost:3000/endpoint/default/newAccount";
+const NEW_ORDER_URL: &str = "http://localhost:3000/endpoint/default/newOrder";
 
 async fn post(app: &Router, path: &str, body: String) -> Response {
     app.clone()
@@ -686,7 +686,7 @@ async fn the_key_authorization_matches_what_a_client_would_compute() {
 
     // The thumbprint of the key that registered the account.
     let account_id = account_url.rsplit('/').next().unwrap();
-    let account = acme_proxy_store::account::Account::find_by_id(common::PROFILE, account_id, &db)
+    let account = acme_proxy_store::account::Account::find_by_id(common::ENDPOINT, account_id, &db)
         .await
         .unwrap()
         .expect("the account must exist");

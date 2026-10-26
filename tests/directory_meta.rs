@@ -21,7 +21,7 @@ use common::{
     test_app_full,
 };
 
-const NEW_ACCOUNT_URL: &str = "http://localhost:3000/profile/default/newAccount";
+const NEW_ACCOUNT_URL: &str = "http://localhost:3000/endpoint/default/newAccount";
 const TOS: &str = "https://acme.example.test/terms/v3";
 
 async fn app_with(config: Config) -> Router {

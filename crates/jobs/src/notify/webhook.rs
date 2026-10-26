@@ -346,7 +346,7 @@ async fn send_request(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::notify::{ChallengeFailedData, ProfileMountedData, build_environment};
+    use crate::notify::{ChallengeFailedData, EndpointMountedData, build_environment};
     use hyper_util::rt::TokioIo;
 
     /// These all talk to a loopback listener by IP literal, which
@@ -373,8 +373,8 @@ mod tests {
     }
 
     fn mounted() -> NotifyEvent {
-        NotifyEvent::ProfileMounted(ProfileMountedData {
-            profile: "default".to_string(),
+        NotifyEvent::EndpointMounted(EndpointMountedData {
+            endpoint: "default".to_string(),
         })
     }
 
@@ -522,7 +522,7 @@ mod tests {
     fn a_message_holding_quotes_and_newlines_still_renders_valid_json() {
         let notifier = build(&cfg()).unwrap();
         let event = NotifyEvent::ChallengeFailed(ChallengeFailedData {
-            profile: "default".to_string(),
+            endpoint: "default".to_string(),
             order_id: "o1".to_string(),
             account_id: "a1".to_string(),
             authz_id: "z1".to_string(),
@@ -548,7 +548,7 @@ mod tests {
     #[test]
     fn a_body_template_sees_the_events_own_fields() {
         let notifier = build(&WebhookNotifyConfig {
-            body: r#"{"chat_id": "-100", "hook": {{ hook | tojson }}, "profile": {{ profile | tojson }}, "text": {{ message | tojson }}}"#
+            body: r#"{"chat_id": "-100", "hook": {{ hook | tojson }}, "endpoint": {{ endpoint | tojson }}, "text": {{ message | tojson }}}"#
                 .to_string(),
             ..cfg()
         })
@@ -556,8 +556,8 @@ mod tests {
 
         let body = notifier.body_for(&mounted()).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(parsed["hook"], "profile_mounted");
-        assert_eq!(parsed["profile"], "default");
+        assert_eq!(parsed["hook"], "endpoint_mounted");
+        assert_eq!(parsed["endpoint"], "default");
         assert_eq!(parsed["chat_id"], "-100");
     }
 
@@ -596,7 +596,7 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(
             parsed["text"].as_str().unwrap().contains("default"),
-            "the rendered text must name the profile: {parsed}"
+            "the rendered text must name the endpoint: {parsed}"
         );
     }
 

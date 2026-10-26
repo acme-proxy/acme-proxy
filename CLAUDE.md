@@ -15,7 +15,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 An **ACME (RFC 8555) server** in Rust/[axum](https://docs.rs/axum), serving certificate clients (certbot, acme.sh, lego) over the full account → order → authorization → challenge → finalize → certificate flow, plus revocation. **One binary over a Cargo workspace**: the `acme-proxy` package at the root (`src/cli/`, `main.rs`, every suite in `tests/`) over nine library crates in `crates/`, bottom-up `core`, `store`, `net`, `policy`, `jobs`, `signer`, `protocol`, `admin`, `server` ([ADR 0002](doc/src/dev/adr/0002-workspace-layering.md)). At **0.7.0**.
 
-An ACME endpoint is a **profile** (`[profiles.<name>]`, served at `/profile/<name>/…`); at least one is required, and each has its own signer, filters, challenge validators and EAB requirement over one listener and one database. The process runs as up to three **roles** — `acme`, `admin`, `worker` — all three by default, and only the worker holds a signing key ([ADR 0007](doc/src/dev/adr/0007-role-processes.md)).
+An ACME endpoint is an **endpoint** in the configuration too (`[endpoints.<name>]`, served at `/endpoint/<name>/…`); at least one is required, and each has its own signer, filters, challenge validators and EAB requirement over one listener and one database. The process runs as up to three **roles** — `acme`, `admin`, `worker` — all three by default, and only the worker holds a signing key ([ADR 0007](doc/src/dev/adr/0007-role-processes.md)).
 
 | Subsystem | Code | Operator docs (`doc/src/`) | Decision |
 |---|---|---|---|
@@ -42,7 +42,7 @@ An ACME endpoint is a **profile** (`[profiles.<name>]`, served at `/profile/<nam
 
 ## Pre-1.0: only the schema is frozen
 
-Before 1.0.0 the database schema is the **only** compatibility guarantee; config keys, profile names, the admin API, log event names and the CLI may all change ([ADR 0001](doc/src/dev/adr/0001-pre-1-0-compatibility.md), canonical text in `CHANGELOG.md`'s Compatibility section). A breaking change owes exactly three things:
+Before 1.0.0 the database schema is the **only** compatibility guarantee; config keys, endpoint names, the admin API, log event names and the CLI may all change ([ADR 0001](doc/src/dev/adr/0001-pre-1-0-compatibility.md), canonical text in `CHANGELOG.md`'s Compatibility section). A breaking change owes exactly three things:
 
 1. An entry under the release's `### Breaking` heading in `CHANGELOG.md`, naming the old spelling and the new one.
 2. A removed or renamed config key **refused by name at startup** wherever practical. A key must still parse to be refused, so removed fields stay in the config types.
@@ -62,9 +62,9 @@ cargo llvm-cov nextest --workspace --summary-only   # coverage (needs cargo-llvm
 mdbook build doc/ && python3 doc/lint.py            # the book, and its style gate
 ```
 
-The same binary carries every admin subcommand (`account`, `order`, `jobs`, `audit`, `nonce`, `profile`, `upstream`, `eab`, `filter`, `admin user|session`, `completions`, `man`); `doc/src/operations/cli.md` is their reference. Rules for changing them:
+The same binary carries every admin subcommand (`account`, `order`, `jobs`, `audit`, `nonce`, `endpoint`, `upstream`, `eab`, `filter`, `admin user|session`, `completions`, `man`); `doc/src/operations/cli.md` is their reference. Rules for changing them:
 
-- **Every listing of table rows is paged** (`--limit`/`--offset`, `src/cli/window.rs`), prints `N of M row(s)`, and answers `{items, total, limit, offset}` under `--json` — member for member the admin API's envelope (`admin::render_page_json` builds both). `profile list` lists configuration, not rows, and is the one bare array.
+- **Every listing of table rows is paged** (`--limit`/`--offset`, `src/cli/window.rs`), prints `N of M row(s)`, and answers `{items, total, limit, offset}` under `--json` — member for member the admin API's envelope (`admin::render_page_json` builds both). `endpoint list` lists configuration, not rows, and is the one bare array.
 - **An unknown value for a closed vocabulary is refused by name** (`--status`, `--event`, `--outcome`, `--role`); passing it to SQL would answer "no rows", which reads like "nothing is in that state". `--kind` is the exception: job kinds are an open set.
 - **No secret in argv.** There is no `--password` flag (a test asserts clap rejects one); secrets arrive on stdin or from a file.
 - **`completions` and `man` are answered before `Config::load` and `Database::open`** in `main.rs`, because `open` creates its file. Keep them there.
@@ -109,7 +109,7 @@ A handler carrying `#[instrument]` reports far lower coverage than it has; check
 
 ## Configuration
 
-`Config::load()` (`crates/core/src/config/`) layers built-in defaults → an optional `config.toml` (`ACME_PROXY_CONFIG` points elsewhere; `config.toml.example` shows every key) → `ACME_PROXY_*` environment variables, with `__` between nested keys. Global `[signer]`/`[filter]`/`[challenge]`/`[eab]`/`[order]`/`[ipam]`/`[notify]`/`[meta]` are the base each profile overlays **key by key**; arrays replace wholesale. Adding a key is a recipe in `doc/src/dev/contributing.md`. The traps:
+`Config::load()` (`crates/core/src/config/`) layers built-in defaults → an optional `config.toml` (`ACME_PROXY_CONFIG` points elsewhere; `config.toml.example` shows every key) → `ACME_PROXY_*` environment variables, with `__` between nested keys. Global `[signer]`/`[filter]`/`[challenge]`/`[eab]`/`[order]`/`[ipam]`/`[notify]`/`[meta]` are the base each endpoint overlays **key by key**; arrays replace wholesale. Adding a key is a recipe in `doc/src/dev/contributing.md`. The traps:
 
 - **Every list field carries `#[serde(deserialize_with = "string_list")]`**: it splits a comma-separated environment variable, at any depth, and reads the empty string as `[]`. There is no list-key registry; `every_list_field_reads_a_comma_separated_string` refuses a field without it.
 - The environment source pins **`prefix_separator("_")`**; without it every `ACME_PROXY_*` variable is ignored.

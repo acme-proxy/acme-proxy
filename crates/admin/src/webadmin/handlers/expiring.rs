@@ -30,7 +30,7 @@ use crate::webadmin::session::Authenticated;
 #[derive(Debug, Deserialize, Default)]
 pub struct ExpiringListParams {
     #[serde(default, deserialize_with = "empty_is_absent")]
-    pub profile: Option<String>,
+    pub endpoint: Option<String>,
     /// How far ahead to look. Absent is [`acme_proxy_store::expiring::default_lead_days`],
     /// which is the deployment's own `[notify.expiry] lead_days` wherever the
     /// digest is on — the operator reading this page is the operator who set
@@ -66,7 +66,7 @@ impl ExpiringListParams {
     }
 }
 
-/// `GET /api/expiring?profile=&days=&superseded=&limit=&offset=`
+/// `GET /api/expiring?endpoint=&days=&superseded=&limit=&offset=`
 pub async fn list_expiring(
     State(state): State<AdminState>,
     Query(params): Query<ExpiringListParams>,
@@ -75,7 +75,7 @@ pub async fn list_expiring(
     let page = PageParams::from(params.limit, params.offset).resolve(&state.config);
     let days = params.lead_days(&state.config);
     let query = acme_proxy_store::expiring::ExpiringQuery {
-        profile: params.profile.clone(),
+        endpoint: params.endpoint.clone(),
         account: None,
         before: acme_proxy_store::expiring::expiring_horizon(days),
         include_superseded: params.include_superseded(),

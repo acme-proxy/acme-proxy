@@ -10,7 +10,7 @@ use super::string_list;
 /// Which inventory answers "which names does this address own?", and how long
 /// it is given to answer.
 ///
-/// Per-profile, so two endpoints may consult different inventories — but the
+/// Per-endpoint, so two endpoints may consult different inventories — but the
 /// *policy* built on the answer is the `ipam` filter's, not this section's.
 /// Nothing here is read unless `ipam` appears in `filter.enabled`.
 #[derive(Debug, Clone, Deserialize)]

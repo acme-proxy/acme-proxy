@@ -38,7 +38,7 @@ pub struct ContactForm {
     pub contact: String,
 }
 
-/// `GET /ui/accounts?profile=&eabKid=&limit=&offset=`
+/// `GET /ui/accounts?endpoint=&eabKid=&limit=&offset=`
 pub async fn list_accounts(
     State(state): State<AdminState>,
     Query(params): Query<AccountListParams>,
@@ -46,11 +46,11 @@ pub async fn list_accounts(
 ) -> Result<Html<String>, PageError> {
     let page = PageParams::from(params.limit, params.offset).resolve(&state.config);
     let filters = ListFilters::new()
-        .with("profile", params.profile.as_deref())
+        .with("endpoint", params.endpoint.as_deref())
         .with("eabKid", params.eab_kid.as_deref());
 
     let (accounts, total) = Account::search(
-        params.profile.as_deref(),
+        params.endpoint.as_deref(),
         params.eab_kid.as_deref(),
         page.limit,
         page.offset,
@@ -77,8 +77,8 @@ pub async fn list_accounts(
     );
     context.insert("filters".to_string(), filters.to_value());
     context.insert(
-        "profiles".to_string(),
-        Value::Array(crate::webadmin::handlers::misc::profile_rows(&state)),
+        "endpoints".to_string(),
+        Value::Array(crate::webadmin::handlers::misc::endpoint_rows(&state)),
     );
 
     respond(

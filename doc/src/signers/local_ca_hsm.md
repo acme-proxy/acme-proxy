@@ -348,14 +348,15 @@ retry, which is the right behaviour: the order stays valid and issuance resumes
 once the token is back. `GET /crl` keeps working throughout — the current CRL is
 read from the database and serving it signs nothing.
 
-### Sharing one token between profiles
+### Sharing one token between endpoints
 
-Several [profiles](../core/profiles.md) may use the same module, and even the
+Several [endpoints](../core/endpoints.md) may use the same module, and even the
 same key. `acme-proxy` opens one PKCS#11 context per module for the whole
-process and shares it, so this works without special configuration. Two profiles
-naming the same token key with *otherwise different* signer settings is refused
-at startup, for the same reason two profiles sharing `ca.key` are: one key under
-two configurations would issue under two policies from one identity.
+process and shares it, so this works without special configuration. Two
+endpoints naming the same token key with *otherwise different* signer settings
+is refused at startup, for the same reason two endpoints sharing `ca.key` are:
+one key under two configurations would issue under two policies from one
+identity.
 
 ## Troubleshooting
 

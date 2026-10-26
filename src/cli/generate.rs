@@ -304,7 +304,7 @@ mod tests {
             "the page does not name itself"
         );
         for subcommand in [
-            "serve", "account", "order", "audit", "nonce", "profile", "eab", "admin",
+            "serve", "account", "order", "audit", "nonce", "endpoint", "eab", "admin",
         ] {
             assert!(
                 page.contains(subcommand),

@@ -24,9 +24,9 @@ binary. Each was correct only while exactly one process existed:
 - **Reload.** Both of the above had to be handed from the outgoing
   configuration generation to the incoming one through an in-memory handover
   (`CarriedState`). Otherwise a reload would empty the CRL ledger or the token
-  store under a live upstream fetch. Changing the profile set, `[signer]`,
+  store under a live upstream fetch. Changing the endpoint set, `[signer]`,
   `[dns]` or `[proxy]` was therefore refused on `SIGHUP`.
-- **Notification delivery.** A delivery queued by one process for a profile
+- **Notification delivery.** A delivery queued by one process for an endpoint
   another process had not yet reloaded was retired as `Failed` for good.
 
 Role processes ([ADR 0007](0007-role-processes.md)) turn every one of these from
@@ -35,7 +35,7 @@ a latent bug into a routine one.
 ## Decision
 
 - **Revocation state is two tables**, keyed on the issuer: the hex SHA-256 of
-  the CA certificate's SPKI, so two profiles over one CA are one issuer.
+  the CA certificate's SPKI, so two endpoints over one CA are one issuer.
   - `revocations` holds one row per serial. A repeat does nothing, so the first
     revocation's time and reason stand.
   - `crls` holds the current CRL for each issuer. It is replaced only through
@@ -51,7 +51,7 @@ a latent bug into a routine one.
 - **A backend whose configuration did not change is reused on reload; one whose
   configuration changed is rebuilt.** The outgoing and incoming instances share
   the tables, so there is nothing to hand over. `CarriedState` is gone.
-- **An unknown profile or backend is a bounded `Retry`, not `Failed`**, so a
+- **An unknown endpoint or backend is a bounded `Retry`, not `Failed`**, so a
   delivery survives a rolling reload across processes.
 - **Files stay files where that is a security property.** `ca.key` (or its
   PKCS#11 token) and the upstream account key remain files. The database is
@@ -62,7 +62,7 @@ a latent bug into a routine one.
 
 - `order revoke` beside a running `serve` appears in that server's `GET /crl`
   once its worker has signed, with no restart and no lost update.
-- The profile set, each profile's signer, `[dns]` and `[proxy]` all reload. Of
+- The endpoint set, each endpoint's signer, `[dns]` and `[proxy]` all reload. Of
   everything in the configuration, only `database.url` is still refused on
   `SIGHUP`.
 - `crl_number` never goes backwards (RFC 5280 §5.2.3). A client that meets a
@@ -87,5 +87,5 @@ The CRL store's concurrency rules are in `crates/signer/src/local_ca/crl.rs`.
   (`crates/store/src/admin_login_bucket.rs`) and
   `two_limiters_over_one_database_share_one_budget`
   (`crates/admin/src/webadmin/session.rs`).
-- `an_unknown_profile_or_backend_is_retried_within_its_budget`
+- `an_unknown_endpoint_or_backend_is_retried_within_its_budget`
   (`crates/jobs/src/notify/job.rs`).

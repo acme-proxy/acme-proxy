@@ -1,4 +1,4 @@
-//! The `profile_issuers` table: the CA each `local_ca` profile issues from.
+//! The `endpoint_issuers` table: the CA each `local_ca` endpoint issues from.
 //!
 //! What lets a worker notice that its CA is not the one the rest of the
 //! deployment issues from — a second host started with no key files, or with
@@ -8,27 +8,27 @@
 
 use crate::db::Database;
 
-/// One profile's recorded issuer.
+/// One endpoint's recorded issuer.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProfileIssuer {
-    pub profile: String,
+pub struct EndpointIssuer {
+    pub endpoint: String,
     /// Hex SHA-256 of the CA certificate's SubjectPublicKeyInfo.
     pub issuer: String,
     pub recorded_at: i64,
 }
 
-impl ProfileIssuer {
-    /// The issuer recorded for `profile`, if any.
-    pub async fn find(profile: &str, database: &Database) -> Result<Option<Self>, sqlx::Error> {
+impl EndpointIssuer {
+    /// The issuer recorded for `endpoint`, if any.
+    pub async fn find(endpoint: &str, database: &Database) -> Result<Option<Self>, sqlx::Error> {
         crate::sql::query(
-            "SELECT profile, issuer, recorded_at FROM profile_issuers WHERE profile = ?;",
+            "SELECT endpoint, issuer, recorded_at FROM endpoint_issuers WHERE endpoint = ?;",
         )
-        .bind(profile)
+        .bind(endpoint)
         .fetch_optional(database)
         .await?
         .map(|row| {
             Ok(Self {
-                profile: row.try_get("profile")?,
+                endpoint: row.try_get("endpoint")?,
                 issuer: row.try_get("issuer")?,
                 recorded_at: row.try_get("recorded_at")?,
             })
@@ -36,46 +36,46 @@ impl ProfileIssuer {
         .transpose()
     }
 
-    /// Records `issuer` for `profile` unless one is recorded already, and
+    /// Records `issuer` for `endpoint` unless one is recorded already, and
     /// returns whichever stands.
     ///
     /// Insert-then-read rather than read-then-insert: two workers starting at
     /// once with different CAs both reach this, and exactly one row wins; the
     /// other reads the winner back and refuses.
     pub async fn record_if_absent(
-        profile: &str,
+        endpoint: &str,
         issuer: &str,
         now: i64,
         database: &Database,
     ) -> Result<Self, sqlx::Error> {
         crate::sql::query(
-            "INSERT INTO profile_issuers (profile, issuer, recorded_at) VALUES (?, ?, ?) \
-             ON CONFLICT (profile) DO NOTHING;",
+            "INSERT INTO endpoint_issuers (endpoint, issuer, recorded_at) VALUES (?, ?, ?) \
+             ON CONFLICT (endpoint) DO NOTHING;",
         )
-        .bind(profile)
+        .bind(endpoint)
         .bind(issuer)
         .bind(now)
         .execute(database)
         .await?;
-        Self::find(profile, database)
+        Self::find(endpoint, database)
             .await?
             .ok_or(sqlx::Error::RowNotFound)
     }
 
-    /// Records `issuer` for `profile`, replacing whatever was recorded: the
+    /// Records `issuer` for `endpoint`, replacing whatever was recorded: the
     /// deliberate change of CA an operator asks for.
     pub async fn replace(
-        profile: &str,
+        endpoint: &str,
         issuer: &str,
         now: i64,
         database: &Database,
     ) -> Result<(), sqlx::Error> {
         crate::sql::query(
-            "INSERT INTO profile_issuers (profile, issuer, recorded_at) VALUES (?, ?, ?) \
-             ON CONFLICT (profile) DO UPDATE SET \
+            "INSERT INTO endpoint_issuers (endpoint, issuer, recorded_at) VALUES (?, ?, ?) \
+             ON CONFLICT (endpoint) DO UPDATE SET \
              issuer = excluded.issuer, recorded_at = excluded.recorded_at;",
         )
-        .bind(profile)
+        .bind(endpoint)
         .bind(issuer)
         .bind(now)
         .execute(database)
@@ -92,32 +92,32 @@ mod tests {
     async fn the_first_record_stands_until_replaced() {
         let database = Database::connect_for_test().await.unwrap();
         assert_eq!(
-            ProfileIssuer::find("default", &database).await.unwrap(),
+            EndpointIssuer::find("default", &database).await.unwrap(),
             None
         );
 
-        let first = ProfileIssuer::record_if_absent("default", "aa", 1, &database)
+        let first = EndpointIssuer::record_if_absent("default", "aa", 1, &database)
             .await
             .unwrap();
         assert_eq!(first.issuer, "aa");
         // A second worker with another CA reads the first one back.
-        let second = ProfileIssuer::record_if_absent("default", "bb", 2, &database)
+        let second = EndpointIssuer::record_if_absent("default", "bb", 2, &database)
             .await
             .unwrap();
         assert_eq!(second, first);
 
-        ProfileIssuer::replace("default", "bb", 3, &database)
+        EndpointIssuer::replace("default", "bb", 3, &database)
             .await
             .unwrap();
-        let now = ProfileIssuer::find("default", &database)
+        let now = EndpointIssuer::find("default", &database)
             .await
             .unwrap()
             .unwrap();
         assert_eq!((now.issuer.as_str(), now.recorded_at), ("bb", 3));
 
-        // Profiles are independent.
+        // Endpoints are independent.
         assert_eq!(
-            ProfileIssuer::record_if_absent("other", "aa", 4, &database)
+            EndpointIssuer::record_if_absent("other", "aa", 4, &database)
                 .await
                 .unwrap()
                 .issuer,

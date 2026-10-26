@@ -47,14 +47,14 @@ with `Retry-After`. certbot, acme.sh and lego all poll.
   the job is still running. See `crates/protocol/src/acme/revoke.rs`.
 - **A verdict is terminal.** A check that ran records its answer, pass or fail.
   A job is retried only when the attempt could not happen at all: the database
-  is unreachable, or this process does not mount the profile. A backend's own
+  is unreachable, or this process does not mount the endpoint. A backend's own
   `BadCsr` makes the order `invalid`, not `ready` again, because the client was
   already told `processing` and polls for a terminal state.
 - **No stranded claim.** A failed enqueue releases its claim. `abandon` records
   a failure rather than leaving the client polling forever. `recover` re-queues
   a challenge left `processing` with no live job.
-- **Each kind has one handler, covering every profile.** A row names its
-  subject, the subject names its profile, and the profile names its validators
+- **Each kind has one handler, covering every endpoint.** A row names its
+  subject, the subject names its endpoint, and the endpoint names its validators
   or backend. The job registry refuses a second handler for a kind anyway.
 
 ## Consequences

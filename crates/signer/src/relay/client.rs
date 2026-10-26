@@ -538,7 +538,7 @@ fn header_string(value: Option<&HeaderValue>) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// The shared resolver `server::profile::build_all` supplies at startup. These
+    /// The shared resolver `server::endpoint::build_all` supplies at startup. These
     /// tests reach loopback by IP literal, which `dns::connect` short-circuits.
     fn test_resolver() -> std::sync::Arc<dyn acme_proxy_net::dns::Resolver> {
         std::sync::Arc::new(acme_proxy_net::dns::HickoryResolver::from_system_uncached().unwrap())

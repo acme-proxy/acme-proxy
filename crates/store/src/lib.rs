@@ -9,10 +9,10 @@
 //!
 //! Two invariants shape almost everything here:
 //!
-//! - **A profile is a data boundary.** `accounts` and `orders` carry a
-//!   `profile` column and `accounts` is keyed `UNIQUE(profile, pubkey)`, so one
+//! - **An endpoint is a data boundary.** `accounts` and `orders` carry a
+//!   `endpoint` column and `accounts` is keyed `UNIQUE(endpoint, pubkey)`, so one
 //!   client key at two endpoints is two unrelated accounts. Request-path
-//!   lookups always take the profile; the admin layer uses the deliberately
+//!   lookups always take the endpoint; the admin layer uses the deliberately
 //!   unscoped `find_any_*` variants.
 //! - **[`audit`] rows outlive their subjects.** That table has no foreign keys,
 //!   because a `CASCADE` would delete the evidence along with the account or
@@ -33,13 +33,13 @@ pub mod authz;
 pub mod crl;
 pub mod db;
 pub mod eab;
+pub mod endpoint_issuer;
 pub mod expiring;
 pub mod http01_token;
 pub mod id;
 pub mod job;
 pub mod nonce;
 pub mod order;
-pub mod profile_issuer;
 pub mod query;
 pub mod revocation;
 pub mod sql;
