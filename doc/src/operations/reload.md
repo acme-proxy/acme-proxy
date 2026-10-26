@@ -79,7 +79,12 @@ Everything else, including the things operators reach for most:
 - **Challenge settings**, order and account policy, `[meta]`, `[eab]`.
 - **TLS certificates** — `server.tls.cert_path` and `key_path` (and the admin
   listener's own pair) are re-read, so a renewed certificate is served to the
-  next connection while established ones are undisturbed.
+  next connection while established ones are undisturbed. It is also how a
+  certificate the server obtained **for itself** takes effect: the renewal
+  writes those two files and then asks for this same reload, the one route by
+  which a listener certificate is installed. `server.tls.acme_enabled` reloads
+  too, so the toggle can be turned on or off without a restart. See
+  [TLS Termination](../features/tls_termination.md#the-servers-own-certificate).
 - **The listeners themselves** — see below.
 - **The panel's templates** — `admin.template_dir` is recompiled. A template
   that does not parse fails the *reload*, so a mistake never reaches a browser.

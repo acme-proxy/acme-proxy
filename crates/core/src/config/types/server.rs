@@ -76,6 +76,14 @@ pub struct TlsConfig {
     pub cert_path: String,
     pub key_path: String,
     pub handshake_timeout_ms: u64,
+    /// Obtain this listener's own certificate from a profile's upstream CA,
+    /// instead of serving a self-signed one. See [`acme_profile`](Self::acme_profile).
+    pub acme_enabled: bool,
+    /// Which profile's upstream the certificate is ordered from. Empty means "the
+    /// one profile whose signer is a relay answering dns-01 upstream"; a
+    /// configuration with more than one of those, or none, refuses to start until
+    /// this names one.
+    pub acme_profile: String,
 }
 
 impl Default for TlsConfig {
@@ -85,6 +93,8 @@ impl Default for TlsConfig {
             cert_path: "server.pem".to_string(),
             key_path: "server.key".to_string(),
             handshake_timeout_ms: 10_000,
+            acme_enabled: false,
+            acme_profile: String::new(),
         }
     }
 }

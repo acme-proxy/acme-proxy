@@ -245,6 +245,17 @@ pub struct ReloadRequest {
 pub struct ReloadHandle(mpsc::Sender<ReloadRequest>);
 
 impl ReloadHandle {
+    /// A handle that reaches no supervisor, for every caller that serves no
+    /// reloads — the sibling of [`Reloads::none`].
+    ///
+    /// The receiver is dropped on the spot, so [`Self::trigger`] reports failure.
+    /// That is the honest answer, and the same one a caller gets when the
+    /// supervisor has gone: a process that never had one cannot reload.
+    #[must_use]
+    pub fn none() -> Self {
+        Self(mpsc::channel(1).0)
+    }
+
     /// Asks for a reload, without waiting for the outcome.
     ///
     /// `try_send` on a capacity-one channel, so a signal storm coalesces into

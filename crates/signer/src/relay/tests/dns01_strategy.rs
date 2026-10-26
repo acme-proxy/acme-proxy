@@ -4,52 +4,6 @@
 use super::*;
 use acme_proxy_store::status::OrderStatus;
 
-/// A `DnsUpdater` that records what it was asked to publish, so a test can
-/// assert on the record without a DNS server.
-#[derive(Default)]
-struct StubUpdater {
-    published: std::sync::Mutex<Vec<(String, String)>>,
-    deleted: std::sync::Mutex<Vec<(String, String)>>,
-    /// When the last publish and the last retraction happened, so a test can
-    /// measure what the relay did between the two.
-    published_at: std::sync::Mutex<Option<std::time::Instant>>,
-    deleted_at: std::sync::Mutex<Option<std::time::Instant>>,
-    fail: bool,
-}
-
-#[async_trait]
-impl dns01::DnsUpdater for StubUpdater {
-    async fn upsert_txt(&self, name: &str, value: &str) -> Result<(), String> {
-        if self.fail {
-            return Err("no DNS for you".to_string());
-        }
-        self.published
-            .lock()
-            .unwrap()
-            .push((name.to_string(), value.to_string()));
-        *self.published_at.lock().unwrap() = Some(std::time::Instant::now());
-        Ok(())
-    }
-    async fn delete_txt(&self, name: &str, value: &str) -> Result<(), String> {
-        self.deleted
-            .lock()
-            .unwrap()
-            .push((name.to_string(), value.to_string()));
-        *self.deleted_at.lock().unwrap() = Some(std::time::Instant::now());
-        Ok(())
-    }
-}
-
-/// Swaps the strategy on an already-built signer, so these tests do not
-/// need a live RFC 2136 server to exercise the orchestration around it.
-fn with_updater(signer: RelaySigner, updater: Arc<StubUpdater>) -> RelaySigner {
-    let inner = Arc::try_unwrap(signer.0).unwrap_or_else(|_| panic!("sole owner"));
-    RelaySigner(Arc::new(Inner {
-        strategy: ChallengeStrategy::Dns01(updater),
-        ..inner
-    }))
-}
-
 /// The `bypass` strategy against an upstream that *does* pose a challenge.
 ///
 /// Bypass does not mean "the upstream asks nothing" — it means this server

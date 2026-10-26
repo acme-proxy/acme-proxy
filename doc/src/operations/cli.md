@@ -416,7 +416,10 @@ instead of failing it. When an order is stuck, this is where to look.
     row.
   - Cancelling a **periodic sweep** job (`nonce_sweep`, `audit_sweep`,
     `order_sweep`, …) stops that sweep until the server restarts. The prompt
-    says so.
+    says so. Cancelling `server_self_tls` — the row that keeps this server's own
+    listener certificate current under `server.tls.acme_enabled` — is the same
+    shape, and the prompt does **not** warn: renewals stop until the next reload
+    or restart, either of which re-queues it.
 
   Cancelling an in-flight `signer_relay_issue` job **also abandons the ACME
   order**: the local order is marked `invalid` (so the client stops polling),

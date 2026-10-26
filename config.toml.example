@@ -131,6 +131,24 @@ key_path  = "server.key"            # ACME_PROXY_SERVER__TLS__KEY_PATH
 # Budget for one TLS handshake. A client that stalls part-way through is dropped
 # once it elapses; handshakes run concurrently, so this never delays anyone else.
 handshake_timeout_ms = 10000        # ACME_PROXY_SERVER__TLS__HANDSHAKE_TIMEOUT_MS
+# Order THIS server's own certificate from a profile's upstream CA rather than
+# serving the self-signed certificate generated above. The name is the host of
+# server.base_url, and control of it is proved with dns-01 through that profile's
+# own [signer.relay.dns01] updater — so the profile must be a relay answering
+# dns01 upstream, and the name must be inside the zone that updater can write.
+#
+# Enabling this hands both files above to the server: it writes the chain and its
+# key there, and renews them within 30 days of expiry, checking twice a day. Each
+# renewal then asks for the same reload a SIGHUP would have triggered, so the
+# listener serves the new chain without a restart. Only a process running the
+# worker role renews; a separate `acme` process picks the files up at its own next
+# reload.
+acme_enabled = false                # ACME_PROXY_SERVER__TLS__ACME_ENABLED
+# Which profile's upstream to order from. Leave it empty when exactly one profile
+# relays with dns01; name it when more than one does, since the choice decides
+# whose CA is asked, whose DNS credential writes the record and whose rate-limit
+# allowance is spent, and the server refuses to guess between them.
+acme_profile = ""                   # ACME_PROXY_SERVER__TLS__ACME_PROFILE
 
 [admin]
 # The web admin interface: a SECOND listener, on its own socket, serving no

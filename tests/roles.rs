@@ -194,6 +194,7 @@ async fn start(config: &Config, roles: RoleSet) -> Process {
         async {
             let _ = rx.await;
         },
+        acme_proxy_server::reload::ReloadHandle::none(),
         acme_proxy_server::reload::Reloads::none(),
     ));
 
@@ -412,6 +413,7 @@ async fn a_process_without_the_worker_role_refuses_an_unmigrated_database() {
             metrics: None,
         },
         std::future::pending(),
+        acme_proxy_server::reload::ReloadHandle::none(),
         acme_proxy_server::reload::Reloads::none(),
     )
     .await
@@ -623,6 +625,7 @@ async fn a_process_without_the_worker_role_refuses_a_missing_ca() {
             metrics: None,
         },
         std::future::pending(),
+        acme_proxy_server::reload::ReloadHandle::none(),
         acme_proxy_server::reload::Reloads::none(),
     )
     .await
@@ -752,6 +755,7 @@ async fn worker_refusal(config: &Config) -> String {
             metrics: None,
         },
         std::future::pending(),
+        acme_proxy_server::reload::ReloadHandle::none(),
         acme_proxy_server::reload::Reloads::none(),
     )
     .await

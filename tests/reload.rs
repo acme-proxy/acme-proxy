@@ -245,6 +245,9 @@ async fn boot_as(roles: RoleSet, config: Config, with_admin: bool) -> Server {
         async {
             let _ = rx.await;
         },
+        // A clone: this suite keeps a handle of its own to drive reloads with, and
+        // the server's own listener-certificate job is handed one too.
+        reload.clone(),
         reloads,
     ));
 

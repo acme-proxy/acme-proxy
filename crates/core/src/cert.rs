@@ -232,6 +232,22 @@ pub fn cert_validity(der: &[u8]) -> Result<(i64, i64), nom::Err<x509_parser::err
     ))
 }
 
+/// Whether a certificate names itself as its issuer.
+///
+/// This is how the server tells its own generated listener certificate — the one
+/// it writes when `[server.tls]` has no `cert_path` to read — apart from a real
+/// one, which is the question `[server.tls] acme_enabled` has to answer on every
+/// pass: "is what is on disk something a CA issued?" An unparseable certificate
+/// answers `true`, because the caller's decision is "go and get another one", and
+/// a file that will not parse is a file worth replacing.
+#[must_use]
+pub fn is_self_signed(der: &[u8]) -> bool {
+    match x509_parser::parse_x509_certificate(der) {
+        Ok((_, cert)) => cert.issuer() == cert.subject(),
+        Err(_) => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,6 +302,41 @@ mod tests {
     #[test]
     fn leaf_der_from_chain_rejects_a_chain_with_no_certificate_block() {
         assert!(leaf_der_from_chain("not a pem file at all").is_err());
+    }
+
+    /// The distinction `[server.tls] acme_enabled` decides on: the listener
+    /// certificate this server generates for itself names itself as issuer, and
+    /// anything a CA signed does not.
+    #[test]
+    fn a_self_signed_certificate_is_told_from_one_a_ca_signed() {
+        assert!(is_self_signed(&make_cert_der("acme.int.example.com")));
+        assert!(!is_self_signed(&named_ca_signed_leaf()));
+        // Unparseable means "go and get another one", not "leave this alone".
+        assert!(is_self_signed(&[0xde, 0xad, 0xbe, 0xef]));
+    }
+
+    /// A leaf whose issuer is a different name from its subject — the shape of a
+    /// real certificate. `ca_signed_leaf_with_aki` below cannot serve here: rcgen
+    /// leaves the subject empty unless a common name is set, so its CA and its
+    /// leaf share one empty name and read as self-signed.
+    fn named_ca_signed_leaf() -> Vec<u8> {
+        let ca_key = rcgen::KeyPair::generate().unwrap();
+        let mut ca_params = rcgen::CertificateParams::new(vec![]).unwrap();
+        ca_params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "Internally Trusted Test CA");
+        ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Constrained(0));
+        let ca_pem = ca_params.self_signed(&ca_key).unwrap().pem();
+        let issuer = rcgen::Issuer::from_ca_cert_pem(&ca_pem, ca_key).unwrap();
+
+        let leaf_key = rcgen::KeyPair::generate().unwrap();
+        let leaf_params =
+            rcgen::CertificateParams::new(vec!["acme.int.example.com".to_string()]).unwrap();
+        leaf_params
+            .signed_by(&leaf_key, &issuer)
+            .unwrap()
+            .der()
+            .to_vec()
     }
 
     /// A CA-signed leaf carrying an Authority Key Identifier — the shape ARI

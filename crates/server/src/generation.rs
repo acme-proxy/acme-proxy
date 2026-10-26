@@ -59,6 +59,7 @@ pub(crate) fn build_generation(
     resolved: &[acme_proxy_core::config::ProfileConfig],
     assembly: &Assembly,
     parts: &GenerationParts,
+    reload: &crate::reload::ReloadHandle,
 ) -> anyhow::Result<Generation> {
     // A process that does not run the `admin` role binds no admin socket
     // (`sockets::bind_admin`), so building its router and its TLS would be
@@ -94,8 +95,16 @@ pub(crate) fn build_generation(
             }),
     };
 
-    let job_registry =
-        job_registry_for(config, resolved, assembly, parts, &profiles, admin_enabled)?;
+    let job_registry = job_registry_for(
+        config,
+        resolved,
+        assembly,
+        parts,
+        &profiles,
+        admin_enabled,
+        roles,
+        reload,
+    )?;
 
     // The CA's audit trail: one per process, shared by every profile's router
     // and by the web admin listener, because `[audit]` is process-wide. Built
@@ -175,6 +184,12 @@ pub(crate) fn build_generation(
 /// A sweep or handler that is never registered never runs, and nothing else
 /// notices: the table it should prune just grows. Which ones a configuration
 /// registers is pinned by `tests::a_generation_registers_the_sweeps_its_configuration_asks_for`.
+///
+/// Eight arguments: the five this function already needed to build handlers at
+/// all, plus which roles this process runs and the handle to hand the listener
+/// certificate's handler. Grouping them into a struct would move the decision
+/// about what a registry needs out of the one place that lists them.
+#[allow(clippy::too_many_arguments)]
 fn job_registry_for(
     config: &Config,
     resolved: &[acme_proxy_core::config::ProfileConfig],
@@ -182,6 +197,8 @@ fn job_registry_for(
     parts: &GenerationParts,
     profiles: &[Arc<Profile>],
     admin_enabled: bool,
+    roles: crate::RoleSet,
+    reload: &crate::reload::ReloadHandle,
 ) -> anyhow::Result<acme_proxy_jobs::jobs::JobRegistry> {
     let database = assembly.database.clone();
     // Every subsystem with background work, in one registry. **Nothing here
@@ -226,6 +243,16 @@ fn job_registry_for(
         }
         registered.push(identity);
         refreshers.extend(backend.crl_refresher());
+    }
+    // This server's own listener certificate, when `[server.tls] acme_enabled` asked
+    // for one. Only a worker resolves the toggle: it is the role that has a backend
+    // to order through and a DNS credential to prove control with, and in every other
+    // role `relays` is empty, so there would be nothing to resolve to. See
+    // [`crate::selftls`].
+    if roles.has(crate::ProcessRole::Worker)
+        && let Some(plan) = crate::selftls::resolve(config, resolved, &relays, reload)?
+    {
+        handlers.push(Arc::new(crate::selftls::SelfTlsJob::new(plan)));
     }
     // The daily CRL refresh, over whichever CAs keep a CRL of their own.
     // Registered only when there is one, the way the audit sweep is registered
@@ -467,6 +494,7 @@ pub(super) fn prepare_reload(
     config: &Arc<Config>,
     resolved: &[acme_proxy_core::config::ProfileConfig],
     assembly: &Assembly,
+    reload: &crate::reload::ReloadHandle,
 ) -> Result<Prepared, crate::reload::ReloadError> {
     use crate::reload::{Applied, ReloadError, check_frozen};
 
@@ -551,7 +579,7 @@ pub(super) fn prepare_reload(
         .build_parts(&next_resolved, &next)
         .map_err(|error| ReloadError::Build(error.to_string()))?;
     check_issuers()?;
-    let generation = build_generation(roles, &next, &next_resolved, assembly, &parts)
+    let generation = build_generation(roles, &next, &next_resolved, assembly, &parts, reload)
         .map_err(|error| ReloadError::Build(error.to_string()))?;
 
     // Compared by name against what is running, not against what is written
