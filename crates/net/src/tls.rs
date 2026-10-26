@@ -24,6 +24,15 @@
 //! way `signer::local_ca` provisions the CA and `sqlite.db` provisions
 //! itself. The key is created `0600` (see [`acme_proxy_core::pemfile`]).
 //!
+//! With `server.tls.acme_enabled` the generated certificate is a placeholder
+//! rather than the arrangement: `server::selftls` orders a real one for the same
+//! host and overwrites both files, then reloads, which lands here as the "both
+//! exist" case. That is why this module never rewrites a file it can read —
+//! a renewal would otherwise be undone by the next restart — and why the two
+//! `[server.tls]` `acme_*` keys mean nothing to [`from_config`], which sees
+//! nothing but paths. [`listener_csr`] is the part the caller needs from here:
+//! which name, and which key.
+//!
 //! ## Two rustls constraints
 //!
 //! 1. The crypto provider is passed **explicitly**, never installed as a process
@@ -111,13 +120,16 @@ pub fn admin_from_config(
     }
 
     // `AdminTlsConfig` is a distinct type from `TlsConfig` (its defaults
-    // differ), but the fields are the same four, so the shared builder takes
-    // the parts rather than either struct.
+    // differ), but the fields that describe a listener certificate are the same
+    // four, so the shared builder takes the parts rather than either struct. The
+    // two `acme_*` keys are left at their defaults: the panel is not a name any
+    // profile's dns-01 updater can prove, so there is nothing for it to order.
     let tls = TlsConfig {
         enabled: cfg.tls.enabled,
         cert_path: cfg.tls.cert_path.clone(),
         key_path: cfg.tls.key_path.clone(),
         handshake_timeout_ms: cfg.tls.handshake_timeout_ms,
+        ..TlsConfig::default()
     };
     Ok(Some(acceptor_from(
         &tls,
@@ -182,6 +194,102 @@ fn acceptor_from(
     Ok(TlsAcceptor::from(Arc::new(config)))
 }
 
+/// The host of `server.base_url`, as [`generate_self_signed`] and
+/// [`listener_csr`] both need it.
+///
+/// One helper because both are answering the same question — the one name a
+/// client will ever ask this listener for — and if the two derived it separately,
+/// a mismatch would mean the certificate `[server.tls] acme_enabled` works to
+/// obtain was not the certificate the listener's clients were expecting.
+fn base_url_host(base_url: &str) -> anyhow::Result<Host<String>> {
+    let url = Url::parse(base_url)
+        .map_err(|error| anyhow::anyhow!("server.base_url is not a URL: {error}"))?;
+    url.host()
+        .map(|host| match host {
+            // Owned, so the helper does not have to hand back a borrow of a `Url`
+            // it built and dropped itself.
+            Host::Domain(name) => Host::Domain(name.to_string()),
+            Host::Ipv4(address) => Host::Ipv4(address),
+            Host::Ipv6(address) => Host::Ipv6(address),
+        })
+        .ok_or_else(|| anyhow::anyhow!("server.base_url has no host: {base_url}"))
+}
+
+/// The DNS name this server's own certificate is for: the host of
+/// `server.base_url`.
+///
+/// An address is refused rather than passed on, because `dns-01` proves control of
+/// a DNS name and an IP in `base_url` is a configuration mistake the operator can
+/// fix. Called at startup for exactly that reason: refusing there means the
+/// operator sees the sentence instead of a job that fails once an hour.
+///
+/// # Errors
+///
+/// When `base_url` will not parse, names no host, or names an address.
+pub fn listener_domain(base_url: &str) -> anyhow::Result<String> {
+    match base_url_host(base_url)? {
+        Host::Domain(name) => Ok(name),
+        // `Host`'s `Display` renders either address form, brackets included,
+        // which is how the operator will recognise it in their own configuration.
+        address => Err(anyhow::anyhow!(
+            "server.base_url names the address {address}, and a certificate for it cannot be \
+             obtained: dns-01 proves control of a DNS name, so server.base_url has to name one \
+             while server.tls.acme_enabled is on"
+        )),
+    }
+}
+
+/// The name this server's own certificate is for, and a signing request for it.
+///
+/// `[server.tls] acme_enabled` asks an upstream CA for a certificate on the
+/// server's own behalf, and this is the half of that which belongs to the
+/// listener rather than to the CA: which name, and which key. The key is read from
+/// `key_path` when it is there, so the certificate is issued for the key the
+/// listener is already serving with, and created there `0600` when it is not. The
+/// request is returned as DER because that is the form the upstream takes, and the
+/// caller has no reason to see rcgen.
+///
+/// # Errors
+///
+/// As [`listener_domain`], plus when `key_path` holds something that is not a
+/// usable private key or the key cannot be created.
+pub fn listener_csr(base_url: &str, key_path: &Path) -> anyhow::Result<(String, Vec<u8>)> {
+    let domain = listener_domain(base_url)?;
+
+    let key_pair = match std::fs::read_to_string(key_path) {
+        Ok(pem) => KeyPair::from_pem(&pem).map_err(|error| {
+            anyhow::anyhow!("{} is not a usable key: {error}", key_path.display())
+        })?,
+        // Only a missing key is a key to create. Anything else that went wrong —
+        // no permission, a directory in the way — is reported as itself, because
+        // the write below would fail with "already exists" and send the operator
+        // hunting for a problem that is not there.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let key_pair = KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256)?;
+            pemfile::write_private_key(key_path, &key_pair.serialize_pem())?;
+            key_pair
+        }
+        Err(error) => {
+            return Err(anyhow::anyhow!(
+                "reading the listener key {}: {error}",
+                key_path.display()
+            ));
+        }
+    };
+
+    let mut params = CertificateParams::new(vec![domain.clone()])?;
+    // Emptied, not left to the default: `new` fills everything it does not name
+    // from `Default`, and rcgen's default subject is the placeholder
+    // `CN=rcgen self signed cert`. A CA collects the `CommonName` among the names
+    // it has to certify, so shipping that placeholder asks to be issued *as* it,
+    // which is a rejection a public CA states rather than retries. The name is in
+    // the SAN above, where RFC 5280 §4.2.1.6 wants it.
+    params.distinguished_name = rcgen::DistinguishedName::new();
+    params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+    let request = params.serialize_request(&key_pair)?;
+    Ok((domain, request.der().to_vec()))
+}
+
 /// Generates a self-signed certificate for the host of `base_url`, returning the
 /// certificate and key PEMs.
 ///
@@ -189,13 +297,8 @@ fn acceptor_from(
 /// derived rather than configured: a certificate for anything else would not be
 /// accepted anyway, and an operator needing more names supplies their own files.
 fn generate_self_signed(base_url: &str) -> anyhow::Result<(String, String)> {
-    let url = Url::parse(base_url)
-        .map_err(|error| anyhow::anyhow!("server.base_url is not a URL: {error}"))?;
-    let host = match url
-        .host()
-        .ok_or_else(|| anyhow::anyhow!("server.base_url has no host: {base_url}"))?
-    {
-        Host::Domain(name) => name.to_string(),
+    let host = match base_url_host(base_url)? {
+        Host::Domain(name) => name,
         // `Host`'s own `Display` brackets an IPv6 address; `CertificateParams`
         // parses each name itself and would take `[::1]` for a DNS name.
         Host::Ipv4(address) => address.to_string(),
@@ -274,6 +377,9 @@ mod tests {
                 cert_path: dir.join("server.pem").display().to_string(),
                 key_path: dir.join("server.key").display().to_string(),
                 handshake_timeout_ms: 5_000,
+                // Never set in a test of the acceptor: the toggle belongs to the
+                // server's own certificate, which these tests hand over by hand.
+                ..TlsConfig::default()
             },
             ..ServerConfig::default()
         }
@@ -402,6 +508,9 @@ mod tests {
                 cert_path: dir.join("server.pem").display().to_string(),
                 key_path: dir.join("server.key").display().to_string(),
                 handshake_timeout_ms: 5_000,
+                // Never set in a test of the acceptor: the toggle belongs to the
+                // server's own certificate, which these tests hand over by hand.
+                ..TlsConfig::default()
             },
             ..ServerConfig::default()
         };
@@ -545,5 +654,131 @@ mod tests {
 
         let error = startup_error(from_config(&cfg));
         assert!(error.contains("no CERTIFICATE block"), "{error}");
+    }
+
+    /// The name `[server.tls] acme_enabled` obtains a certificate for: the host of
+    /// `server.base_url`, without the port, and nothing that dns-01 could not prove.
+    #[test]
+    fn the_listener_name_is_the_host_of_base_url() {
+        assert_eq!(
+            listener_domain("https://acme.int.example.com:3000/acme/directory").unwrap(),
+            "acme.int.example.com"
+        );
+
+        for base_url in ["https://192.0.2.1:3000", "https://[2001:db8::1]:3000"] {
+            let error = listener_domain(base_url).unwrap_err().to_string();
+            assert!(
+                error.contains("dns-01 proves control of a DNS name"),
+                "the refusal has to explain why an address cannot work: {error}"
+            );
+        }
+
+        // Not a URL, and a URL with no host in it: both are the operator's typo,
+        // and both refuse the toggle rather than reaching a CA.
+        assert!(listener_domain("not a url").is_err());
+        assert!(listener_domain("https://").is_err());
+    }
+
+    /// The request itself: for that name, for a key nobody else can read, and
+    /// built from the same key every time — which is what lets the certificate be
+    /// swapped under the listener without a new key on every renewal.
+    #[test]
+    fn the_listener_request_is_for_that_name_and_that_key() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new("tls-csr");
+        let key_path = dir.join("server.key");
+
+        let (domain, request) = listener_csr("https://acme.int.example.com", &key_path).unwrap();
+        assert_eq!(domain, "acme.int.example.com");
+
+        let mode = fs::metadata(&key_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "a listener key is not for the group");
+
+        let der = rustls_pki_types::CertificateSigningRequestDer::from(request.clone());
+        // Parsing also verifies the self-signature, so this is the assertion that
+        // the request is well formed and not merely long.
+        let parsed = rcgen::CertificateSigningRequestParams::from_der(&der).unwrap();
+        let names: Vec<&str> = parsed
+            .params
+            .subject_alt_names
+            .iter()
+            .filter_map(|san| match san {
+                rcgen::SanType::DnsName(name) => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, vec!["acme.int.example.com"]);
+
+        // Asking again reuses the key it made, so a renewal and a restart cannot
+        // disagree about which key the certificate on disk belongs to. The request
+        // is signed freshly each time, so the public key is what has to match, not
+        // the bytes.
+        let key_bytes = fs::read(&key_path).unwrap();
+        let (_, second) = listener_csr("https://acme.int.example.com", &key_path).unwrap();
+        assert_eq!(fs::read(&key_path).unwrap(), key_bytes, "no new key");
+        let second_der = rustls_pki_types::CertificateSigningRequestDer::from(second);
+        let reparsed = rcgen::CertificateSigningRequestParams::from_der(&second_der).unwrap();
+        assert_eq!(
+            parsed.public_key, reparsed.public_key,
+            "the same key, asked twice"
+        );
+
+        // A file that is not a key is reported, never replaced: it may be the key
+        // of the certificate the listener is serving right now.
+        fs::write(&key_path, "not a key\n").unwrap();
+        let error = listener_csr("https://acme.int.example.com", &key_path)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("server.key"), "{error}");
+        assert!(error.contains("not a usable key"), "{error}");
+
+        // A key path that cannot be read at all is reported as the read failure it
+        // is. Minting a new key would be both wrong (there is one, unreadable) and
+        // impossible (the write refuses an existing path), and "already exists" is
+        // not a sentence that tells an operator what is wrong.
+        let directory = dir.join("not-a-key");
+        fs::create_dir(&directory).unwrap();
+        let error = listener_csr("https://acme.int.example.com", &directory)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("reading the listener key"), "{error}");
+    }
+
+    /// The request carries its names in the SAN and nowhere else.
+    ///
+    /// `CertificateParams::new` builds everything it does not name as
+    /// `Default::default()`, and rcgen's default subject is the literal
+    /// placeholder `CN=rcgen self signed cert`. A CA collects the `CommonName`
+    /// among the names it has to issue for, so carrying that string is asking to
+    /// be certified *as* it: a real order for a real listener answered
+    /// `Cannot issue for "rcgen self signed cert": Domain name contains an invalid
+    /// character`, and a CA stating a reason like that is permanent, so the row
+    /// was retired rather than retried. Nothing downstream would have caught it
+    /// either — the protocol crate's own CN rule reads a name containing
+    /// whitespace as descriptive text rather than an asserted name — so the
+    /// request must not carry a subject at all. The local CA does the equivalent
+    /// for every leaf it signs, clearing the subject it copied out of the request
+    /// (see `signer::local_ca`), which is what RFC 5280 §4.2.1.6 wants: names in
+    /// the SAN, subject empty.
+    #[test]
+    fn the_listener_request_asserts_its_names_in_the_subject_alternative_name() {
+        use x509_parser::prelude::FromDer;
+        let dir = TempDir::new("tls-csr-subject");
+        let key_path = dir.join("server.key");
+        let (_, request) = listener_csr("https://acme.int.example.com", &key_path).unwrap();
+
+        let (_, parsed) =
+            x509_parser::certification_request::X509CertificationRequest::from_der(&request)
+                .expect("a request this server produced has to parse");
+        let common_names: Vec<String> = parsed
+            .certification_request_info
+            .subject
+            .iter_common_name()
+            .filter_map(|attribute| attribute.as_str().ok().map(str::to_string))
+            .collect();
+        assert!(
+            common_names.is_empty(),
+            "a CSR subject is a claim to names, and this one makes one: {common_names:?}"
+        );
     }
 }

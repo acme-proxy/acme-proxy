@@ -264,6 +264,12 @@ async fn an_unknown_dns_provider_is_a_startup_error() {
         ),
     ));
     assert!(error.contains("route53"), "{error}");
+    // As in `an_unknown_challenge_strategy_is_a_startup_error`, the message is
+    // the only place a reader learns the set.
+    assert!(
+        error.contains("rfc2136, cloudflare"),
+        "the refusal must name what IS supported: {error}"
+    );
 }
 
 /// A backend rebuilt by a configuration reload serves what the outgoing one

@@ -646,7 +646,7 @@ async fn a_shutdown_waits_for_the_runner_to_release_its_leases() {
         metrics: None,
     };
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-    let (_handle, reloads) = crate::reload::channel();
+    let (handle, reloads) = crate::reload::channel();
     let serving = tokio::spawn(serve_on_with_reloads(
         RoleSet::parse(Some("worker")).unwrap(),
         Arc::new(config),
@@ -655,6 +655,7 @@ async fn a_shutdown_waits_for_the_runner_to_release_its_leases() {
         async {
             let _ = rx.await;
         },
+        handle,
         reloads,
     ));
 
@@ -775,6 +776,7 @@ async fn a_generation_registers_the_sweeps_its_configuration_asks_for() {
             &resolved,
             &assembly,
             &parts,
+            &crate::reload::ReloadHandle::none(),
         )
         .unwrap();
         let kinds = generation.job_registry.kinds();

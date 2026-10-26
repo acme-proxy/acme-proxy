@@ -51,6 +51,10 @@ pub struct Script {
     pub order_poll_outages: usize,
     /// Omit `Location` from the `newAccount`/`newOrder` response.
     pub omit_location: bool,
+    /// Omit `Location` from the `newOrder` response **only**, as a proxy that ate
+    /// the header on the way past would: an account that registered fine, and an
+    /// order whose URL is nowhere to be found.
+    pub omit_order_location: bool,
     /// The PEM chain served at the certificate URL.
     pub chain: String,
     /// Send `Retry-After: 0` on `processing` polls.
@@ -446,7 +450,8 @@ async fn route(
         }
         "/newOrder" => {
             counters.orders_opened.fetch_add(1, Ordering::SeqCst);
-            let location = (!script.omit_location).then(|| format!("{base}/order/1"));
+            let location = (!script.omit_location && !script.omit_order_location)
+                .then(|| format!("{base}/order/1"));
             json_response(
                 201,
                 &order_object(base, "pending", false, script),

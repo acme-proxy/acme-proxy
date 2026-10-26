@@ -45,6 +45,13 @@ pub(super) struct Cells {
 /// their cells interleaved, and the second-newest generation would win some of
 /// them. Ends when the last [`crate::reload::ReloadHandle`] is dropped, which is
 /// what makes [`crate::reload::Reloads::none`] cost nothing.
+///
+/// `reload` is handed down into each generation's job registry, so the handler
+/// that renews this server's own listener certificate can ask for the reload that
+/// installs what it wrote. A reload asked for *during* a reload build is what that
+/// makes possible, and it is safe for the reason this function is one task: the
+/// request lands on the queue this loop is reading, so it is served after the
+/// current generation publishes rather than reentering the build.
 pub(super) async fn supervise_reloads(
     roles: crate::RoleSet,
     mut reloads: crate::reload::Reloads,
@@ -52,6 +59,7 @@ pub(super) async fn supervise_reloads(
     mut resolved: Vec<acme_proxy_core::config::ProfileConfig>,
     assembly: Arc<Assembly>,
     cells: Cells,
+    reload: crate::reload::ReloadHandle,
 ) {
     let mut generation: u64 = 1;
 
@@ -76,8 +84,9 @@ pub(super) async fn supervise_reloads(
             let config = config.clone();
             let resolved = resolved.clone();
             let assembly = assembly.clone();
+            let reload = reload.clone();
             tokio::task::spawn_blocking(move || {
-                prepare_reload(roles, &config, &resolved, &assembly)
+                prepare_reload(roles, &config, &resolved, &assembly, &reload)
             })
             .await
             .unwrap_or_else(|error| {

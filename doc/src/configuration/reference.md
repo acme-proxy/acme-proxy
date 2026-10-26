@@ -169,7 +169,9 @@ signed request fails the §6.4 URL check above.
 **`cert_path`** (`String`) — *Default: `"server.pem"` | Env: `ACME_PROXY_SERVER__TLS__CERT_PATH`*
 
 PEM certificate chain, leaf first. A self-signed certificate is generated and
-written when either this or `key_path` is missing.
+written when either this or `key_path` is missing — unless `acme_enabled`,
+below, is on, which takes both files over. See
+[TLS Termination](../features/tls_termination.md#the-servers-own-certificate).
 
 **`key_path`** (`String`) — *Default: `"server.key"` | Env: `ACME_PROXY_SERVER__TLS__KEY_PATH`*
 
@@ -179,6 +181,34 @@ Path to the private key.
 
 Budget for one TLS handshake. Handshakes run concurrently, off the accept path,
 so this never delays another client.
+
+**`acme_enabled`** (`Boolean`) — *Default: `false` | Env: `ACME_PROXY_SERVER__TLS__ACME_ENABLED`*
+
+Order this server's **own** listener certificate from the upstream CA of one of
+its profiles, instead of serving a self-signed one that every client has to be
+told to trust. The name is the host of `server.base_url`; an address is refused,
+because `dns-01` proves names. Control is proved with that profile's
+[`dns01`](../signers/relay.md#signerrelaydns01) updater, whichever provider it
+names: the profile has to relay with `challenge_strategy = "dns01"`, and the
+host has to be inside the zone that updater can write. Renewal is automatic, 30
+days before expiry.
+
+Enabling it hands both files above to the server. A chain that a CA issued and
+that is not near expiry is left alone until it is; a generated placeholder is
+replaced on the first pass. Booting does not wait for the order — the listener
+serves whatever is on disk, and a CA or DNS API that is down costs a
+`server_self_tls_failed` warning rather than a server that will not start. Only
+a process running the `worker` role issues. See
+[TLS Termination](../features/tls_termination.md#the-servers-own-certificate).
+
+**`acme_profile`** (`String`) — *Default: `""` | Env: `ACME_PROXY_SERVER__TLS__ACME_PROFILE`*
+
+Which profile's upstream the certificate is ordered from. Empty means "the one
+profile that relays with `dns01`" — and startup refuses rather than guess whose
+CA is asked, whose DNS credential writes a record and whose rate-limit allowance
+is spent, so an empty name with two candidates, or with none, is a refusal that
+names both keys. A named profile still has to relay with `dns01`, since nothing
+else can prove a name to an upstream CA.
 
 ---
 
@@ -630,8 +660,10 @@ The forward proxy every outbound HTTP client dials through: the upstream CA the
 tunnel, since it is TLS rather than HTTP.
 
 Not everything outbound. SMTP (`notify.email`) and the RFC 2136 updates
-`signer.relay.dns01` makes are not HTTP and keep dialling directly; an estate
-whose egress is proxy-only needs a separate route for those two.
+`signer.relay.dns01` writes through its `rfc2136` provider are not HTTP and keep
+dialling directly; an estate whose egress is proxy-only needs a separate route
+for those two. The same strategy's `cloudflare` provider *is* HTTP, and dials
+through this table like the upstream CA does.
 
 Every key is empty by default, which means no proxy at all. There is no
 `enabled` key — the presence of a URL is the switch.

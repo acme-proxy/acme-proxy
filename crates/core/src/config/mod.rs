@@ -995,6 +995,10 @@ mod tests {
         assert_eq!(config.server.tls.cert_path, "server.pem");
         assert_eq!(config.server.tls.key_path, "server.key");
         assert_eq!(config.server.tls.handshake_timeout_ms, 10_000);
+        // Provisioning the listener certificate is opt-in: an operator who put
+        // their own files at cert_path/key_path must not find them overwritten.
+        assert!(!config.server.tls.acme_enabled);
+        assert_eq!(config.server.tls.acme_profile, "");
         assert_eq!(config.nonce.ttl_seconds, 300);
         assert_eq!(config.jobs.poll_interval_ms, 1_000);
         assert_eq!(config.jobs.max_concurrent, 8);
@@ -1095,6 +1099,14 @@ mod tests {
             loaded.server.tls.handshake_timeout_ms,
             direct.server.tls.handshake_timeout_ms
         );
+        assert_eq!(
+            loaded.server.tls.acme_enabled,
+            direct.server.tls.acme_enabled
+        );
+        assert_eq!(
+            loaded.server.tls.acme_profile,
+            direct.server.tls.acme_profile
+        );
         assert_eq!(loaded.nonce.ttl_seconds, direct.nonce.ttl_seconds);
         assert_eq!(loaded.order.validity_seconds, direct.order.validity_seconds);
         assert_eq!(loaded.signer.backend, direct.signer.backend);
@@ -1164,6 +1176,14 @@ mod tests {
         assert_eq!(
             example.server.tls.handshake_timeout_ms,
             defaults.server.tls.handshake_timeout_ms
+        );
+        assert_eq!(
+            example.server.tls.acme_enabled,
+            defaults.server.tls.acme_enabled
+        );
+        assert_eq!(
+            example.server.tls.acme_profile,
+            defaults.server.tls.acme_profile
         );
         assert_eq!(example.admin.enabled, defaults.admin.enabled);
         assert_eq!(example.admin.bind_address, defaults.admin.bind_address);

@@ -521,6 +521,9 @@ mod tests {
                 cert_path: dir.join("server.pem").display().to_string(),
                 key_path: dir.join("server.key").display().to_string(),
                 handshake_timeout_ms: 5_000,
+                // Never set in a test of the acceptor: the toggle belongs to the
+                // server's own certificate, which these tests hand over by hand.
+                ..TlsConfig::default()
             },
             ..ServerConfig::default()
         }

@@ -70,6 +70,104 @@ async fn the_dns01_strategy_needs_its_provider_configured() {
     assert!(error.contains("rfc2136.server"), "{error}");
 }
 
+/// The same refusal for the second provider, naming the key that has to be
+/// filled in. Nothing is contacted by this provider at startup, so an
+/// unreachable API cannot be the reason the server did not boot — a missing
+/// credential is the only one.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_cloudflare_provider_needs_every_key_it_reads() {
+    let upstream = testsrv::start(Script::default()).await;
+    let dir = TempDir::new("upstream");
+    let db = database().await;
+    let mut cfg = config(&upstream, &dir);
+    cfg.challenge_strategy = "dns01".to_string();
+    cfg.dns01.provider = "cloudflare".to_string();
+
+    let error = startup_error(RelaySigner::from_config(
+        &cfg,
+        &relay_parts(db.clone(), no_notifiers(), test_queue(db.clone())),
+    ));
+    assert!(error.contains("cloudflare.api_token"), "{error}");
+
+    // The next key down, with the token in place: each is refused by name
+    // rather than all at once, because a reload reports the first and an
+    // operator fixes one at a time.
+    cfg.dns01.cloudflare.api_token = "token".to_string();
+    let error = startup_error(RelaySigner::from_config(
+        &cfg,
+        &relay_parts(db.clone(), no_notifiers(), test_queue(db.clone())),
+    ));
+    assert!(error.contains("cloudflare.zone_id"), "{error}");
+
+    cfg.dns01.cloudflare.zone_id = "0123456789abcdef".to_string();
+    let error = startup_error(RelaySigner::from_config(
+        &cfg,
+        &relay_parts(db.clone(), no_notifiers(), test_queue(db)),
+    ));
+    assert!(error.contains("cloudflare.zone"), "{error}");
+}
+
+/// A complete `cloudflare` provider is a strategy like any other: it builds
+/// without contacting anything, so a zone whose API is down at boot still
+/// leaves a server that serves ACME and retries the publish later.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_cloudflare_provider_builds_from_a_complete_config() {
+    let upstream = testsrv::start(Script::default()).await;
+    let dir = TempDir::new("upstream");
+    let db = database().await;
+    let mut cfg = config(&upstream, &dir);
+    cfg.challenge_strategy = "dns01".to_string();
+    cfg.dns01.provider = "cloudflare".to_string();
+    cfg.dns01.cloudflare = acme_proxy_core::config::CloudflareConfig {
+        api_token: "token".to_string(),
+        zone: "example.com".to_string(),
+        zone_id: "0123456789abcdef".to_string(),
+    };
+
+    let signer = RelaySigner::from_config(
+        &cfg,
+        &relay_parts(db.clone(), no_notifiers(), test_queue(db)),
+    );
+    assert!(signer.is_ok(), "a configured provider must build");
+}
+
+/// Alias mode is checked against whichever provider writes the record, so an
+/// alias the credential cannot publish is a startup error under `cloudflare`
+/// exactly as it is under `rfc2136` — and the message names the key to edit.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_alias_outside_the_cloudflare_zone_is_a_startup_error() {
+    let upstream = testsrv::start(Script::default()).await;
+    let dir = TempDir::new("upstream");
+    let db = database().await;
+    let mut cfg = config(&upstream, &dir);
+    cfg.challenge_strategy = "dns01".to_string();
+    cfg.dns01.provider = "cloudflare".to_string();
+    cfg.dns01.cloudflare = acme_proxy_core::config::CloudflareConfig {
+        api_token: "token".to_string(),
+        zone: "example.com".to_string(),
+        zone_id: "0123456789abcdef".to_string(),
+    };
+    cfg.dns01.challenge_alias = "acme-alias.net.".to_string();
+
+    let error = startup_error(RelaySigner::from_config(
+        &cfg,
+        &relay_parts(db.clone(), no_notifiers(), test_queue(db.clone())),
+    ));
+    assert!(error.contains("challenge_alias"), "{error}");
+    assert!(error.contains("cloudflare.zone"), "{error}");
+
+    // Inside the zone, it is accepted.
+    cfg.dns01.challenge_alias = "alias.example.com.".to_string();
+    assert!(
+        RelaySigner::from_config(
+            &cfg,
+            &relay_parts(db.clone(), no_notifiers(), test_queue(db)),
+        )
+        .is_ok(),
+        "an alias inside the zone must build"
+    );
+}
+
 /// First start registers and writes both files; the second must reuse them
 /// and not register again — that is what keeps startup independent of the
 /// upstream after the first time.

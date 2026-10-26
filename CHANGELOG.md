@@ -32,6 +32,31 @@ migrated configuration before restarting.
 
 ## [Unreleased]
 
+### Added
+
+- **The server can obtain a certificate for its own listener**
+  (`server.tls.acme_enabled`). Rather than the self-signed certificate every
+  client has to be told to trust, the server asks one of its profiles' upstream
+  CAs for a certificate for the host of `server.base_url` — the only name a
+  client will ever ask that listener for — and proves control of it with
+  `dns-01` through that profile's `[signer.relay.dns01]` updater, the one it
+  already uses for its clients. `server.tls.acme_profile` names the profile when
+  more than one relays with `dns01` — the choice decides whose CA is asked,
+  whose DNS credential writes the record and whose rate-limit allowance is
+  spent — and an address in `base_url` is refused, since `dns-01` proves a
+  name and not an address. Nothing here goes through the server's own ACME
+  surface, so `[challenge]` has no bearing on it: no listener is needed in
+  order to obtain the listener's certificate. A worker then checks twice a day
+  and renews within 30 days of expiry, writing `cert_path` and asking for the
+  [reload](operations/reload.md) that installs it. Booting never waits for an
+  order, so a CA or a DNS API that is down costs a `server_self_tls_failed`
+  warning and the certificate already being served, not a server that will not
+  start. The new events are `server_self_tls_configured`,
+  `signer_self_tls_issued`, `server_self_tls_installed`,
+  `server_self_tls_failed`, `server_self_tls_abandoned` and
+  `server_self_tls_reload_refused`; see
+  [TLS Termination → The server's own certificate](features/tls_termination.md).
+
 ## [0.7.0] — 2026-10-25
 
 ### Breaking
@@ -69,6 +94,24 @@ migrated configuration before restarting.
   without listing it.
 
 ### Added
+
+- **`signer.relay.dns01.provider = "cloudflare"`** publishes the upstream
+  `dns-01` TXT record through Cloudflare's DNS API, for a zone Cloudflare's own
+  nameservers serve. They take no RFC 2136 update, so until now a zone there
+  needed something speaking `nsupdate` on one side and the API on the other. The
+  credential is a scoped API token needing `Zone / DNS / Edit` on the zone, and
+  the three keys are `[signer.relay.dns01.cloudflare]`'s `api_token`, `zone` and
+  `zone_id`; every record name is checked against that zone before a request is
+  sent, the same test `rfc2136` applies. Records are still appended and retracted
+  **by value** — Cloudflare identifies a record by an id, so a retraction lists
+  the name and deletes the ids whose content matches, leaving another order's
+  value at it alone. A POST refused because the record exists already counts as
+  published once this server's own value is found there, so a retry whose
+  response was lost in transit fails nothing. This provider is an ordinary
+  outbound HTTPS client, so `dns.resolver` and `[proxy]` reach it where the RFC
+  2136 updates never did; set `propagation.mode = "delay"`, because the API
+  accepting a record is not the edges serving it. Both providers are documented
+  on the book's Relay page.
 
 - **Expiry reminders addressed to the account's own contact** (#10). With
   `notify.expiry.contact = true`, each expiry pass also mails every account

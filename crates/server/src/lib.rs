@@ -52,6 +52,7 @@ pub mod logging;
 pub mod profile;
 pub mod reload;
 pub mod roles;
+mod selftls;
 pub mod sockets;
 pub mod supervisor;
 #[cfg(test)]
@@ -105,7 +106,7 @@ pub async fn run(
     // first upstream contact before it binds anything, which is exactly the
     // window an operator's `systemctl reload` could land in.
     let (reload_handle, reloads) = crate::reload::channel();
-    let _hangups = AbortOnDrop(tokio::spawn(watch_for_hangup(reload_handle)));
+    let _hangups = AbortOnDrop(tokio::spawn(watch_for_hangup(reload_handle.clone())));
 
     let fatal = |error: &anyhow::Error| {
         error!(event = "server_fatal_error", outcome = "failure", error = %error);
@@ -126,6 +127,10 @@ pub async fn run(
             metrics: metrics_listener,
         },
         shutdown_signal(),
+        // A clone: the hangup watcher above keeps the other half, and the job that
+        // renews the listener certificate asks for a reload the same way a `SIGHUP`
+        // does. See `crate::selftls`.
+        reload_handle.clone(),
         reloads,
     )
     .await
@@ -223,6 +228,7 @@ pub async fn serve_on_with(
             metrics: metrics_listener,
         },
         shutdown,
+        crate::reload::ReloadHandle::none(),
         crate::reload::Reloads::none(),
     )
     .await
@@ -242,6 +248,7 @@ pub async fn serve_on_with_reloads(
     database: Arc<Database>,
     sockets: Sockets,
     shutdown: impl Future<Output = ()> + Send + 'static,
+    reload: crate::reload::ReloadHandle,
     reloads: crate::reload::Reloads,
 ) -> anyhow::Result<()> {
     let Sockets {
@@ -317,8 +324,8 @@ pub async fn serve_on_with_reloads(
         store_first_crls(&parts.signers).await;
     }
 
-    let generation =
-        build_generation(roles, &config, &resolved, &assembly, &parts).inspect_err(|error| {
+    let generation = build_generation(roles, &config, &resolved, &assembly, &parts, &reload)
+        .inspect_err(|error| {
             error!(event = "profile_init_failed", outcome = "failure", error = %error);
         })?;
 
@@ -470,6 +477,10 @@ pub async fn serve_on_with_reloads(
             admin: admin_handle,
             metrics: metrics_handle,
         },
+        // Moved, and the last use: every generation this loop builds is handed the
+        // same handle, which is the one the listener-certificate job triggers to
+        // install what it renewed.
+        reload,
     )));
 
     // Nothing is drained here any more. A notification in flight at shutdown is

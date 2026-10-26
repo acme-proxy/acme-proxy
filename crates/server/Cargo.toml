@@ -20,6 +20,7 @@ acme-proxy-protocol.workspace = true
 acme-proxy-signer.workspace = true
 acme-proxy-store.workspace = true
 anyhow.workspace = true
+async-trait.workspace = true
 axum.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
@@ -34,4 +35,6 @@ acme-proxy-net = { workspace = true, features = ["test-util"] }
 acme-proxy-signer = { workspace = true, features = ["test-util"] }
 acme-proxy-store = { workspace = true, features = ["test-util"] }
 http-body-util.workspace = true
+rcgen.workspace = true
+time.workspace = true
 tokio-rustls.workspace = true

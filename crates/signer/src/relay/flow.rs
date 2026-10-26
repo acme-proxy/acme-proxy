@@ -496,6 +496,35 @@ async fn relay(
         }
     }
 
+    let (chain, certificate_url) = finalize_and_fetch(inner, order_url, csr_der).await?;
+
+    if let Err(error) =
+        UpstreamOrder::mark_valid(order_id, Some(&certificate_url), &inner.database).await
+    {
+        warn!(event = "upstream_order_mark_valid_failed", outcome = "failure", error = %error);
+    }
+
+    Ok(chain)
+}
+
+/// Waits for one upstream order to become `ready`, finalizes it with `csr_der`,
+/// and downloads the chain: the part of [`relay`] that has nothing to do with
+/// answering a challenge.
+///
+/// Split out because [`super::selftls`] drives the same tail for an order it
+/// opened for this server's own listener, and the two must not drift apart in
+/// the one place where a subtle difference — finalizing before the order is
+/// `ready`, or fetching the chain from somewhere other than the order's own
+/// `certificate` URL — reads as success until it doesn't.
+///
+/// Returns the PEM chain and the URL it came from, the latter because `relay`
+/// records it against the local order and [`super::selftls`] has no order to
+/// record it against.
+pub(super) async fn finalize_and_fetch(
+    inner: &Inner,
+    order_url: &str,
+    csr_der: &[u8],
+) -> Result<(String, String), RelayFailure> {
     // Wait for the upstream to decide the order is ready to finalize. With a
     // non-validating upstream this is immediate; the loop exists because even
     // then the transition is not promised to be synchronous.
@@ -507,8 +536,8 @@ async fn relay(
                 "upstream order is ready but advertises no finalize URL".to_string(),
             )
         })?;
-        // The client's CSR is relayed byte-for-byte: the upstream must see
-        // exactly what the real end client asked for, keys and all.
+        // The CSR is sent byte-for-byte as the caller built it: the upstream must
+        // see exactly the key the caller is going to serve the certificate with.
         let payload = json!({
             "csr": BASE64_URL_SAFE_NO_PAD.encode(csr_der),
         });
@@ -540,14 +569,7 @@ async fn relay(
         .map_err(|error| classify(&error))?;
 
     let chain = response.text().map_err(|error| classify(&error))?;
-
-    if let Err(error) =
-        UpstreamOrder::mark_valid(order_id, Some(&certificate_url), &inner.database).await
-    {
-        warn!(event = "upstream_order_mark_valid_failed", outcome = "failure", error = %error);
-    }
-
-    Ok(chain)
+    Ok((chain, certificate_url))
 }
 
 /// **This proxy's** account thumbprint at the upstream — never the end client's.
@@ -577,7 +599,7 @@ fn upstream_thumbprint(inner: &Inner) -> Result<String, RelayFailure> {
 /// dns-01 strategy to fail against a real CA, which is why the thumbprint is
 /// taken from `inner.account` and computed by the crate's existing
 /// `jwk_thumbprint` rather than rebuilt here.
-async fn answer_dns01(
+pub(super) async fn answer_dns01(
     inner: &Inner,
     updater: &dyn dns01::DnsUpdater,
     authorizations: &[String],
@@ -855,7 +877,7 @@ async fn trigger_and_await(
 }
 
 /// Polls the upstream order until it reaches one of `wanted`, or fails.
-async fn poll_until(
+pub(super) async fn poll_until(
     inner: &Inner,
     order_url: &str,
     wanted: &[&str],

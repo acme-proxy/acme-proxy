@@ -58,6 +58,7 @@ pub mod eab;
 pub mod flow;
 pub mod http01;
 mod propagation;
+mod selftls;
 #[cfg(any(test, feature = "test-util"))]
 pub mod testsrv;
 pub mod wire;
@@ -170,7 +171,62 @@ pub struct RelaySigner(Arc<Inner>);
 /// the `crl_refresher` shape, with a concrete type instead of a trait object
 /// because the one consumer is this backend's own handler rather than a third
 /// party that must be kept ignorant of what a [`RelaySigner`] is.
+#[derive(Clone)]
 pub struct RelayState(Arc<Inner>);
+
+/// Why this server could not obtain a certificate for its own listener, keeping
+/// the relay's own rule about what asking again would achieve.
+///
+/// [`flow::RelayFailure`] is the same distinction and is deliberately not public:
+/// it belongs to a job that has a retry budget to spend. This is the shape the
+/// caller in `server::selftls` needs — and only that shape — so the vocabulary
+/// stops at the crate boundary rather than leaking a job's internals with it.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SelfTlsError {
+    /// A network, a proxy, an overloaded CA: nobody decided anything, so the
+    /// caller should try again on its own schedule.
+    #[error("{0}")]
+    Retryable(String),
+    /// The upstream stated a reason, or the configuration cannot work. Asking
+    /// again repeats it.
+    #[error("{0}")]
+    Permanent(String),
+}
+
+impl From<flow::RelayFailure> for SelfTlsError {
+    fn from(failure: flow::RelayFailure) -> Self {
+        match failure {
+            flow::RelayFailure::Retryable(reason) => Self::Retryable(reason),
+            flow::RelayFailure::Permanent(reason) => Self::Permanent(reason),
+        }
+    }
+}
+
+impl RelayState {
+    /// Obtains a certificate for `domain` from the upstream this backend relays
+    /// to, proving control of it with this backend's `[signer.relay.dns01]`
+    /// updater and finalizing against `csr_der`.
+    ///
+    /// Answers with the PEM chain; writing it, and deciding when to ask again,
+    /// belongs to the caller — see this module's `selftls` for why the two are
+    /// split where they are, and `server::selftls` for what the caller does with
+    /// the result.
+    pub async fn issue_listener_certificate(
+        &self,
+        domain: &str,
+        csr_der: &[u8],
+    ) -> Result<String, SelfTlsError> {
+        selftls::issue(&self.0, domain, csr_der)
+            .await
+            .map_err(SelfTlsError::from)
+    }
+
+    /// Whether this backend can prove control of a name on its own, which is what
+    /// `server.tls.acme_enabled` requires of the profile it names.
+    pub fn can_prove_control(&self) -> bool {
+        matches!(self.0.strategy, ChallengeStrategy::Dns01(_))
+    }
+}
 
 impl RelaySigner {
     /// Queues the job that carries `order_id` the rest of the way, and answers
@@ -236,8 +292,12 @@ impl RelaySigner {
         let (client, account, kid, strategy, dns01_alias) = std::thread::scope(|scope| {
             scope
                 .spawn(|| -> anyhow::Result<_> {
-                    let (strategy, dns01_alias) =
-                        build_challenge_strategy(cfg, &parts.database, poll.timeout)?;
+                    let (strategy, dns01_alias) = build_challenge_strategy(
+                        cfg,
+                        &parts.database,
+                        poll.timeout,
+                        outbound.clone(),
+                    )?;
 
                     let (client, account, kid) = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
@@ -290,6 +350,7 @@ fn build_challenge_strategy(
     cfg: &RelayConfig,
     database: &Arc<Database>,
     poll_timeout: Duration,
+    outbound: acme_proxy_net::http_client::Outbound,
 ) -> anyhow::Result<(ChallengeStrategy, Option<String>)> {
     // Validated whether or not it is the selected strategy, for
     // the reason `challenge::from_config` validates names
@@ -314,8 +375,29 @@ fn build_challenge_strategy(
                 }
                 ChallengeStrategy::Dns01(Arc::new(updater))
             }
+            "cloudflare" => {
+                let updater = dns01::cloudflare::CloudflareUpdater::from_config(
+                    &cfg.dns01.cloudflare,
+                    outbound,
+                )?;
+                // The same startup refusal, against the zone this provider
+                // writes: which key to go and edit is named in the message.
+                dns01_alias = dns01::alias_record_name(&cfg.dns01.challenge_alias)?;
+                if let Some(alias) = &dns01_alias {
+                    updater.check_in_zone(alias).map_err(|error| {
+                        anyhow::anyhow!(
+                            "signer.relay.dns01.challenge_alias cannot be \
+                             published through signer.relay.dns01.cloudflare.zone: {error}"
+                        )
+                    })?;
+                }
+                ChallengeStrategy::Dns01(Arc::new(updater))
+            }
             other => {
-                anyhow::bail!("unknown signer.relay.dns01.provider: {other} (supported: rfc2136)")
+                anyhow::bail!(
+                    "unknown signer.relay.dns01.provider: {other} \
+                     (supported: rfc2136, cloudflare)"
+                )
             }
         },
         "http01" => {

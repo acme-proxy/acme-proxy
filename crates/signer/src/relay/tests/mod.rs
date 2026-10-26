@@ -13,6 +13,7 @@
 //! - [`lifecycle`] — startup, provisioning, `issue`/relay/settle, revoke, recovery
 //! - [`eab`] — the upstream credential, both ways of supplying it
 //! - [`dns01_strategy`] / [`http01_strategy`] — the two answering strategies
+//! - [`self_tls`] — the server ordering a certificate for its own listener
 //! - [`multi_profile`] — several relay profiles, and the one handler over them
 //! - [`renewal`] — RFC 9773 windows, and the `UpstreamError` mapping
 //!
@@ -28,6 +29,7 @@ mod http01_strategy;
 mod lifecycle;
 mod multi_profile;
 mod renewal;
+mod self_tls;
 
 /// The job configuration the tests run under: everything fast, retries off.
 ///
@@ -221,6 +223,56 @@ fn relay_parts(
         egress: acme_proxy_net::testutil::egress_with(test_resolver()),
         jobs,
     }
+}
+
+/// A `DnsUpdater` that records what it was asked to publish, so a test can
+/// assert on the record without a DNS server.
+///
+/// Hoisted out of [`dns01_strategy`] when [`self_tls`] arrived as its second
+/// consumer, which is the same reason [`StubTokens`] is here: the answer is the
+/// orchestration around the updater, not the transport.
+#[derive(Default)]
+struct StubUpdater {
+    published: std::sync::Mutex<Vec<(String, String)>>,
+    deleted: std::sync::Mutex<Vec<(String, String)>>,
+    /// When the last publish and the last retraction happened, so a test can
+    /// measure what the relay did between the two.
+    published_at: std::sync::Mutex<Option<std::time::Instant>>,
+    deleted_at: std::sync::Mutex<Option<std::time::Instant>>,
+    fail: bool,
+}
+
+#[async_trait]
+impl dns01::DnsUpdater for StubUpdater {
+    async fn upsert_txt(&self, name: &str, value: &str) -> Result<(), String> {
+        if self.fail {
+            return Err("no DNS for you".to_string());
+        }
+        self.published
+            .lock()
+            .unwrap()
+            .push((name.to_string(), value.to_string()));
+        *self.published_at.lock().unwrap() = Some(std::time::Instant::now());
+        Ok(())
+    }
+    async fn delete_txt(&self, name: &str, value: &str) -> Result<(), String> {
+        self.deleted
+            .lock()
+            .unwrap()
+            .push((name.to_string(), value.to_string()));
+        *self.deleted_at.lock().unwrap() = Some(std::time::Instant::now());
+        Ok(())
+    }
+}
+
+/// Swaps the strategy on an already-built signer, so a test does not need a live
+/// RFC 2136 server to exercise the orchestration around it.
+fn with_updater(signer: RelaySigner, updater: Arc<StubUpdater>) -> RelaySigner {
+    let inner = Arc::try_unwrap(signer.0).unwrap_or_else(|_| panic!("sole owner"));
+    RelaySigner(Arc::new(Inner {
+        strategy: ChallengeStrategy::Dns01(updater),
+        ..inner
+    }))
 }
 
 /// A `TokenStore` that records what it was asked to publish *and* answers

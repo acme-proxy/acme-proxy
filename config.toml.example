@@ -49,6 +49,7 @@
 #     [signer.relay.eab]                upstream EAB bootstrap credential
 #     [signer.relay.dns01]              solving the upstream's DNS-01
 #     [signer.relay.dns01.rfc2136]      the TSIG-authenticated DNS update
+#     [signer.relay.dns01.cloudflare]   Cloudflare's DNS API instead
 #     [signer.relay.dns01.propagation]  waiting before the upstream looks
 #     [signer.custom]                   shelling out to a script
 #   [challenge]                [per-profile]  how control of a name is proven
@@ -131,6 +132,24 @@ key_path  = "server.key"            # ACME_PROXY_SERVER__TLS__KEY_PATH
 # Budget for one TLS handshake. A client that stalls part-way through is dropped
 # once it elapses; handshakes run concurrently, so this never delays anyone else.
 handshake_timeout_ms = 10000        # ACME_PROXY_SERVER__TLS__HANDSHAKE_TIMEOUT_MS
+# Order THIS server's own certificate from a profile's upstream CA rather than
+# serving the self-signed certificate generated above. The name is the host of
+# server.base_url, and control of it is proved with dns-01 through that profile's
+# own [signer.relay.dns01] updater — so the profile must be a relay answering
+# dns01 upstream, and the name must be inside the zone that updater can write.
+#
+# Enabling this hands both files above to the server: it writes the chain and its
+# key there, and renews them within 30 days of expiry, checking twice a day. Each
+# renewal then asks for the same reload a SIGHUP would have triggered, so the
+# listener serves the new chain without a restart. Only a process running the
+# worker role renews; a separate `acme` process picks the files up at its own next
+# reload.
+acme_enabled = false                # ACME_PROXY_SERVER__TLS__ACME_ENABLED
+# Which profile's upstream to order from. Leave it empty when exactly one profile
+# relays with dns01; name it when more than one does, since the choice decides
+# whose CA is asked, whose DNS credential writes the record and whose rate-limit
+# allowance is spent, and the server refuses to guess between them.
+acme_profile = ""                   # ACME_PROXY_SERVER__TLS__ACME_PROFILE
 
 [admin]
 # The web admin interface: a SECOND listener, on its own socket, serving no
@@ -621,16 +640,38 @@ kid = ""                            # ACME_PROXY_SIGNER__RELAY__EAB__KID
 hmac_key = ""                       # ACME_PROXY_SIGNER__RELAY__EAB__HMAC_KEY
 
 [signer.relay.dns01]
-# Only read when challenge_strategy = "dns01". The only provider is "rfc2136",
-# which works with any authoritative server implementing RFC 2136 dynamic
-# update (BIND, PowerDNS, Knot, CoreDNS with the `update` plugin) rather than
-# tying the server to one cloud vendor's API.
+# Only read when challenge_strategy = "dns01". Two providers write the record:
+#   "rfc2136"   — an RFC 2136 update signed with a TSIG key, accepted by any
+#                 authoritative server implementing it (BIND, PowerDNS, Knot,
+#                 CoreDNS with the `update` plugin). The default, and the one
+#                 that ties this server to no cloud vendor's API.
+#   "cloudflare" — Cloudflare's DNS API, for a zone Cloudflare's own nameservers
+#                 serve. They take no DNS update, so a zone there has no other
+#                 way to be written.
 provider = "rfc2136"                # ACME_PROXY_SIGNER__RELAY__DNS01__PROVIDER
 # DNS alias mode: publish every challenge record at _acme-challenge.<alias>
 # instead of _acme-challenge.<domain>, after CNAMEing each domain's
-# _acme-challenge name there once. The alias must lie inside rfc2136.zone.
-# Empty (the default) writes in each domain's own zone.
+# _acme-challenge name there once. The alias must lie inside the provider's own
+# zone. Empty (the default) writes in each domain's own zone.
 challenge_alias = ""                # ACME_PROXY_SIGNER__RELAY__DNS01__CHALLENGE_ALIAS
+
+[signer.relay.dns01.cloudflare]
+# Only read when provider = "cloudflare". All three are required then; an empty
+# one is a startup error, as is a token or zone_id carrying whitespace (a
+# secrets-manager template that appends a newline fails here, not at the first
+# issuance).
+# SENSITIVE — a Cloudflare API token (My Profile -> API Tokens), sent as
+# `Authorization: Bearer`. It needs Zone / DNS / Edit on `zone` and nothing else.
+# The legacy global API key is not accepted: it authenticates the whole account.
+# Long-lived, since every issuance needs it, so it lives here as the TSIG secret
+# does; prefer the environment variable to a file on disk.
+api_token = ""                      # ACME_PROXY_SIGNER__RELAY__DNS01__CLOUDFLARE__API_TOKEN
+# The zone's apex name, e.g. "example.com". A trailing dot is accepted and
+# trimmed, since the rfc2136 table's `zone` is spelled with one.
+zone = ""                           # ACME_PROXY_SIGNER__RELAY__DNS01__CLOUDFLARE__ZONE
+# The zone's id, as Cloudflare's zone listing shows it. Configured rather than
+# looked up from `zone`, so an unreachable API cannot stop the server booting.
+zone_id = ""                        # ACME_PROXY_SIGNER__RELAY__DNS01__CLOUDFLARE__ZONE_ID
 
 [signer.relay.dns01.rfc2136]
 # host:port of the authoritative server that accepts the update.
@@ -654,8 +695,8 @@ tsig_algorithm = "hmac-sha256"      # ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__
 #   "none"  — trigger right after the update (the default). Right when the
 #             update server is itself what the CA asks.
 #   "delay" — sleep delay_secs first. For a provider that accepts an update
-#             before serving it (an API behind an RFC 2136 bridge), or
-#             secondaries that lag the primary.
+#             before serving it (always "cloudflare", and an API behind an RFC
+#             2136 bridge), or secondaries that lag the primary.
 mode = "none"                       # ACME_PROXY_SIGNER__RELAY__DNS01__PROPAGATION__MODE
 # Only read under mode = "delay". Must be less than poll_timeout_secs, which
 # bounds the whole attempt — and the delay runs once PER NAME in the order, so
@@ -743,8 +784,9 @@ supports_renewal_info = false        # ACME_PROXY_SIGNER__CUSTOM__SUPPORTS_RENEW
 # empty one holding only the ACME_SIGNER_* variables above plus a minimal PATH
 # (/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin). This matters
 # even more here than for a `custom` filter check — the RFC 2136 TSIG secret
-# used by signer.relay.dns01 lives inside this very [signer] section tree, and
-# a custom signer script has no business reading it.
+# and the Cloudflare API token used by signer.relay.dns01 live inside this very
+# [signer] section tree, and a custom signer script has no business reading
+# either.
 #
 # One process is spawned per invocation. A script still running when
 # timeout_ms expires is killed, not left behind.
@@ -1456,8 +1498,10 @@ contact_domains = []                # ACME_PROXY_NOTIFY__EXPIRY__CONTACT_DOMAINS
 # CONNECT tunnel, since it is TLS rather than HTTP).
 #
 # Not everything outbound: SMTP (notify.email) and the RFC 2136 DNS updates
-# signer.relay.dns01 makes are not HTTP and keep dialling directly. An estate
-# whose egress is proxy-only needs a separate route for those two.
+# signer.relay.dns01 writes through its "rfc2136" provider are not HTTP and keep
+# dialling directly. An estate whose egress is proxy-only needs a separate route
+# for those two. The same strategy's "cloudflare" provider IS HTTP, and dials
+# through this table like the upstream CA does.
 #
 # Every key is empty by default, which means no proxy at all. Each falls back
 # to its conventional environment variable when left empty:
