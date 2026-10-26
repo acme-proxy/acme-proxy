@@ -129,13 +129,14 @@ impl JsonApi {
         let url = Url::parse(&target)
             .map_err(|error| JsonApiError::transport(format!("{target} is not a URL: {error}")))?;
 
-        let endpoint = acme_proxy_net::http_client::Endpoint::from_url(&url).map_err(|error| {
-            JsonApiError::transport(format!("{target} is not a usable endpoint: {error}"))
-        })?;
+        let destination =
+            acme_proxy_net::http_client::Destination::from_url(&url).map_err(|error| {
+                JsonApiError::transport(format!("{target} is not a usable endpoint: {error}"))
+            })?;
 
         let connection = self
             .outbound
-            .connect(&endpoint, &self.tls)
+            .connect(&destination, &self.tls)
             .await
             .map_err(JsonApiError::transport)?;
 
@@ -147,7 +148,7 @@ impl JsonApi {
         // included — see `HyperFetcher`, whose loopback test is what caught it.
         let mut builder = Request::builder()
             .uri(request_target)
-            .header(hyper::header::HOST, endpoint.authority())
+            .header(hyper::header::HOST, destination.authority())
             .header(hyper::header::USER_AGENT, "acme-proxy")
             .header(hyper::header::ACCEPT, "application/json")
             .header(hyper::header::CONNECTION, "close");

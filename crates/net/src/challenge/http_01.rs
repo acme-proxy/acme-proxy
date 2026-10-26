@@ -320,14 +320,14 @@ impl HyperFetcher {
     /// Sends the request over an established connection and reads a capped body.
     async fn exchange(
         mut connection: crate::http_client::Connection<Empty<Bytes>>,
-        endpoint: &crate::http_client::Endpoint,
+        destination: &crate::http_client::Destination,
         url: &Url,
         max_bytes: usize,
     ) -> Result<HttpResponse, FetchError> {
-        // The endpoint the connection was opened to already knows this, and
+        // The destination the connection was opened to already knows this, and
         // elides a default port the same way; deriving it a second time from
         // the URL was one more place for the two spellings to disagree.
-        let authority = endpoint.authority();
+        let authority = destination.authority();
 
         // Origin-form directly, absolute-form when this connection forwards
         // through a proxy — the connection knows which, the caller does not.
@@ -397,15 +397,16 @@ impl HttpFetcher for HyperFetcher {
         // RFC 8555 §8.3 says the responder's certificate is *not* validated —
         // what it carries is the proof. That is the policy this module keeps
         // for itself, and the only reason it cannot share more than transport.
-        let endpoint = crate::http_client::Endpoint::from_url(url).map_err(FetchError::Protocol)?;
+        let destination =
+            crate::http_client::Destination::from_url(url).map_err(FetchError::Protocol)?;
 
         let connection = self
             .outbound
-            .connect(&endpoint, &self.tls)
+            .connect(&destination, &self.tls)
             .await
             .map_err(FetchError::Connect)?;
 
-        Self::exchange(connection, &endpoint, url, max_bytes).await
+        Self::exchange(connection, &destination, url, max_bytes).await
     }
 }
 

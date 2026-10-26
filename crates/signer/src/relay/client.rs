@@ -464,11 +464,11 @@ async fn request_inner(
     url: &Url,
     body: Option<Bytes>,
 ) -> Result<AcmeResponse, UpstreamError> {
-    let endpoint =
-        acme_proxy_net::http_client::Endpoint::from_url(url).map_err(UpstreamError::Url)?;
+    let destination =
+        acme_proxy_net::http_client::Destination::from_url(url).map_err(UpstreamError::Url)?;
 
     let connection = outbound
-        .connect(&endpoint, tls)
+        .connect(&destination, tls)
         .await
         .map_err(UpstreamError::Transport)?;
 
@@ -477,7 +477,7 @@ async fn request_inner(
     let request = Request::builder()
         .method(method)
         .uri(connection.request_target(url))
-        .header(hyper::header::HOST, endpoint.authority())
+        .header(hyper::header::HOST, destination.authority())
         .header(hyper::header::USER_AGENT, "acme-proxy")
         .header(
             hyper::header::CONTENT_TYPE,

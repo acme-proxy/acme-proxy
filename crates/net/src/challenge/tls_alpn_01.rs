@@ -185,10 +185,10 @@ impl TlsAlpnProbe for RustlsProbe {
         // used to via the OS resolver — see `crate::dns::connect`. Through a
         // CONNECT tunnel when `[proxy]` selects one: this is TCP under TLS, so
         // the tunnel is transparent to everything below.
-        let endpoint = crate::http_client::Endpoint::tls(identifier, port);
+        let destination = crate::http_client::Destination::tls(identifier, port);
         let stream = self
             .outbound
-            .connect_stream(&endpoint)
+            .connect_stream(&destination)
             .await
             .map_err(|error| {
                 ProbeError::Connect(format!("connecting to {identifier}:{port}: {error}"))

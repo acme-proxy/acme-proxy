@@ -66,13 +66,13 @@ pub fn error_excerpt(body: &[u8]) -> String {
 
 /// Where an outbound request is going, once its URL has been picked apart.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Endpoint {
+pub struct Destination {
     pub host: String,
     pub port: u16,
     pub https: bool,
 }
 
-impl Endpoint {
+impl Destination {
     /// Splits a URL into host, port and scheme, rejecting anything this server
     /// will not speak.
     ///
@@ -96,7 +96,7 @@ impl Endpoint {
         Ok(Self { host, port, https })
     }
 
-    /// An endpoint for a TLS connection that never came from a URL —
+    /// A destination for a TLS connection that never came from a URL —
     /// [`crate::challenge::tls_alpn_01`]'s probe, which has an identifier and a
     /// port and no scheme at all.
     pub(crate) fn tls(host: &str, port: u16) -> Self {
@@ -346,11 +346,11 @@ impl Outbound {
         Self { resolver, proxies }
     }
 
-    /// Connects to `endpoint` and completes the HTTP/1 handshake under the
+    /// Connects to `destination` and completes the HTTP/1 handshake under the
     /// caller's own `tls` — see [`connect`] for what a proxy changes.
     pub async fn connect<B>(
         &self,
-        endpoint: &Endpoint,
+        destination: &Destination,
         tls: &Arc<rustls::ClientConfig>,
     ) -> Result<Connection<B>, String>
     where
@@ -358,36 +358,39 @@ impl Outbound {
         B::Data: Send,
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
-        connect(self.resolver.as_ref(), &self.proxies, endpoint, tls).await
+        connect(self.resolver.as_ref(), &self.proxies, destination, tls).await
     }
 
-    /// Opens a byte stream to `endpoint` for a caller layering its own TLS —
+    /// Opens a byte stream to `destination` for a caller layering its own TLS —
     /// see [`connect_stream`].
-    pub(crate) async fn connect_stream(&self, endpoint: &Endpoint) -> Result<ClientStream, String> {
-        connect_stream(self.resolver.as_ref(), &self.proxies, endpoint).await
+    pub(crate) async fn connect_stream(
+        &self,
+        destination: &Destination,
+    ) -> Result<ClientStream, String> {
+        connect_stream(self.resolver.as_ref(), &self.proxies, destination).await
     }
 }
 
-/// Opens a byte stream to `endpoint`, tunnelling when a proxy applies.
+/// Opens a byte stream to `destination`, tunnelling when a proxy applies.
 ///
 /// For callers that layer their own TLS — [`crate::challenge::tls_alpn_01`]'s
 /// probe is the one. When a proxy is selected this always uses `CONNECT`,
-/// including for a cleartext endpoint: the caller asked for an end-to-end
+/// including for a cleartext destination: the caller asked for an end-to-end
 /// stream, not a forwarding relationship.
 pub(crate) async fn connect_stream(
     resolver: &dyn Resolver,
     proxies: &OutboundProxies,
-    endpoint: &Endpoint,
+    destination: &Destination,
 ) -> Result<ClientStream, String> {
-    match proxies.select(endpoint) {
-        Some(proxy) => tunnel(resolver, proxy, endpoint)
+    match proxies.select(destination) {
+        Some(proxy) => tunnel(resolver, proxy, destination)
             .await
             .map(ClientStream::Tunnelled),
-        None => dial(resolver, endpoint).await.map(ClientStream::Direct),
+        None => dial(resolver, destination).await.map(ClientStream::Direct),
     }
 }
 
-/// Connects to `endpoint` and completes the HTTP/1 handshake.
+/// Connects to `destination` and completes the HTTP/1 handshake.
 ///
 /// Connects through `resolver` rather than `TcpStream::connect`, so
 /// `dns.resolver` governs every outbound hop the way it already governs the
@@ -415,7 +418,7 @@ pub(crate) async fn connect_stream(
 pub(crate) async fn connect<B>(
     resolver: &dyn Resolver,
     proxies: &OutboundProxies,
-    endpoint: &Endpoint,
+    destination: &Destination,
     tls: &Arc<rustls::ClientConfig>,
 ) -> Result<Connection<B>, String>
 where
@@ -423,14 +426,14 @@ where
     B::Data: Send,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
-    let proxy = proxies.select(endpoint);
+    let proxy = proxies.select(destination);
 
     // Cleartext through a proxy is the one case that is not a tunnel: the proxy
     // is the peer, and it learns the target from the request line instead.
     if let Some(proxy) = proxy
-        && !endpoint.https
+        && !destination.https
     {
-        let stream = dial(resolver, proxy.endpoint())
+        let stream = dial(resolver, proxy.destination())
             .await
             .map_err(|error| format!("connecting to proxy {}: {error}", proxy.redacted()))?;
         let sender = spawn_handshake(TokioIo::new(stream)).await?;
@@ -442,20 +445,20 @@ where
     }
 
     let stream = match proxy {
-        Some(proxy) => ClientStream::Tunnelled(tunnel(resolver, proxy, endpoint).await?),
-        None => ClientStream::Direct(dial(resolver, endpoint).await?),
+        Some(proxy) => ClientStream::Tunnelled(tunnel(resolver, proxy, destination).await?),
+        None => ClientStream::Direct(dial(resolver, destination).await?),
     };
 
-    let sender = if endpoint.https {
+    let sender = if destination.https {
         // SNI and validation are against the *origin*, never the proxy: the
         // tunnel is a pipe, and the certificate at the far end is the origin's.
         let server_name =
-            rustls_pki_types::ServerName::try_from(endpoint.host_for_lookup().to_string())
-                .map_err(|error| format!("{}: {error}", endpoint.host))?;
+            rustls_pki_types::ServerName::try_from(destination.host_for_lookup().to_string())
+                .map_err(|error| format!("{}: {error}", destination.host))?;
         let stream = tokio_rustls::TlsConnector::from(tls.clone())
             .connect(server_name, stream)
             .await
-            .map_err(|error| format!("TLS handshake with {}: {error}", endpoint.host))?;
+            .map_err(|error| format!("TLS handshake with {}: {error}", destination.host))?;
         spawn_handshake(TokioIo::new(stream)).await?
     } else {
         spawn_handshake(TokioIo::new(stream)).await?
@@ -471,14 +474,19 @@ where
 /// The TCP half, named so the error says which hop failed.
 async fn dial(
     resolver: &dyn Resolver,
-    endpoint: &Endpoint,
+    destination: &Destination,
 ) -> Result<tokio::net::TcpStream, String> {
-    crate::dns::connect(resolver, endpoint.host_for_lookup(), endpoint.port)
+    crate::dns::connect(resolver, destination.host_for_lookup(), destination.port)
         .await
-        .map_err(|error| format!("connecting to {}:{}: {error}", endpoint.host, endpoint.port))
+        .map_err(|error| {
+            format!(
+                "connecting to {}:{}: {error}",
+                destination.host, destination.port
+            )
+        })
 }
 
-/// Opens a `CONNECT` tunnel to `endpoint` through `proxy`.
+/// Opens a `CONNECT` tunnel to `destination` through `proxy`.
 ///
 /// The proxy is reached through the shared resolver too: `dns.resolver` is
 /// documented as governing every lookup this server makes, and a proxy named by
@@ -486,9 +494,9 @@ async fn dial(
 async fn tunnel(
     resolver: &dyn Resolver,
     proxy: &ProxyTarget,
-    endpoint: &Endpoint,
+    destination: &Destination,
 ) -> Result<TokioIo<hyper::upgrade::Upgraded>, String> {
-    let socket = dial(resolver, proxy.endpoint())
+    let socket = dial(resolver, proxy.destination())
         .await
         .map_err(|error| format!("connecting to proxy {}: {error}", proxy.redacted()))?;
 
@@ -503,7 +511,7 @@ async fn tunnel(
         let _ = connection.with_upgrades().await;
     });
 
-    let authority = endpoint.connect_authority();
+    let authority = destination.connect_authority();
     // No `Connection: close` (a proxy honouring it would close the tunnel we
     // just asked for) and no `Proxy-Connection`, which no RFC defines.
     let mut builder = hyper::Request::connect(&authority)
@@ -587,21 +595,21 @@ mod tests {
 
     #[test]
     fn default_ports_follow_the_scheme() {
-        let http = Endpoint::from_url(&url("http://example.com/x")).unwrap();
+        let http = Destination::from_url(&url("http://example.com/x")).unwrap();
         assert_eq!(http.port, 80);
         assert!(!http.https);
         assert_eq!(http.host, "example.com");
 
-        let https = Endpoint::from_url(&url("https://example.com/x")).unwrap();
+        let https = Destination::from_url(&url("https://example.com/x")).unwrap();
         assert_eq!(https.port, 443);
         assert!(https.https);
     }
 
     #[test]
     fn an_explicit_port_wins() {
-        let endpoint = Endpoint::from_url(&url("https://example.com:8443/x")).unwrap();
-        assert_eq!(endpoint.port, 8443);
-        assert!(endpoint.https);
+        let destination = Destination::from_url(&url("https://example.com:8443/x")).unwrap();
+        assert_eq!(destination.port, 8443);
+        assert!(destination.https);
     }
 
     /// The `Host` header omits the port when it is the scheme's default, which
@@ -609,19 +617,19 @@ mod tests {
     #[test]
     fn the_authority_omits_a_default_port() {
         assert_eq!(
-            Endpoint::from_url(&url("https://example.com/x"))
+            Destination::from_url(&url("https://example.com/x"))
                 .unwrap()
                 .authority(),
             "example.com"
         );
         assert_eq!(
-            Endpoint::from_url(&url("http://example.com/x"))
+            Destination::from_url(&url("http://example.com/x"))
                 .unwrap()
                 .authority(),
             "example.com"
         );
         assert_eq!(
-            Endpoint::from_url(&url("https://example.com:8443/x"))
+            Destination::from_url(&url("https://example.com:8443/x"))
                 .unwrap()
                 .authority(),
             "example.com:8443"
@@ -630,7 +638,7 @@ mod tests {
 
     #[test]
     fn a_url_with_no_host_is_refused() {
-        let error = Endpoint::from_url(&url("file:///etc/passwd")).unwrap_err();
+        let error = Destination::from_url(&url("file:///etc/passwd")).unwrap_err();
         assert!(
             error.contains("no host") || error.contains("unsupported scheme"),
             "{error}"
@@ -639,15 +647,15 @@ mod tests {
 
     #[test]
     fn an_unsupported_scheme_is_refused() {
-        let error = Endpoint::from_url(&url("ftp://example.com/x")).unwrap_err();
+        let error = Destination::from_url(&url("ftp://example.com/x")).unwrap_err();
         assert!(error.contains("unsupported scheme"), "{error}");
     }
 
     #[test]
     fn an_ipv6_literal_survives_the_round_trip() {
-        let endpoint = Endpoint::from_url(&url("https://[2001:db8::1]:8443/x")).unwrap();
-        assert_eq!(endpoint.port, 8443);
-        assert_eq!(endpoint.authority(), "[2001:db8::1]:8443");
+        let destination = Destination::from_url(&url("https://[2001:db8::1]:8443/x")).unwrap();
+        assert_eq!(destination.port, 8443);
+        assert_eq!(destination.authority(), "[2001:db8::1]:8443");
     }
 
     /// The brackets a `Host` header needs are exactly what
@@ -655,16 +663,16 @@ mod tests {
     /// this, an IPv6-literal URL is handed to the resolver as a name.
     #[test]
     fn an_ipv6_literal_loses_its_brackets_for_a_lookup() {
-        let endpoint = Endpoint::from_url(&url("https://[2001:db8::1]:8443/x")).unwrap();
-        assert_eq!(endpoint.host_for_lookup(), "2001:db8::1");
+        let destination = Destination::from_url(&url("https://[2001:db8::1]:8443/x")).unwrap();
+        assert_eq!(destination.host_for_lookup(), "2001:db8::1");
         assert!(
-            endpoint
+            destination
                 .host_for_lookup()
                 .parse::<std::net::IpAddr>()
                 .is_ok()
         );
 
-        let named = Endpoint::from_url(&url("https://example.com/x")).unwrap();
+        let named = Destination::from_url(&url("https://example.com/x")).unwrap();
         assert_eq!(named.host_for_lookup(), "example.com");
     }
 
@@ -679,22 +687,22 @@ mod tests {
     /// by every real proxy.
     #[test]
     fn a_connect_authority_always_carries_the_port() {
-        let https = Endpoint::from_url(&url("https://example.com/x")).unwrap();
+        let https = Destination::from_url(&url("https://example.com/x")).unwrap();
         assert_eq!(https.authority(), "example.com");
         assert_eq!(https.connect_authority(), "example.com:443");
 
-        let http = Endpoint::from_url(&url("http://example.com/x")).unwrap();
+        let http = Destination::from_url(&url("http://example.com/x")).unwrap();
         assert_eq!(http.connect_authority(), "example.com:80");
 
-        let literal = Endpoint::from_url(&url("https://[2001:db8::1]/x")).unwrap();
+        let literal = Destination::from_url(&url("https://[2001:db8::1]/x")).unwrap();
         assert_eq!(literal.connect_authority(), "[2001:db8::1]:443");
     }
 
     #[test]
     fn an_endpoint_can_be_built_without_a_url() {
-        let endpoint = Endpoint::tls("example.com", 8443);
-        assert!(endpoint.https);
-        assert_eq!(endpoint.connect_authority(), "example.com:8443");
+        let destination = Destination::tls("example.com", 8443);
+        assert!(destination.https);
+        assert_eq!(destination.connect_authority(), "example.com:8443");
     }
 
     /// The request line is a property of the connection, not the caller: the
@@ -834,7 +842,7 @@ mod tests {
             let mut stream = connect_stream(
                 &LoopbackResolver,
                 &through(&proxy),
-                &Endpoint::tls("origin.example", 443),
+                &Destination::tls("origin.example", 443),
             )
             .await
             .expect("the tunnel must open");
@@ -876,7 +884,7 @@ mod tests {
             let mut stream = connect_stream(
                 &LoopbackResolver,
                 &through(&proxy),
-                &Endpoint::tls("origin.example", 443),
+                &Destination::tls("origin.example", 443),
             )
             .await
             .expect("a 1.0 reply is still a tunnel");
@@ -900,11 +908,11 @@ mod tests {
             )));
 
             let target = Url::parse("http://origin.example/a?b=c").unwrap();
-            let endpoint = Endpoint::from_url(&target).unwrap();
+            let destination = Destination::from_url(&target).unwrap();
             let mut connection = connect::<Empty<Bytes>>(
                 &UnreachableResolver,
                 &proxies,
-                &endpoint,
+                &destination,
                 &Arc::new(webpki_tls_config()),
             )
             .await
@@ -912,7 +920,7 @@ mod tests {
 
             let request = hyper::Request::builder()
                 .uri(connection.request_target(&target))
-                .header(hyper::header::HOST, endpoint.authority())
+                .header(hyper::header::HOST, destination.authority())
                 .body(Empty::<Bytes>::new())
                 .unwrap();
             assert_eq!(
@@ -1017,11 +1025,11 @@ mod tests {
             )));
 
             let target = Url::parse("https://origin.example/x").unwrap();
-            let endpoint = Endpoint::from_url(&target).unwrap();
+            let destination = Destination::from_url(&target).unwrap();
             let mut connection = connect::<Empty<Bytes>>(
                 &LoopbackResolver,
                 &proxies,
-                &endpoint,
+                &destination,
                 &crate::challenge::tls_alpn_01::accept_any_client_config(&[]).unwrap(),
             )
             .await
@@ -1029,7 +1037,7 @@ mod tests {
 
             let request = hyper::Request::builder()
                 .uri(connection.request_target(&target))
-                .header(hyper::header::HOST, endpoint.authority())
+                .header(hyper::header::HOST, destination.authority())
                 .body(Empty::<Bytes>::new())
                 .unwrap();
             assert_eq!(
@@ -1078,7 +1086,7 @@ mod tests {
             let Err(error) = connect_stream(
                 &LoopbackResolver,
                 &proxies,
-                &Endpoint::tls("origin.example", 443),
+                &Destination::tls("origin.example", 443),
             )
             .await
             else {
@@ -1106,7 +1114,7 @@ mod tests {
             let Err(error) = connect_stream(
                 &LoopbackResolver,
                 &proxies,
-                &Endpoint::tls("origin.example", 443),
+                &Destination::tls("origin.example", 443),
             )
             .await
             else {
@@ -1130,7 +1138,7 @@ mod tests {
             let mut stream = connect_stream(
                 &LoopbackResolver,
                 &proxies,
-                &Endpoint::tls("bypassed.example", port),
+                &Destination::tls("bypassed.example", port),
             )
             .await
             .expect("a bypassed target still connects, just directly");

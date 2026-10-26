@@ -17,7 +17,7 @@ use hyper::Request;
 use serde_json::Value;
 use url::Url;
 
-use acme_proxy_net::http_client::{Endpoint, MAX_RESPONSE_BYTES, Outbound, error_excerpt};
+use acme_proxy_net::http_client::{Destination, MAX_RESPONSE_BYTES, Outbound, error_excerpt};
 
 /// One provider's transport: where to dial through and whom to trust.
 #[derive(Clone)]
@@ -76,10 +76,10 @@ impl Client {
         builder: hyper::http::request::Builder,
         body: Bytes,
     ) -> Result<Value, String> {
-        let endpoint = Endpoint::from_url(url).map_err(|error| format!("{url}: {error}"))?;
+        let destination = Destination::from_url(url).map_err(|error| format!("{url}: {error}"))?;
         let mut connection = self
             .outbound
-            .connect::<Full<Bytes>>(&endpoint, &self.tls)
+            .connect::<Full<Bytes>>(&destination, &self.tls)
             .await
             .map_err(|error| format!("{url}: {error}"))?;
 
@@ -87,7 +87,7 @@ impl Client {
         // included.
         let request = builder
             .uri(connection.request_target(url))
-            .header(hyper::header::HOST, endpoint.authority())
+            .header(hyper::header::HOST, destination.authority())
             .header(hyper::header::USER_AGENT, "acme-proxy")
             .header(hyper::header::CONNECTION, "close")
             .body(Full::new(body))

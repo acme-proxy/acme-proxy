@@ -295,12 +295,12 @@ async fn send_request(
 ) -> Result<(hyper::StatusCode, String), NotifyError> {
     // Permanent: `url` is configuration, and a URL that does not parse now will
     // not parse in thirty seconds either.
-    let endpoint =
-        acme_proxy_net::http_client::Endpoint::from_url(url).map_err(NotifyError::permanent)?;
+    let destination =
+        acme_proxy_net::http_client::Destination::from_url(url).map_err(NotifyError::permanent)?;
 
     // Retryable: DNS, the proxy, the handshake and the socket.
     let mut connection = outbound
-        .connect(&endpoint, tls)
+        .connect(&destination, tls)
         .await
         .map_err(NotifyError::new)?;
 
@@ -309,7 +309,7 @@ async fn send_request(
     let mut builder = Request::builder()
         .method(method.clone())
         .uri(connection.request_target(url))
-        .header(hyper::header::HOST, endpoint.authority());
+        .header(hyper::header::HOST, destination.authority());
     for (name, value) in headers {
         builder = builder.header(name, value);
     }
