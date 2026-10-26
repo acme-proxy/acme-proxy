@@ -278,6 +278,13 @@ pub fn listener_csr(base_url: &str, key_path: &Path) -> anyhow::Result<(String, 
     };
 
     let mut params = CertificateParams::new(vec![domain.clone()])?;
+    // Emptied, not left to the default: `new` fills everything it does not name
+    // from `Default`, and rcgen's default subject is the placeholder
+    // `CN=rcgen self signed cert`. A CA collects the `CommonName` among the names
+    // it has to certify, so shipping that placeholder asks to be issued *as* it,
+    // which is a rejection a public CA states rather than retries. The name is in
+    // the SAN above, where RFC 5280 §4.2.1.6 wants it.
+    params.distinguished_name = rcgen::DistinguishedName::new();
     params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
     let request = params.serialize_request(&key_pair)?;
     Ok((domain, request.der().to_vec()))
@@ -735,5 +742,43 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("reading the listener key"), "{error}");
+    }
+
+    /// The request carries its names in the SAN and nowhere else.
+    ///
+    /// `CertificateParams::new` builds everything it does not name as
+    /// `Default::default()`, and rcgen's default subject is the literal
+    /// placeholder `CN=rcgen self signed cert`. A CA collects the `CommonName`
+    /// among the names it has to issue for, so carrying that string is asking to
+    /// be certified *as* it: a real order for a real listener answered
+    /// `Cannot issue for "rcgen self signed cert": Domain name contains an invalid
+    /// character`, and a CA stating a reason like that is permanent, so the row
+    /// was retired rather than retried. Nothing downstream would have caught it
+    /// either — the protocol crate's own CN rule reads a name containing
+    /// whitespace as descriptive text rather than an asserted name — so the
+    /// request must not carry a subject at all. The local CA does the equivalent
+    /// for every leaf it signs, clearing the subject it copied out of the request
+    /// (see `signer::local_ca`), which is what RFC 5280 §4.2.1.6 wants: names in
+    /// the SAN, subject empty.
+    #[test]
+    fn the_listener_request_asserts_its_names_in_the_subject_alternative_name() {
+        use x509_parser::prelude::FromDer;
+        let dir = TempDir::new("tls-csr-subject");
+        let key_path = dir.join("server.key");
+        let (_, request) = listener_csr("https://acme.int.example.com", &key_path).unwrap();
+
+        let (_, parsed) =
+            x509_parser::certification_request::X509CertificationRequest::from_der(&request)
+                .expect("a request this server produced has to parse");
+        let common_names: Vec<String> = parsed
+            .certification_request_info
+            .subject
+            .iter_common_name()
+            .filter_map(|attribute| attribute.as_str().ok().map(str::to_string))
+            .collect();
+        assert!(
+            common_names.is_empty(),
+            "a CSR subject is a claim to names, and this one makes one: {common_names:?}"
+        );
     }
 }
