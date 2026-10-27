@@ -72,7 +72,7 @@ async fn http01_serves_the_key_authorization_triggers_and_retracts() {
             order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
-            RequestedValidity::default(),
+            OrderRequest::default(),
         )
         .await
         .unwrap();
@@ -139,7 +139,7 @@ async fn http01_retracts_after_a_rejected_challenge() {
             order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
-            RequestedValidity::default(),
+            OrderRequest::default(),
         )
         .await
         .unwrap();
@@ -189,7 +189,7 @@ async fn http01_refuses_an_upstream_offering_only_dns01() {
             order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
-            RequestedValidity::default(),
+            OrderRequest::default(),
         )
         .await
         .unwrap();
@@ -232,7 +232,7 @@ async fn http01_refuses_a_wildcard_authorization() {
             order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
-            RequestedValidity::default(),
+            OrderRequest::default(),
         )
         .await
         .unwrap();
@@ -358,7 +358,7 @@ async fn http01_answers_past_a_challenge_type_carrying_no_token() {
             order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
-            RequestedValidity::default(),
+            OrderRequest::default(),
         )
         .await
         .unwrap();

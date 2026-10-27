@@ -109,6 +109,12 @@ pub async fn get_directory(State(state): State<AppState>) -> Json<Value> {
             json!(meta.caa_identities.clone()),
         );
     }
+    // draft-ietf-acme-profiles §3: the profiles a `newOrder` may name, from
+    // the signer — a local CA's own list, a relay's upstream's (or its forced
+    // one) — and absent when it offers none.
+    if let Some(profiles) = state.endpoint.signer_info.acme_profiles().await.directory() {
+        object.insert("profiles".to_string(), json!(profiles));
+    }
     if !object.is_empty() {
         directory["meta"] = Value::Object(object);
     }

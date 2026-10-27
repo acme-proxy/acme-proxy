@@ -1105,7 +1105,7 @@ mod softhsm {
                 "ord-hsm",
                 &make_csr_der("example.com"),
                 &[acme_proxy_core::identifier::Identifier::dns("example.com")],
-                crate::RequestedValidity::default(),
+                crate::OrderRequest::default(),
             )
             .await
             .expect("issuance through the token must succeed");
@@ -1140,7 +1140,7 @@ mod softhsm {
                 &[acme_proxy_core::identifier::Identifier::dns(
                     "revoke.example",
                 )],
-                crate::RequestedValidity::default(),
+                crate::OrderRequest::default(),
             )
             .await
             .unwrap();
@@ -1245,7 +1245,7 @@ mod softhsm {
                 "ord-file",
                 &make_csr_der("example.com"),
                 &[acme_proxy_core::identifier::Identifier::dns("example.com")],
-                crate::RequestedValidity::default(),
+                crate::OrderRequest::default(),
             )
             .await
             .unwrap();

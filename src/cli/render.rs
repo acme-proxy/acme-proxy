@@ -514,6 +514,7 @@ pub fn render_order_detail_text(detail: &OrderDetail, palette: Palette) -> Strin
         ("not_before", order.not_before.map(rfc3339)),
         ("not_after", order.not_after.map(rfc3339)),
         ("replaces", order.replaces.clone()),
+        ("profile", order.profile.clone()),
         ("serial", order.cert_serial.clone()),
         // The negative sentinel means the chain would not parse, which is not a
         // date to render — `render_order_json`'s guard, for its reason.
@@ -1313,6 +1314,7 @@ mod tests {
         order.not_before = Some(1700000000);
         order.not_after = Some(1700003600);
         order.replaces = Some("aYhba4dGQEHhs3uEe6CuLN4ByNQ.AIdlQyE".to_string());
+        order.profile = Some("shortlived".to_string());
         order.cert_serial = Some("03a7f1c9".to_string());
         order.cert_not_after = Some(1700007200);
         order.revoked_at = Some(1700010800);
@@ -1352,6 +1354,7 @@ mod tests {
             text.contains("replaces       aYhba4dGQEHhs3uEe6CuLN4ByNQ.AIdlQyE"),
             "{text}"
         );
+        assert!(text.contains("profile        shortlived"), "{text}");
         assert!(text.contains("serial         03a7f1c9"), "{text}");
         assert!(
             text.contains("cert_not_after 2023-11-15T00:13:20Z"),
@@ -1385,6 +1388,7 @@ mod tests {
             "not_before",
             "not_after",
             "replaces",
+            "profile",
             "serial",
             "cert_not_after",
             "revoked",
@@ -1420,6 +1424,7 @@ mod tests {
             ("not_before", "notBefore"),
             ("not_after", "notAfter"),
             ("replaces", "replaces"),
+            ("profile", "profile"),
             ("serial", "certSerial"),
             ("cert_not_after", "certNotAfter"),
             ("revoked", "revokedAt"),
@@ -1441,6 +1446,7 @@ mod tests {
         order.not_before = Some(1700000000);
         order.not_after = Some(1700003600);
         order.replaces = Some("aYhba4dGQEHhs3uEe6CuLN4ByNQ.AIdlQyE".to_string());
+        order.profile = Some("shortlived".to_string());
         order.cert_serial = Some("03a7f1c9".to_string());
         order.cert_not_after = Some(1700007200);
         order.revoked_at = Some(1700010800);

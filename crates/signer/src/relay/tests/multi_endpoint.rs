@@ -164,7 +164,7 @@ async fn each_endpoint_is_relayed_by_its_own_backend() {
                 order.id.to_string().as_str(),
                 &csr_der(),
                 &identifiers(),
-                RequestedValidity::default(),
+                OrderRequest::default(),
             )
             .await
             .unwrap();

@@ -117,6 +117,20 @@ pub struct Directory {
     pub revoke_cert: Option<String>,
     #[serde(rename = "renewalInfo")]
     pub renewal_info: Option<String>,
+    /// RFC 8555 §7.1.1's `meta`, of which only `profiles`
+    /// (draft-ietf-acme-profiles) is read: the profiles a client of this
+    /// proxy may name, relayed as the upstream describes them.
+    #[serde(default)]
+    pub meta: DirectoryMeta,
+}
+
+/// The part of a directory's `meta` this client reads.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct DirectoryMeta {
+    /// Profile name to description. Empty when the upstream advertises none,
+    /// which is every CA that predates the draft.
+    #[serde(default)]
+    pub profiles: std::collections::BTreeMap<String, String>,
 }
 
 /// One HTTP response, reduced to what the ACME flow reads off it.

@@ -17,7 +17,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use super::{
-    IssueOutcome, RenewalWindow, RequestedValidity, RevocationRoute, SignerBackend, SignerError,
+    IssueOutcome, OrderRequest, RenewalWindow, RevocationRoute, SignerBackend, SignerError,
     SignerInfo,
 };
 use acme_proxy_core::config::CustomSignerConfig;
@@ -169,7 +169,7 @@ impl SignerBackend for CustomScriptSigner {
         order_id: &str,
         csr_der: &[u8],
         identifiers: &[Identifier],
-        validity: RequestedValidity,
+        validity: OrderRequest,
     ) -> Result<IssueOutcome, SignerError> {
         // The script decides its own validity; there is no contract for passing
         // a requested window to it, and inventing one would break every existing
@@ -402,7 +402,7 @@ mod tests {
                 "ord-1",
                 &[0x30, 0x00],
                 &identifiers(),
-                RequestedValidity::default(),
+                OrderRequest::default(),
             )
             .await
         {
@@ -444,7 +444,7 @@ mod tests {
                 "ord-1",
                 &[0x30, 0x00],
                 &identifiers(),
-                RequestedValidity::default(),
+                OrderRequest::default(),
             )
             .await
             .unwrap();
@@ -479,7 +479,7 @@ mod tests {
                 "ord-1",
                 &[0x30, 0x00],
                 &identifiers(),
-                RequestedValidity::default(),
+                OrderRequest::default(),
             )
             .await
             .unwrap();
@@ -508,7 +508,7 @@ mod tests {
                 "ord-1",
                 &[0x30, 0x00],
                 &identifiers(),
-                RequestedValidity::default(),
+                OrderRequest::default(),
             )
             .await;
         assert!(matches!(result, Err(SignerError::BadCsr)));
@@ -529,7 +529,7 @@ mod tests {
                 "ord-1",
                 &[0x30, 0x00],
                 &identifiers(),
-                RequestedValidity::default(),
+                OrderRequest::default(),
             )
             .await;
         match result {
@@ -563,7 +563,7 @@ exit 0
                 "ord-42",
                 &[0x30, 0x00],
                 &identifiers(),
-                RequestedValidity::default(),
+                OrderRequest::default(),
             )
             .await
             .unwrap();
@@ -854,7 +854,7 @@ exit 0
                 "ord-1",
                 &[0x30, 0x00],
                 &identifiers(),
-                RequestedValidity::default(),
+                OrderRequest::default(),
             )
             .await
             .unwrap();
@@ -879,7 +879,7 @@ exit 0
                 "ord-1",
                 &[0x30, 0x00],
                 &identifiers(),
-                RequestedValidity::default(),
+                OrderRequest::default(),
             )
             .await
         {
@@ -912,7 +912,7 @@ exit 0
                 "ord-1",
                 &[0x30, 0x00],
                 &identifiers(),
-                RequestedValidity::default(),
+                OrderRequest::default(),
             )
             .await
         {

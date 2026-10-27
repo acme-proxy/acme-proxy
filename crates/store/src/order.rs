@@ -95,6 +95,12 @@ pub struct Order {
     /// `replaces` field, it MUST reflect that field in the response and in
     /// subsequent requests for the corresponding Order object."
     pub replaces: Option<String>,
+    /// The ACME profile (draft-ietf-acme-profiles) this order is issued under:
+    /// the one the client named, the backend's default, or the one a relay
+    /// forces. `None` when the backend offers no profiles, or offers some and
+    /// has no default for an order that named none. Reflected in
+    /// [`Order::to_json`], since the draft has the order object carry it.
+    pub profile: Option<String>,
     pub cert_serial: Option<String>,
     pub cert_pubkey: Option<Vec<u8>>,
     /// The leaf's own notAfter, epoch seconds. `None` on a row finalized before
@@ -236,7 +242,7 @@ impl OrderQuery {
 macro_rules! columns {
     () => {
         "id, endpoint, account_id, status, identifiers, expires, not_before, not_after, \
-         error, certificate, replaces, cert_serial, cert_pubkey, cert_not_after, \
+         error, certificate, replaces, profile, cert_serial, cert_pubkey, cert_not_after, \
          revoked_at, revocation_reason, created_at, created_ip, created_ptr"
     };
 }
@@ -350,6 +356,7 @@ impl Order {
             error,
             certificate: row.try_get("certificate")?,
             replaces: row.try_get("replaces")?,
+            profile: row.try_get("profile")?,
             cert_serial: row.try_get("cert_serial")?,
             cert_pubkey: row.try_get("cert_pubkey")?,
             cert_not_after: row.try_get("cert_not_after")?,
@@ -385,6 +392,9 @@ impl Order {
             // Set by `post_new_order` between here and `insert`, when the
             // client sent one and it passed RFC 9773 §5's checks.
             replaces: None,
+            // Set by `post_new_order` between here and `insert`, once the
+            // request's profile is resolved against the backend's offer.
+            profile: None,
             cert_serial: None,
             cert_pubkey: None,
             cert_not_after: None,
@@ -430,8 +440,8 @@ impl Order {
 
         debug!(event = "db_order_create_started", outcome = "progress", order_id = ?self.id, endpoint = %self.endpoint, account_id = ?self.account_id);
         crate::sql::query(
-            "INSERT INTO orders (id, endpoint, account_id, status, identifiers, expires, not_before, not_after, error, certificate, replaces, created_at, created_ip, created_ptr) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?);",
+            "INSERT INTO orders (id, endpoint, account_id, status, identifiers, expires, not_before, not_after, error, certificate, replaces, profile, created_at, created_ip, created_ptr) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?);",
         )
         .bind(self.id)
         .bind(&self.endpoint)
@@ -442,6 +452,7 @@ impl Order {
         .bind(self.not_before)
         .bind(self.not_after)
         .bind(&self.replaces)
+        .bind(&self.profile)
         .bind(self.created_at)
         .bind(&self.created_ip)
         .bind(&self.created_ptr)
@@ -1254,6 +1265,11 @@ impl Order {
         // rendered here, not just echoed once on the 201.
         if let Some(ref replaces) = self.replaces {
             object.insert("replaces".to_string(), Value::String(replaces.clone()));
+        }
+        // draft-ietf-acme-profiles §4: the order object names the profile it
+        // is issued under — absent, not empty, when it has none.
+        if let Some(ref profile) = self.profile {
+            object.insert("profile".to_string(), Value::String(profile.clone()));
         }
         Value::Object(object)
     }

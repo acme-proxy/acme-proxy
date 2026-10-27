@@ -48,7 +48,7 @@
 //!
 //! ## Certificate validity is a backend policy
 //!
-//! The order's requested window reaches the backend as a [`RequestedValidity`],
+//! The order's requested window reaches the backend as a [`OrderRequest`],
 //! and the backend has the last word: [`local_ca::LocalCa`] clamps it to its own
 //! `leaf_validity`, and a delegating backend leaves it to whoever signs.
 //!
@@ -71,6 +71,7 @@
 //! builds a backend from it. An internal crate of the `acme-proxy` binary,
 //! published in lockstep with it and with no semver promise of its own.
 
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -151,27 +152,121 @@ impl RenewalWindow {
     }
 }
 
-/// The validity window an order asked for (RFC 8555 §7.4's `notBefore` /
-/// `notAfter`), in epoch seconds. Either half may be absent, and usually both
-/// are — most clients let the CA decide.
+/// What an order asks of the backend that signs it, beyond its CSR and its
+/// identifiers.
 ///
-/// A request, not an instruction: §7.4 lets the server override, and
-/// [`local_ca::LocalCa`] clamps it to its own `leaf_validity` rather than
-/// letting a client mint a ten-year certificate. But before this existed the
-/// fields were stored and echoed in the order object while being dropped on the
-/// way to the signer — so a client that asked for a window, and read one back,
-/// got a certificate with a different one and no way to tell.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct RequestedValidity {
+/// The validity window (RFC 8555 §7.4's `notBefore` / `notAfter`, epoch
+/// seconds) is a request, not an instruction: §7.4 lets the server override,
+/// and [`local_ca::LocalCa`] clamps it to its own lifetime rather than letting
+/// a client mint a ten-year certificate. Either half may be absent, and usually
+/// both are — most clients let the CA decide. Before this reached the signer
+/// the fields were stored and echoed in the order object while being dropped on
+/// the way — so a client that asked for a window, and read one back, got a
+/// certificate with a different one and no way to tell.
+///
+/// `profile` is the ACME profile (draft-ietf-acme-profiles) the order was
+/// accepted under, already resolved against [`SignerInfo::acme_profiles`] at
+/// `newOrder`: a backend that offers profiles honours it, one that offers none
+/// never sees one.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OrderRequest {
     pub not_before: Option<i64>,
     pub not_after: Option<i64>,
+    pub profile: Option<String>,
 }
 
-impl RequestedValidity {
-    /// Whether the order asked for anything at all.
+impl OrderRequest {
+    /// Whether the order asked for a validity window at all.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.not_before.is_none() && self.not_after.is_none()
+    }
+}
+
+/// The ACME profiles (draft-ietf-acme-profiles) a backend offers, as
+/// [`SignerInfo::acme_profiles`] reports them: what the directory lists, and
+/// what [`resolve`](Self::resolve) holds a `newOrder` to.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AcmeProfiles {
+    /// Name to description. `Some` of an empty map is a backend that offers
+    /// none; `None` is one that could not find out — a relay whose upstream
+    /// directory has not answered — which is why the two are kept apart.
+    pub offered: Option<BTreeMap<String, String>>,
+    /// The profile an order naming none is issued under (`local_ca`'s
+    /// `default_profile`).
+    pub default: Option<String>,
+    /// The profile every order is issued under, whatever it named (a relay's
+    /// `signer.relay.profile`).
+    pub forced: Option<String>,
+}
+
+/// Why [`AcmeProfiles::resolve`] refused a `newOrder`'s profile.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("ACME profile `{requested}` is not offered here; the directory's meta.profiles lists those that are{}", if offered.is_empty() { String::new() } else { format!(": {}", offered.join(", ")) })]
+pub struct UnknownProfile {
+    pub requested: String,
+    pub offered: Vec<String>,
+}
+
+impl AcmeProfiles {
+    /// No profiles at all: what every backend without an opinion reports.
+    #[must_use]
+    pub fn none() -> Self {
+        Self {
+            offered: Some(BTreeMap::new()),
+            default: None,
+            forced: None,
+        }
+    }
+
+    /// What the directory's `meta.profiles` lists, or `None` for nothing.
+    ///
+    /// A forced profile is the only one listed: a client choosing among
+    /// several when only one is ever issued would be choosing nothing. Its
+    /// description is the offered one when known, and empty otherwise — the
+    /// draft makes the value free text.
+    #[must_use]
+    pub fn directory(&self) -> Option<BTreeMap<String, String>> {
+        if let Some(forced) = &self.forced {
+            let description = self
+                .offered
+                .as_ref()
+                .and_then(|offered| offered.get(forced))
+                .cloned()
+                .unwrap_or_default();
+            return Some(BTreeMap::from([(forced.clone(), description)]));
+        }
+        self.offered.clone().filter(|offered| !offered.is_empty())
+    }
+
+    /// The profile an order is accepted under, given the one it named.
+    ///
+    /// - A forced profile wins, whatever was named.
+    /// - A named profile must be offered — unless the offer is unknown, in
+    ///   which case it is passed through for the upstream to judge, or empty,
+    ///   in which case it is ignored as it always was: a client is not refused
+    ///   by a server that advertises no profiles for naming one.
+    /// - Nothing named takes the default.
+    ///
+    /// # Errors
+    ///
+    /// [`UnknownProfile`] when the named profile is not among those offered.
+    pub fn resolve(&self, requested: Option<&str>) -> Result<Option<String>, UnknownProfile> {
+        if let Some(forced) = &self.forced {
+            return Ok(Some(forced.clone()));
+        }
+        let Some(requested) = requested else {
+            return Ok(self.default.clone());
+        };
+        match &self.offered {
+            None => Ok(Some(requested.to_string())),
+            Some(offered) if offered.is_empty() => Ok(None),
+            Some(offered) if offered.contains_key(requested) => Ok(Some(requested.to_string())),
+            Some(offered) => Err(UnknownProfile {
+                requested: requested.to_string(),
+                offered: offered.keys().cloned().collect(),
+            }),
+        }
     }
 }
 
@@ -187,16 +282,16 @@ pub trait SignerBackend: Send + Sync {
     /// the `Order` again from its background task, since by then the handler
     /// that called this has long returned.
     ///
-    /// `validity` is what the order asked for (RFC 8555 §7.4). A backend is
-    /// free to ignore it — one that delegates has no say over the upstream's
-    /// policy — but must not silently *contradict* its own advertised limits;
-    /// see [`RequestedValidity`].
+    /// `request` is what the order asked for: a validity window (RFC 8555
+    /// §7.4) and an ACME profile. A backend is free to ignore the window — one
+    /// that delegates has no say over the upstream's policy — but must not
+    /// silently *contradict* its own advertised limits; see [`OrderRequest`].
     async fn issue(
         &self,
         order_id: &str,
         csr_der: &[u8],
         identifiers: &[Identifier],
-        validity: RequestedValidity,
+        validity: OrderRequest,
     ) -> Result<IssueOutcome, SignerError>;
 
     /// Revokes the certificate `cert_der` (RFC 8555 §7.6), with an optional
@@ -308,6 +403,12 @@ pub enum SignerError {
     /// Maps to `Problem::bad_csr` (400).
     #[error("Bad CSR")]
     BadCsr,
+    /// The order names an ACME profile this backend no longer offers — one a
+    /// reload removed between `newOrder` and finalize. Maps to
+    /// `Problem::invalid_profile` (400): signing it under some other lifetime
+    /// would hand the client a certificate it did not ask for.
+    #[error("Unknown ACME profile `{0}`")]
+    InvalidProfile(String),
     /// The backend failed to sign (should not happen in normal operation).
     /// Maps to `Problem::server_internal` (500).
     #[error("Internal signer error: {0}")]
@@ -651,6 +752,76 @@ fn signer_paths(cfg: &SignerConfig) -> Vec<String> {
 mod tests {
     use super::*;
 
+    fn offering(names: &[&str]) -> Option<BTreeMap<String, String>> {
+        Some(
+            names
+                .iter()
+                .map(|name| ((*name).to_string(), format!("{name}!")))
+                .collect(),
+        )
+    }
+
+    /// `AcmeProfiles::resolve`, rule by rule.
+    #[test]
+    fn profiles_resolve_by_the_draft_rules() {
+        let local = AcmeProfiles {
+            offered: offering(&["classic", "shortlived"]),
+            default: Some("classic".to_string()),
+            forced: None,
+        };
+        assert_eq!(
+            local.resolve(Some("shortlived")).unwrap().as_deref(),
+            Some("shortlived")
+        );
+        assert_eq!(local.resolve(None).unwrap().as_deref(), Some("classic"));
+        let refusal = local.resolve(Some("tlsserver")).unwrap_err();
+        assert_eq!(refusal.offered, ["classic", "shortlived"]);
+        assert!(
+            refusal.to_string().contains("classic, shortlived"),
+            "{refusal}"
+        );
+
+        // Offering none: the field is ignored, never refused.
+        assert_eq!(
+            AcmeProfiles::none().resolve(Some("shortlived")).unwrap(),
+            None
+        );
+        // Unknown offer: passed through for the upstream to judge.
+        let unknown = AcmeProfiles {
+            offered: None,
+            ..AcmeProfiles::default()
+        };
+        assert_eq!(unknown.resolve(Some("x")).unwrap().as_deref(), Some("x"));
+        assert_eq!(unknown.resolve(None).unwrap(), None);
+    }
+
+    /// What the directory lists: the offer, nothing for none, the forced
+    /// profile alone (with its description when the offer knows one).
+    #[test]
+    fn the_directory_lists_the_offer_or_the_forced_profile_alone() {
+        assert_eq!(AcmeProfiles::none().directory(), None);
+        let offer = AcmeProfiles {
+            offered: offering(&["classic", "shortlived"]),
+            ..AcmeProfiles::default()
+        };
+        assert_eq!(offer.directory(), offering(&["classic", "shortlived"]));
+
+        let forced = AcmeProfiles {
+            forced: Some("shortlived".to_string()),
+            ..offer
+        };
+        assert_eq!(forced.directory(), offering(&["shortlived"]));
+        let forced_blind = AcmeProfiles {
+            offered: None,
+            forced: Some("shortlived".to_string()),
+            default: None,
+        };
+        assert_eq!(
+            forced_blind.directory(),
+            Some(BTreeMap::from([("shortlived".to_string(), String::new())]))
+        );
+    }
+
     /// The shared resolver `server::endpoint::build_all` supplies at startup. These
     /// tests reach loopback by IP literal, which `dns::connect` short-circuits.
     fn test_resolver() -> std::sync::Arc<dyn acme_proxy_net::dns::Resolver> {
@@ -763,7 +934,7 @@ mod tests {
                 "ord-1",
                 csr.der(),
                 &[Identifier::dns("example.com")],
-                RequestedValidity::default(),
+                OrderRequest::default(),
             )
             .await
             .unwrap()
@@ -800,7 +971,7 @@ mod tests {
                 "ord-2",
                 second.der(),
                 &[Identifier::dns("example.com")],
-                RequestedValidity::default(),
+                OrderRequest::default(),
             )
             .await
             .unwrap()
@@ -912,7 +1083,7 @@ mod tests {
                 "ord-1",
                 csr.der(),
                 &[Identifier::dns("example.com")],
-                RequestedValidity::default(),
+                OrderRequest::default(),
             )
             .await
             .unwrap()
@@ -1023,7 +1194,7 @@ mod tests {
                 "ord-1",
                 csr.der(),
                 &[Identifier::dns("example.com")],
-                RequestedValidity::default(),
+                OrderRequest::default(),
             )
             .await
             .unwrap();
@@ -1065,7 +1236,7 @@ mod tests {
                 "ord-1",
                 &[0x30, 0x00],
                 &[Identifier::dns("example.com")],
-                RequestedValidity::default(),
+                OrderRequest::default(),
             )
             .await
             .unwrap();

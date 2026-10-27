@@ -75,6 +75,35 @@ a look on a CA issuing short-lived certificates:
 - **`order.retention`** is unaffected — it ages orders from their own expiry,
   not their certificate's.
 
+### ACME profiles
+
+A local CA can also offer several lifetimes and let each client choose, as
+[ACME profiles](../features/acme_profiles.md): each
+`[signer.local_ca.profiles.<name>]` is a lifetime in place of `leaf_validity`,
+listed in the directory with its description.
+
+```toml
+[signer.local_ca]
+leaf_validity = "90d"            # an order naming no profile, with no default
+default_profile = "classic"      # an order naming no profile
+
+[signer.local_ca.profiles.classic]
+description = "90-day certificates"
+leaf_validity = "90d"
+
+[signer.local_ca.profiles.shortlived]
+description = "160-hour certificates"
+leaf_validity = "160h"
+```
+
+There is no "forced" profile here: you write the list, so offering only
+`shortlived`, as the default, is how a local CA forces it — a client naming
+another is refused with `invalidProfile`. Each profile's lifetime is bounded
+like `leaf_validity` (`"1h"` to a century), a client's `notAfter` still only
+shortens it, and a profile name follows the rule every operator-named table key
+does (lowercase letters, digits and `-`). Two endpoints sharing one CA each
+offer their own profiles.
+
 ## Configuration
 
 ```toml
@@ -162,6 +191,21 @@ OCSP responder, and a pointer at one that does not exist is worse than none.
 The validity period for issued leaf certificates. Distinct from
 `order.validity`, which bounds the ACME *order object*, not the
 certificate.
+
+**`default_profile`** (`String`) — *Default: `""` | Env: `ACME_PROXY_SIGNER__LOCAL_CA__DEFAULT_PROFILE`*
+
+The [ACME profile](#acme-profiles) an order naming none is issued under, and
+reports. Empty issues such an order under `leaf_validity`, with no profile.
+Naming a profile not defined below is a startup error.
+
+**`profiles.<name>.description`** (`String`) — *Default: `""` | Env: `ACME_PROXY_SIGNER__LOCAL_CA__PROFILES__<NAME>__DESCRIPTION`*
+
+What the directory's `meta.profiles` says about the profile, for the client's
+operator to read.
+
+**`profiles.<name>.leaf_validity`** (`Duration`) — *Default: `"90d"` | Env: `ACME_PROXY_SIGNER__LOCAL_CA__PROFILES__<NAME>__LEAF_VALIDITY`*
+
+The lifetime of a leaf issued under the profile, bounded as `leaf_validity` is.
 
 **`key_source`** (`String`) — *Default: `"file"` | Env: `ACME_PROXY_SIGNER__LOCAL_CA__KEY_SOURCE`*
 

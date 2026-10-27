@@ -159,7 +159,7 @@ async fn issue_relays_the_order_and_finalizes_it_locally() {
             order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
-            RequestedValidity::default(),
+            OrderRequest::default(),
         )
         .await
         .unwrap();
@@ -324,7 +324,7 @@ async fn settle_notifies_only_the_owning_endpoint() {
             order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
-            RequestedValidity::default(),
+            OrderRequest::default(),
         )
         .await
         .unwrap();
@@ -392,7 +392,7 @@ async fn issue_polls_until_the_upstream_settles() {
             order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
-            RequestedValidity::default(),
+            OrderRequest::default(),
         )
         .await
         .unwrap();
@@ -443,7 +443,7 @@ async fn an_upstream_order_missing_its_next_url_fails_the_order() {
                 order.id.to_string().as_str(),
                 &csr_der(),
                 &identifiers(),
-                RequestedValidity::default(),
+                OrderRequest::default(),
             )
             .await
             .unwrap();
@@ -480,7 +480,7 @@ async fn a_failing_upstream_marks_the_order_invalid() {
             order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
-            RequestedValidity::default(),
+            OrderRequest::default(),
         )
         .await
         .unwrap();
@@ -533,7 +533,7 @@ async fn a_transient_upstream_outage_is_retried_into_a_certificate() {
             order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
-            RequestedValidity::default(),
+            OrderRequest::default(),
         )
         .await
         .unwrap();
@@ -583,7 +583,7 @@ async fn an_upstream_that_refuses_the_order_is_not_retried() {
             order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
-            RequestedValidity::default(),
+            OrderRequest::default(),
         )
         .await
         .unwrap();
@@ -635,7 +635,7 @@ async fn a_stalled_upstream_times_out_and_invalidates_the_order() {
             order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
-            RequestedValidity::default(),
+            OrderRequest::default(),
         )
         .await
         .unwrap();
@@ -682,7 +682,7 @@ async fn an_upstream_bad_csr_surfaces_as_bad_csr() {
             order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
-            RequestedValidity::default(),
+            OrderRequest::default(),
         )
         .await
         .unwrap();
@@ -1096,7 +1096,7 @@ async fn a_second_issue_for_one_order_does_not_open_a_second_upstream_order() {
                     order.id.to_string().as_str(),
                     &csr_der(),
                     &identifiers(),
-                    RequestedValidity::default(),
+                    OrderRequest::default(),
                 )
                 .await
                 .unwrap(),

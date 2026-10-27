@@ -58,6 +58,30 @@ Two consequences fall straight out of the diagram:
   than for the moment `local_ca` needs — see
   [Core Concepts](../core/concepts.md#order).
 
+## ACME profiles
+
+A relay offers its clients the upstream CA's [ACME
+profiles](../features/acme_profiles.md), as the upstream's directory lists them,
+and asks the upstream for the one each order was accepted under. A client
+naming a profile the upstream does not list is refused with `invalidProfile`;
+one naming none leaves the choice to the upstream.
+
+Setting `profile` forces one instead — the way to get only short-lived
+certificates from Let's Encrypt, whatever the clients behind this proxy ask
+for:
+
+```toml
+[signer.relay]
+directory_url = "https://acme-v02.api.letsencrypt.org/directory"
+profile = "shortlived"
+```
+
+The directory then lists that profile alone, and every order is relayed with it.
+The worker checks it against the upstream's directory at startup and refuses to
+start if the upstream does not advertise it, rather than relaying orders the
+upstream would refuse, or — predating profiles — silently issue as something
+else.
+
 ## Challenge strategies
 
 The strategy names the *one* challenge type the proxy answers upstream. A CA
@@ -280,6 +304,12 @@ How often to poll an upstream order/authorization while it resolves.
 
 Total budget for one upstream issuance before the local order is
 marked invalid.
+
+**`profile`** (`String`) — *Default: `""` | Env: `ACME_PROXY_SIGNER__RELAY__PROFILE`*
+
+The [ACME profile](#acme-profiles) every upstream order asks for, whatever a
+client named. Empty relays the upstream's profiles. Must be one the upstream
+advertises, or the worker refuses to start.
 
 ### `[signer.relay.dns01]`
 

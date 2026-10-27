@@ -27,6 +27,7 @@ mod eab;
 mod http01_strategy;
 mod lifecycle;
 mod multi_endpoint;
+mod profiles;
 mod renewal;
 
 /// The job configuration the tests run under: everything fast, retries off.
@@ -416,12 +417,7 @@ async fn real_chain() -> String {
     let params = rcgen::CertificateParams::new(vec!["example.com".to_string()]).unwrap();
     let csr = params.serialize_request(&key_pair).unwrap();
     match ca
-        .issue(
-            "ord-x",
-            csr.der(),
-            &identifiers(),
-            RequestedValidity::default(),
-        )
+        .issue("ord-x", csr.der(), &identifiers(), OrderRequest::default())
         .await
     {
         Ok(IssueOutcome::Issued(chain)) => chain,

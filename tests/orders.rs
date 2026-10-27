@@ -1380,7 +1380,7 @@ async fn concurrent_validations_of_one_order_still_promote_it() {
 /// between them, and that is precisely where the bug was: `signer/mod.rs`
 /// records that these fields "were stored and echoed in the order object while
 /// being dropped on the way to the signer". Replacing the handler's
-/// `RequestedValidity { .. }` with `::default()` passes every other test in the
+/// `OrderRequest { .. }` with `::default()` passes every other test in the
 /// repository.
 #[tokio::test]
 async fn a_requested_not_after_reaches_the_issued_certificate() {

@@ -480,7 +480,7 @@ mod tests {
     use crate::cli::CliErrorKind;
     use acme_proxy_core::audit::ClientContext;
     use acme_proxy_signer::IssueOutcome;
-    use acme_proxy_signer::RequestedValidity;
+    use acme_proxy_signer::OrderRequest;
     use acme_proxy_signer::SignerBackend;
     use acme_proxy_store::account::Account;
 
@@ -642,7 +642,7 @@ mod tests {
                 order.id.to_string().as_str(),
                 csr.der(),
                 &order.identifiers,
-                RequestedValidity::default(),
+                OrderRequest::default(),
             )
             .await
             .unwrap()

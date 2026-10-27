@@ -27,11 +27,13 @@ pub mod identity;
 mod info;
 pub mod key;
 mod policy;
+mod profiles;
 pub mod sweep;
 
 use ca::{ca_subject_round_trips, generate_ca, random_serial};
 use crl::{CrlPaths, CrlStore};
 use policy::LeafPolicy;
+use profiles::LeafProfiles;
 #[cfg(feature = "hsm")]
 pub mod pkcs11;
 
@@ -49,7 +51,7 @@ use rustls_pki_types::CertificateSigningRequestDer;
 use time::{Duration, OffsetDateTime};
 use tracing::{error, info, warn};
 
-use crate::{IssueOutcome, RequestedValidity, SignerBackend, SignerError};
+use crate::{IssueOutcome, OrderRequest, SignerBackend, SignerError};
 use acme_proxy_core::cert::cert_serial_and_spki;
 use acme_proxy_core::config::ConfigDuration;
 use acme_proxy_core::config::LocalCaConfig;
@@ -85,6 +87,9 @@ pub struct LocalCa {
     /// and its certificate can be fetched. Validated and DER-encoded once, at
     /// construction — see [`policy`].
     leaf_policy: LeafPolicy,
+    /// The ACME profiles this CA offers, each a lifetime in place of
+    /// `leaf_validity` — see [`profiles`].
+    profiles: LeafProfiles,
     /// This CA's revocation state and CRL, in the database.
     ///
     /// Behind an [`Arc`] so the same store can be handed to the daily sweep as
@@ -133,7 +138,7 @@ const MIN_LEAF_VALIDITY: ConfigDuration = ConfigDuration::from_hours(1);
 fn clamp_leaf_validity(
     now: OffsetDateTime,
     leaf_validity: ConfigDuration,
-    requested: RequestedValidity,
+    requested: OrderRequest,
 ) -> (OffsetDateTime, OffsetDateTime) {
     let default_start = now - CLOCK_SKEW_ALLOWANCE;
     // Bounded by `MAX_LEAF_VALIDITY` in `assemble`, so the addition cannot
@@ -200,6 +205,7 @@ impl LocalCa {
         // Before either branch touches disk: a URL this CA could not honour is
         // a startup error, not a CA generated and then refused.
         let leaf_policy = LeafPolicy::from_config(cfg)?;
+        let profiles = LeafProfiles::from_config(cfg)?;
 
         if cert_path.exists() && key_path.exists() {
             let ca_pem = fs::read_to_string(cert_path)?;
@@ -213,6 +219,7 @@ impl LocalCa {
                 ca_pem,
                 cfg.leaf_validity,
                 leaf_policy,
+                profiles,
                 Some(paths),
                 database,
             );
@@ -228,6 +235,7 @@ impl LocalCa {
             ca_pem,
             cfg.leaf_validity,
             leaf_policy,
+            profiles,
             Some(paths),
             database,
         )
@@ -251,6 +259,7 @@ impl LocalCa {
         let cert_path = Path::new(&cfg.cert_path);
         let paths = CrlPaths::beside(&cfg.crl_path);
         let leaf_policy = LeafPolicy::from_config(cfg)?;
+        let profiles = LeafProfiles::from_config(cfg)?;
 
         if !cert_path.exists() {
             anyhow::bail!(
@@ -313,6 +322,7 @@ impl LocalCa {
             ca_pem,
             cfg.leaf_validity,
             leaf_policy,
+            profiles,
             Some(paths),
             database,
         )
@@ -363,6 +373,28 @@ impl LocalCa {
             ca_pem,
             leaf_validity,
             LeafPolicy::default(),
+            LeafProfiles::default(),
+            None,
+            database,
+        )
+    }
+
+    /// An in-memory CA built from `cfg`'s key type, lifetime and ACME profiles —
+    /// what the tests of profiles need without a CA on disk. Nothing else of
+    /// `cfg` is read.
+    pub fn generate_in_memory_offering(
+        cfg: &LocalCaConfig,
+        database: Arc<Database>,
+    ) -> anyhow::Result<Self> {
+        let profiles = LeafProfiles::from_config(cfg)?;
+        let (key_pair, ca_pem) = generate_ca(&cfg.key_type, &LocalCaSubjectConfig::default())?;
+        let issuer = issuer_from_ca_pem(&ca_pem, CaSigningKey::Software(key_pair))?;
+        Self::assemble(
+            issuer,
+            ca_pem,
+            cfg.leaf_validity,
+            LeafPolicy::default(),
+            profiles,
             None,
             database,
         )
@@ -375,26 +407,16 @@ impl LocalCa {
         ca_pem: String,
         leaf_validity: ConfigDuration,
         leaf_policy: LeafPolicy,
+        profiles: LeafProfiles,
         paths: Option<CrlPaths>,
         database: Arc<Database>,
     ) -> anyhow::Result<Self> {
-        // Refused here, at startup, rather than met at the first issuance:
-        // `clamp_leaf_validity` adds this much to the clock, and a value past
-        // what `OffsetDateTime` can hold panics there, inside a signing job.
-        anyhow::ensure!(
-            leaf_validity <= MAX_LEAF_VALIDITY,
-            "signer.local_ca.leaf_validity = \"{leaf_validity}\" is beyond the \
-             \"{MAX_LEAF_VALIDITY}\" ceiling"
-        );
-        anyhow::ensure!(
-            leaf_validity >= MIN_LEAF_VALIDITY,
-            "signer.local_ca.leaf_validity = \"{leaf_validity}\" is below the \
-             \"{MIN_LEAF_VALIDITY}\" floor: every leaf is also backdated by an hour, \
-             which would be most of a shorter lifetime"
-        );
+        check_leaf_validity("signer.local_ca.leaf_validity", leaf_validity)?;
         // The key, not a path or an endpoint, is what the revocation state is
         // stored under — see `cert::issuer_id`.
-        let info = Arc::new(LocalCaInfo::new(ca_pem.clone(), database.clone())?);
+        let info = Arc::new(
+            LocalCaInfo::new(ca_pem.clone(), database.clone())?.offering(profiles.offer()),
+        );
         // Read from the certificate, not derived: every CRL this CA signs names
         // its key the same way the leaves it signs do.
         let key_identifier = acme_proxy_core::cert::leaf_der_from_chain(&ca_pem)
@@ -406,6 +428,7 @@ impl LocalCa {
             ca_pem,
             leaf_validity,
             leaf_policy,
+            profiles,
             crl: Arc::new(CrlStore::new(
                 database,
                 info.issuer().to_string(),
@@ -416,6 +439,24 @@ impl LocalCa {
             info,
         })
     }
+}
+
+/// Refuses, at startup, a leaf lifetime outside [`MIN_LEAF_VALIDITY`] and
+/// [`MAX_LEAF_VALIDITY`], naming `key` — the CA's own `leaf_validity` or one
+/// profile's. Not met at the first issuance instead: `clamp_leaf_validity` adds
+/// this much to the clock, and a value past what `OffsetDateTime` can hold
+/// panics there, inside a signing job.
+fn check_leaf_validity(key: &str, leaf_validity: ConfigDuration) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        leaf_validity <= MAX_LEAF_VALIDITY,
+        "{key} = \"{leaf_validity}\" is beyond the \"{MAX_LEAF_VALIDITY}\" ceiling"
+    );
+    anyhow::ensure!(
+        leaf_validity >= MIN_LEAF_VALIDITY,
+        "{key} = \"{leaf_validity}\" is below the \"{MIN_LEAF_VALIDITY}\" floor: every \
+         leaf is also backdated by an hour, which would be most of a shorter lifetime"
+    );
+    Ok(())
 }
 
 /// The rcgen [`Issuer`] for the CA certificate `ca_pem` (the first certificate
@@ -601,8 +642,14 @@ impl SignerBackend for LocalCa {
         _order_id: &str,
         csr_der: &[u8],
         identifiers: &[Identifier],
-        validity: RequestedValidity,
+        request: OrderRequest,
     ) -> Result<IssueOutcome, SignerError> {
+        // The lifetime first, so an order whose profile a reload removed is
+        // refused before any signing work.
+        let leaf_validity = self
+            .profiles
+            .lifetime(self.leaf_validity, request.profile.as_deref())?;
+
         // Parse the PKCS#10 CSR (also verifies its self-signature).
         let der = CertificateSigningRequestDer::from(csr_der.to_vec());
         let mut csr = CertificateSigningRequestParams::from_der(&der).map_err(|error| {
@@ -613,10 +660,10 @@ impl SignerBackend for LocalCa {
         check_csr_matches_order(&csr, identifiers)?;
         sanitize_csr_params(&mut csr.params, &self.leaf_policy)?;
 
-        // The leaf's validity: this backend's policy, narrowed by whatever the
-        // order asked for.
+        // The leaf's validity: this backend's policy (its own, or the order's
+        // profile's), narrowed by whatever the order asked for.
         let now = OffsetDateTime::now_utc();
-        let (not_before, not_after) = clamp_leaf_validity(now, self.leaf_validity, validity);
+        let (not_before, not_after) = clamp_leaf_validity(now, leaf_validity, request);
         csr.params.not_before = not_before;
         csr.params.not_after = not_after;
 
@@ -700,7 +747,7 @@ mod tests {
         csr_der: &[u8],
         identifiers: &[Identifier],
     ) -> Result<String, SignerError> {
-        issue_chain_with(ca, csr_der, identifiers, RequestedValidity::default()).await
+        issue_chain_with(ca, csr_der, identifiers, OrderRequest::default()).await
     }
 
     /// [`issue_chain`] with an explicit requested validity window, for the tests
@@ -709,7 +756,7 @@ mod tests {
         ca: &LocalCa,
         csr_der: &[u8],
         identifiers: &[Identifier],
-        validity: RequestedValidity,
+        validity: OrderRequest,
     ) -> Result<String, SignerError> {
         match ca.issue("ord-test", csr_der, identifiers, validity).await? {
             IssueOutcome::Issued(chain) => Ok(chain),
@@ -1139,11 +1186,8 @@ mod tests {
         let default_end = now + Duration::days(90);
 
         // Nothing requested: the policy window, unchanged.
-        let (start, end) = clamp_leaf_validity(
-            now,
-            ConfigDuration::from_days(90),
-            RequestedValidity::default(),
-        );
+        let (start, end) =
+            clamp_leaf_validity(now, ConfigDuration::from_days(90), OrderRequest::default());
         assert_eq!((start, end), (default_start, default_end));
 
         // A shorter certificate is the client's to choose.
@@ -1151,9 +1195,10 @@ mod tests {
         let (start, end) = clamp_leaf_validity(
             now,
             ConfigDuration::from_days(90),
-            RequestedValidity {
+            OrderRequest {
                 not_before: None,
                 not_after: Some(wanted_end.unix_timestamp()),
+                profile: None,
             },
         );
         assert_eq!(start, default_start);
@@ -1163,9 +1208,10 @@ mod tests {
         let (_, end) = clamp_leaf_validity(
             now,
             ConfigDuration::from_days(90),
-            RequestedValidity {
+            OrderRequest {
                 not_before: None,
                 not_after: Some((now + Duration::days(3650)).unix_timestamp()),
+                profile: None,
             },
         );
         assert_eq!(end, default_end, "a client must not outlive the policy");
@@ -1175,9 +1221,10 @@ mod tests {
         let (start, _) = clamp_leaf_validity(
             now,
             ConfigDuration::from_days(90),
-            RequestedValidity {
+            OrderRequest {
                 not_before: Some(wanted_start.unix_timestamp()),
                 not_after: None,
+                profile: None,
             },
         );
         assert_eq!(start.unix_timestamp(), wanted_start.unix_timestamp());
@@ -1185,9 +1232,10 @@ mod tests {
         let (start, _) = clamp_leaf_validity(
             now,
             ConfigDuration::from_days(90),
-            RequestedValidity {
+            OrderRequest {
                 not_before: Some((now - Duration::days(365)).unix_timestamp()),
                 not_after: None,
+                profile: None,
             },
         );
         assert_eq!(
@@ -1199,9 +1247,10 @@ mod tests {
         let (start, end) = clamp_leaf_validity(
             now,
             ConfigDuration::from_days(90),
-            RequestedValidity {
+            OrderRequest {
                 not_before: Some((now + Duration::days(60)).unix_timestamp()),
                 not_after: Some((now + Duration::days(30)).unix_timestamp()),
+                profile: None,
             },
         );
         assert_eq!((start, end), (default_start, default_end));
@@ -1218,9 +1267,10 @@ mod tests {
             &ca,
             &make_csr_der("example.com"),
             &[Identifier::dns("example.com")],
-            RequestedValidity {
+            OrderRequest {
                 not_before: None,
                 not_after: Some(wanted_end.unix_timestamp()),
+                profile: None,
             },
         )
         .await

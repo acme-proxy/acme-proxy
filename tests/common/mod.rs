@@ -100,8 +100,8 @@ use acme_proxy_protocol::acme::validate::ChallengeValidateJob;
 use acme_proxy_signer::CrlRefresher;
 use acme_proxy_signer::Http01TokenStore;
 use acme_proxy_signer::IssueOutcome;
+use acme_proxy_signer::OrderRequest;
 use acme_proxy_signer::RenewalWindow;
-use acme_proxy_signer::RequestedValidity;
 use acme_proxy_signer::RevocationRoute;
 use acme_proxy_signer::SignerBackend;
 use acme_proxy_signer::SignerError;
@@ -1018,6 +1018,10 @@ impl SignerInfo for OwnDatabase {
         self.0.renewal_info(cert_der).await
     }
 
+    async fn acme_profiles(&self) -> acme_proxy_signer::AcmeProfiles {
+        self.0.acme_profiles().await
+    }
+
     fn http01_tokens(&self) -> Option<Arc<dyn Http01TokenStore>> {
         self.0.http01_tokens()
     }
@@ -1324,7 +1328,7 @@ pub async fn issue_into_an_order(
     name: &str,
 ) -> (String, String) {
     use acme_proxy_core::identifier::Identifier;
-    use acme_proxy_signer::RequestedValidity;
+    use acme_proxy_signer::OrderRequest;
     use acme_proxy_store::account::Account;
     use acme_proxy_store::order::Order;
 
@@ -1359,7 +1363,7 @@ pub async fn issue_into_an_order(
             &order.id.to_string(),
             &csr_der,
             &[identifier],
-            RequestedValidity::default(),
+            OrderRequest::default(),
         )
         .await
         .expect("the in-memory CA must issue");
@@ -1985,7 +1989,7 @@ impl SignerBackend for FailingSigner {
         _order_id: &str,
         _csr_der: &[u8],
         _identifiers: &[Identifier],
-        _validity: RequestedValidity,
+        _validity: OrderRequest,
     ) -> Result<IssueOutcome, SignerError> {
         Err(SignerError::Internal("boom".to_string()))
     }
@@ -2057,7 +2061,7 @@ impl SignerBackend for GatedSigner {
         order_id: &str,
         csr_der: &[u8],
         identifiers: &[Identifier],
-        validity: RequestedValidity,
+        validity: OrderRequest,
     ) -> Result<IssueOutcome, SignerError> {
         let first = self.calls.fetch_add(1, Ordering::SeqCst) == 0;
         self.entered.add_permits(1);
@@ -2125,7 +2129,7 @@ impl SignerBackend for GatedCrlSigner {
         order_id: &str,
         csr_der: &[u8],
         identifiers: &[Identifier],
-        validity: RequestedValidity,
+        validity: OrderRequest,
     ) -> Result<IssueOutcome, SignerError> {
         self.ca
             .issue(order_id, csr_der, identifiers, validity)
@@ -2196,7 +2200,7 @@ impl SignerBackend for RevokeFailingSigner {
         order_id: &str,
         csr_der: &[u8],
         identifiers: &[Identifier],
-        validity: RequestedValidity,
+        validity: OrderRequest,
     ) -> Result<IssueOutcome, SignerError> {
         self.0.issue(order_id, csr_der, identifiers, validity).await
     }
@@ -2258,7 +2262,7 @@ impl SignerBackend for RevokePersistFailingSigner {
         order_id: &str,
         csr_der: &[u8],
         identifiers: &[Identifier],
-        validity: RequestedValidity,
+        validity: OrderRequest,
     ) -> Result<IssueOutcome, SignerError> {
         self.ca
             .issue(order_id, csr_der, identifiers, validity)
@@ -2318,7 +2322,7 @@ impl SignerBackend for TokenStoreSigner {
         _order_id: &str,
         _csr_der: &[u8],
         _identifiers: &[Identifier],
-        _validity: RequestedValidity,
+        _validity: OrderRequest,
     ) -> Result<IssueOutcome, SignerError> {
         Err(SignerError::Internal("not a signing backend".to_string()))
     }
@@ -2373,7 +2377,7 @@ impl SignerBackend for RecordingSigner {
         _order_id: &str,
         _csr_der: &[u8],
         _identifiers: &[Identifier],
-        _validity: RequestedValidity,
+        _validity: OrderRequest,
     ) -> Result<IssueOutcome, SignerError> {
         self.issued.store(true, std::sync::atomic::Ordering::SeqCst);
         Err(SignerError::Internal("recorded".to_string()))
@@ -2396,7 +2400,7 @@ impl SignerBackend for DelegatingSigner {
         _order_id: &str,
         _csr_der: &[u8],
         _identifiers: &[Identifier],
-        _validity: RequestedValidity,
+        _validity: OrderRequest,
     ) -> Result<IssueOutcome, SignerError> {
         Ok(IssueOutcome::Processing)
     }
@@ -2449,7 +2453,7 @@ impl SignerBackend for ScriptedAriSigner {
         order_id: &str,
         csr_der: &[u8],
         identifiers: &[Identifier],
-        validity: RequestedValidity,
+        validity: OrderRequest,
     ) -> Result<IssueOutcome, SignerError> {
         self.inner
             .issue(order_id, csr_der, identifiers, validity)
@@ -2519,7 +2523,7 @@ impl SignerBackend for GarbageChainSigner {
         _order_id: &str,
         _csr_der: &[u8],
         _identifiers: &[Identifier],
-        _validity: RequestedValidity,
+        _validity: OrderRequest,
     ) -> Result<IssueOutcome, SignerError> {
         Ok(IssueOutcome::Issued("not a certificate at all".to_string()))
     }

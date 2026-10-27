@@ -1918,7 +1918,7 @@ mod tests {
                 order.id.to_string().as_str(),
                 csr.der(),
                 &order.identifiers,
-                acme_proxy_signer::RequestedValidity::default(),
+                acme_proxy_signer::OrderRequest::default(),
             )
             .await
             .unwrap()
@@ -2804,6 +2804,9 @@ mod tests {
 
         let signer_bad_csr: RevokeError = SignerError::BadCsr.into();
         assert!(format!("{signer_bad_csr}").contains("unexpected badCsr"));
+
+        let signer_profile: RevokeError = SignerError::InvalidProfile("p".to_string()).into();
+        assert!(format!("{signer_profile}").contains("unexpected invalidProfile"));
 
         let internal = RevokeError::Internal("detail".to_string());
         assert!(format!("{internal}").contains("internal error: detail"));

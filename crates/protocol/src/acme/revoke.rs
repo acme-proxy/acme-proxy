@@ -145,13 +145,15 @@ pub enum RevokeError {
 
 /// How a [`SignerError`] reads inside a [`RevokeError`].
 ///
-/// `BadCsr` is not a thing `revoke` can legitimately answer — the hook takes a
-/// certificate, not a CSR — so it is reported as the contract violation it is
-/// rather than passed through as if it meant something here.
+/// `BadCsr` and `InvalidProfile` are not things `revoke` can legitimately
+/// answer — the hook takes a certificate, not an order — so each is reported as
+/// the contract violation it is rather than passed through as if it meant
+/// something here.
 pub fn signer_detail(error: &SignerError) -> String {
     match error {
         SignerError::Internal(detail) => detail.clone(),
         SignerError::BadCsr => "unexpected badCsr from revoke".to_string(),
+        SignerError::InvalidProfile(_) => "unexpected invalidProfile from revoke".to_string(),
     }
 }
 
@@ -890,7 +892,7 @@ mod tests {
     use acme_proxy_core::identifier::Identifier;
     use acme_proxy_jobs::jobs::JobHandler;
     use acme_proxy_signer::IssueOutcome;
-    use acme_proxy_signer::RequestedValidity;
+    use acme_proxy_signer::OrderRequest;
 
     /// A backend whose `revoke` always fails.
     struct Failing;
@@ -902,7 +904,7 @@ mod tests {
             _order_id: &str,
             _csr_der: &[u8],
             _identifiers: &[Identifier],
-            _validity: RequestedValidity,
+            _validity: OrderRequest,
         ) -> Result<IssueOutcome, SignerError> {
             Err(SignerError::Internal("not here".into()))
         }
@@ -973,7 +975,7 @@ mod tests {
             _order_id: &str,
             _csr_der: &[u8],
             _identifiers: &[Identifier],
-            _validity: RequestedValidity,
+            _validity: OrderRequest,
         ) -> Result<IssueOutcome, SignerError> {
             Err(SignerError::Internal("not here".into()))
         }

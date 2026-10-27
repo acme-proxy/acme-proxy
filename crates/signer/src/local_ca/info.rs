@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use tracing::error;
 
 use super::issuer_id_of;
-use crate::{RevocationRoute, SignerError, SignerInfo};
+use crate::{AcmeProfiles, RevocationRoute, SignerError, SignerInfo};
 use acme_proxy_core::config::LocalCaConfig;
 use acme_proxy_store::crl::StoredCrl;
 use acme_proxy_store::db::Database;
@@ -25,6 +25,9 @@ pub struct LocalCaInfo {
     /// and its CRL are stored under.
     issuer: String,
     database: Arc<Database>,
+    /// The ACME profiles this CA offers, from the same configuration the
+    /// signing half reads (`super::profiles`).
+    profiles: AcmeProfiles,
 }
 
 impl LocalCaInfo {
@@ -34,7 +37,8 @@ impl LocalCaInfo {
     /// `acme-proxy init` — ever generates a CA, so a process that finds none
     /// was started before the one that makes it.
     pub fn load(cfg: &LocalCaConfig, database: Arc<Database>) -> anyhow::Result<Self> {
-        Self::new(read_ca_certificate(&cfg.cert_path)?, database)
+        let profiles = super::profiles::LeafProfiles::from_config(cfg)?;
+        Ok(Self::new(read_ca_certificate(&cfg.cert_path)?, database)?.offering(profiles.offer()))
     }
 
     /// Over a CA certificate already in hand — what `LocalCa::info` builds
@@ -45,7 +49,15 @@ impl LocalCaInfo {
             ca_pem,
             issuer,
             database,
+            profiles: AcmeProfiles::none(),
         })
+    }
+
+    /// The same read side, offering `profiles`.
+    #[must_use]
+    pub(crate) fn offering(mut self, profiles: AcmeProfiles) -> Self {
+        self.profiles = profiles;
+        self
     }
 
     /// The issuer id its revocation state is stored under.
@@ -68,6 +80,10 @@ pub(crate) fn read_ca_certificate(path: &str) -> anyhow::Result<String> {
 
 #[async_trait]
 impl SignerInfo for LocalCaInfo {
+    async fn acme_profiles(&self) -> AcmeProfiles {
+        self.profiles.clone()
+    }
+
     /// The stored CRL, read and never signed.
     ///
     /// No stored row is an `Err`, not `Ok(None)`: this CA does keep a CRL, and

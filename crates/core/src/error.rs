@@ -178,6 +178,10 @@ problems! {
     /// subsystem at newOrder. HTTP 403.
     rejected_identifier => (FORBIDDEN, "urn:ietf:params:acme:error:rejectedIdentifier");
 
+    /// A newOrder named an ACME profile the server does not advertise in its
+    /// directory's `meta.profiles` (draft-ietf-acme-profiles §4). HTTP 400.
+    invalid_profile => (BAD_REQUEST, "urn:ietf:params:acme:error:invalidProfile");
+
     /// The request was blocked by a connection-level filter (IP allowlist,
     /// reverse DNS…), or a challenge responder answered with something that is
     /// not the key authorization. HTTP 403.
@@ -613,6 +617,16 @@ mod tests {
             Problem::rejected_identifier("boom"),
             403,
             "urn:ietf:params:acme:error:rejectedIdentifier",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn invalid_profile_renders_400_problem_json() {
+        assert_problem(
+            Problem::invalid_profile("boom"),
+            400,
+            "urn:ietf:params:acme:error:invalidProfile",
         )
         .await;
     }

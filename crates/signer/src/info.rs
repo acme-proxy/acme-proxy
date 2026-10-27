@@ -22,8 +22,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use super::{
-    Http01TokenStore, RenewalWindow, RevocationRoute, SignerError, SignerParts, custom, local_ca,
-    relay,
+    AcmeProfiles, Http01TokenStore, RenewalWindow, RevocationRoute, SignerError, SignerParts,
+    custom, local_ca, relay,
 };
 use acme_proxy_core::config::SignerConfig;
 
@@ -82,6 +82,17 @@ pub trait SignerInfo: Send + Sync {
     /// `challenge_strategy = "http01"` answers.
     fn http01_tokens(&self) -> Option<Arc<dyn Http01TokenStore>> {
         None
+    }
+
+    /// The ACME profiles this backend offers (draft-ietf-acme-profiles): what
+    /// the directory lists and what `newOrder` resolves a client's choice
+    /// against.
+    ///
+    /// The default — no profiles — is what `custom` keeps. Async because a
+    /// relay learns its offer from the upstream's directory, fetched on first
+    /// use rather than at startup.
+    async fn acme_profiles(&self) -> AcmeProfiles {
+        AcmeProfiles::none()
     }
 
     /// Where a revocation of a certificate this backend issued goes, decided

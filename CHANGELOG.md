@@ -108,6 +108,20 @@ migrated configuration before restarting.
   any duration from `"1h"`, so `leaf_validity = "160h"` issues only 160-hour
   certificates whatever a client asks for — a client's `notAfter` can still only
   shorten one.
+- **ACME profiles** (draft-ietf-acme-profiles, #54). The directory lists the
+  profiles an endpoint's signer offers in `meta.profiles`, `newOrder` takes a
+  `profile` (an unknown one is refused with `invalidProfile`), and the order
+  object, `acme-proxy order show` and the web admin report it.
+  - `local_ca` offers the `[signer.local_ca.profiles.<name>]` you define, each
+    a `description` and a `leaf_validity`, with `default_profile` for an order
+    naming none. Offering only `shortlived`, as the default, issues nothing
+    else.
+  - `relay` passes the upstream CA's profiles through, and relays each order's
+    choice in the upstream `newOrder`. `signer.relay.profile` forces one
+    instead — e.g. Let's Encrypt's `shortlived` — and the worker refuses to
+    start if the upstream does not advertise it.
+  - Orders record their profile in a new nullable `orders.profile` column
+    (migration `20261027120000_order_acme_profile`).
 
 ### Changed
 

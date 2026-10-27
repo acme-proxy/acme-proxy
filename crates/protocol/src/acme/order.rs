@@ -58,6 +58,9 @@ pub struct NewOrderPayload {
     /// certificate that this order is intended to replace", in the certID form
     /// of §4.1.
     pub replaces: Option<String>,
+    /// draft-ietf-acme-profiles §4: the profile, among those the directory's
+    /// `meta.profiles` lists, the client wants the certificate issued under.
+    pub profile: Option<String>,
 }
 
 /// A finalize payload (RFC 8555 §7.4).
@@ -340,6 +343,41 @@ pub fn challenge_can_be_triggered(authz: &Authorization, order: &Order, now: i64
         && order.status != OrderStatus::Invalid
 }
 
+/// The ACME profile an order is accepted under (draft-ietf-acme-profiles §4),
+/// resolved against what the endpoint's signer offers — see
+/// `AcmeProfiles::resolve` for the rules. Run after the identifier and
+/// `replaces` checks: a relay may wait on its upstream to learn its offer, and
+/// a request refused for its names should not pay for that.
+async fn resolve_profile(
+    endpoint: &Endpoint,
+    requested: Option<&str>,
+) -> Result<Option<String>, Error> {
+    let profiles = endpoint.signer_info.acme_profiles().await;
+    let profile = profiles.resolve(requested).map_err(|refusal| {
+        warn!(
+            event = "order_profile_refused",
+            outcome = "failure",
+            endpoint = %endpoint.name,
+            profile = %refusal.requested,
+        );
+        Problem::invalid_profile(refusal.to_string())
+    })?;
+    // A forced profile replaces the client's choice without refusing it: the
+    // order object says which profile it got, which is all the draft asks.
+    if let (Some(forced), Some(requested)) = (&profiles.forced, requested)
+        && forced != requested
+    {
+        info!(
+            event = "order_profile_forced",
+            outcome = "advisory",
+            endpoint = %endpoint.name,
+            requested = %requested,
+            profile = %forced,
+        );
+    }
+    Ok(profile)
+}
+
 impl OrderService<'_> {
     /// Creates an order and its authorizations (RFC 8555 §7.4), for the account
     /// that signed the request.
@@ -391,6 +429,8 @@ impl OrderService<'_> {
             None => None,
         };
 
+        let profile = resolve_profile(endpoint, payload.profile.as_deref()).await?;
+
         let expires = now_secs()
             .saturating_add(i64::try_from(endpoint.order.validity.as_secs()).unwrap_or(i64::MAX));
 
@@ -409,6 +449,7 @@ impl OrderService<'_> {
         )
         .with_client(&client);
         order.replaces = replaces;
+        order.profile = profile;
         let mut authz_ids = Vec::with_capacity(order.identifiers.len());
 
         let persisted = async {

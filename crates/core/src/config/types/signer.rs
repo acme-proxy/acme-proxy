@@ -4,6 +4,8 @@
 //! Re-exported flat from [`super`], so nothing outside this directory names
 //! the submodule.
 
+use std::collections::BTreeMap;
+
 use serde::Deserialize;
 
 use super::ConfigDuration;
@@ -95,6 +97,14 @@ pub struct RelayConfig {
     /// Total budget for one upstream issuance, after which the local order is
     /// marked `invalid` rather than left processing forever.
     pub poll_timeout: ConfigDuration,
+    /// The ACME profile (draft-ietf-acme-profiles) every upstream order asks
+    /// for, whatever a client named. Empty (the default) relays the upstream's
+    /// own profiles to clients and passes each client's choice through.
+    ///
+    /// Forcing is a relay-only key: a `local_ca` operator writes the profile
+    /// list, so restricting that list is how it forces one, while a relay's
+    /// list belongs to the upstream.
+    pub profile: String,
     pub dns01: Dns01Config,
     pub eab: RelayEabConfig,
 }
@@ -108,6 +118,7 @@ impl Default for RelayConfig {
             challenge_strategy: "bypass".to_string(),
             poll_interval: ConfigDuration::from_millis(2000),
             poll_timeout: ConfigDuration::from_secs(300),
+            profile: String::new(),
             dns01: Dns01Config::default(),
             eab: RelayEabConfig::default(),
         }
@@ -257,6 +268,39 @@ pub struct LocalCaConfig {
     /// so validation lives in `LocalCa::load_or_generate`, where the selector
     /// that makes these fields required is also in scope.
     pub pkcs11: Pkcs11Config,
+    /// The ACME profiles (draft-ietf-acme-profiles) this CA offers, by name.
+    /// Empty (the default) offers none: the directory lists no `profiles` and
+    /// every leaf gets [`leaf_validity`](Self::leaf_validity).
+    ///
+    /// A map keyed by an operator-chosen name, so the name is validated like
+    /// every such key (`config::validate_key_names`), in `LocalCa`'s
+    /// constructor along with each profile's lifetime.
+    pub profiles: BTreeMap<String, LocalCaProfileConfig>,
+    /// The profile an order that names none is issued under. Empty (the
+    /// default) issues such an order under [`leaf_validity`](Self::leaf_validity)
+    /// and records no profile on it.
+    pub default_profile: String,
+}
+
+/// One ACME profile a `local_ca` offers (`[signer.local_ca.profiles.<name>]`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct LocalCaProfileConfig {
+    /// What the directory's `meta.profiles` says about it: free text for the
+    /// client's operator, per the draft.
+    pub description: String,
+    /// The lifetime of a leaf issued under this profile, in place of the
+    /// CA's own `leaf_validity`. Bounded the same way.
+    pub leaf_validity: ConfigDuration,
+}
+
+impl Default for LocalCaProfileConfig {
+    fn default() -> Self {
+        Self {
+            description: String::new(),
+            leaf_validity: ConfigDuration::from_days(90),
+        }
+    }
 }
 
 impl Default for LocalCaConfig {
@@ -272,6 +316,8 @@ impl Default for LocalCaConfig {
             subject: LocalCaSubjectConfig::default(),
             key_source: "file".to_string(),
             pkcs11: Pkcs11Config::default(),
+            profiles: BTreeMap::new(),
+            default_profile: String::new(),
         }
     }
 }

@@ -103,6 +103,10 @@ pub struct Script {
     pub omit_finalize_url: bool,
     /// Advertise no `certificate` URL on a `valid` order.
     pub omit_certificate_url: bool,
+    /// The ACME profiles (draft-ietf-acme-profiles) the directory's
+    /// `meta.profiles` lists, as `(name, description)`. Empty lists none, as
+    /// an upstream predating the draft does.
+    pub profiles: Vec<(&'static str, &'static str)>,
 }
 
 /// A running fake upstream. Dropping it stops the accept loop.
@@ -146,6 +150,9 @@ struct Counters {
     /// The decoded `newAccount` payload of the last EAB-carrying request, so a
     /// test can assert on the binding that was actually sent.
     last_eab_payload: std::sync::Mutex<Option<String>>,
+    /// The `profile` member of the last `newOrder`, `None` when it carried
+    /// none — what the relay actually asked the upstream for.
+    last_order_profile: std::sync::Mutex<Option<String>>,
 }
 
 impl Upstream {
@@ -205,6 +212,10 @@ impl Upstream {
     }
 
     /// The URL a `relay` backend under test is configured with.
+    pub fn last_order_profile(&self) -> Option<String> {
+        self.counters.last_order_profile.lock().unwrap().clone()
+    }
+
     pub fn directory_url(&self) -> String {
         format!("{}/directory", self.base)
     }
@@ -377,6 +388,14 @@ async fn route(
         if !script.no_renewal_info {
             directory["renewalInfo"] = json!(format!("{base}/renewalInfo"));
         }
+        if !script.profiles.is_empty() {
+            let profiles: serde_json::Map<String, Value> = script
+                .profiles
+                .iter()
+                .map(|(name, description)| ((*name).to_string(), json!(description)))
+                .collect();
+            directory["meta"] = json!({ "profiles": profiles });
+        }
         return json_response(200, &directory, None, counters);
     }
 
@@ -446,6 +465,9 @@ async fn route(
         }
         "/newOrder" => {
             counters.orders_opened.fetch_add(1, Ordering::SeqCst);
+            *counters.last_order_profile.lock().unwrap() = decoded_payload(body)
+                .and_then(|payload| serde_json::from_str::<Value>(&payload).ok())
+                .and_then(|payload| payload["profile"].as_str().map(str::to_string));
             let location = (!script.omit_location).then(|| format!("{base}/order/1"));
             json_response(
                 201,

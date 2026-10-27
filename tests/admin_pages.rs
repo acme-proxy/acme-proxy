@@ -1924,7 +1924,7 @@ async fn creating_an_eab_for_an_unmounted_endpoint_is_refused() {
 #[tokio::test]
 async fn revoking_an_issued_order_shows_a_banner_and_then_a_conflict() {
     use acme_proxy_core::identifier::Identifier;
-    use acme_proxy_signer::RequestedValidity;
+    use acme_proxy_signer::OrderRequest;
     use acme_proxy_store::account::Account;
     use acme_proxy_store::order::Order;
 
@@ -1965,7 +1965,7 @@ async fn revoking_an_issued_order_shows_a_banner_and_then_a_conflict() {
             &order.id.to_string(),
             &csr_der,
             &[identifier],
-            RequestedValidity::default(),
+            OrderRequest::default(),
         )
         .await
         .expect("the in-memory CA must issue");

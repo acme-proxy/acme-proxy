@@ -50,6 +50,7 @@
   - [External Account Binding (EAB)](features/eab.md)
   - [Key Rollover](features/key_change.md)
   - [Renewal Information (ARI)](features/renewal_info.md)
+  - [ACME Profiles](features/acme_profiles.md)
 
 # Operations
 - [Reloading the Configuration](operations/reload.md)

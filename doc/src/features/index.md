@@ -21,7 +21,7 @@ advertised resources by reading the directory rather than by constructing paths.
 | `/acct/{id}` | `POST` | §7.3.2, §7.3.6 | — | One URL, told apart by whether a payload arrived: an empty one (POST-as-GET) reads the account, a payload updates the contact or deactivates. `kid`-authenticated; a URL other than the signer's own account is `unauthorized`, whether or not it names one. There is deliberately no unauthenticated `GET`. |
 | `/acct/{id}/orders` | `POST` | §7.1.2.1 | — | The account's order list, filtered as §7.1.2.1 requires. |
 | `/keyChange` | `POST` | §7.3.5 | yes | [Key Rollover](key_change.md). |
-| `/newOrder` | `POST` | §7.4 | yes | Accepts `notBefore`/`notAfter` and RFC 9773's `replaces`. |
+| `/newOrder` | `POST` | §7.4 | yes | Accepts `notBefore`/`notAfter`, RFC 9773's `replaces` and an [ACME profile](acme_profiles.md). |
 | `/order/{id}` | `POST` | §7.1.3 | — | POST-as-GET. |
 | `/order/{id}/finalize` | `POST` | §7.4 | — | Takes the CSR; hands it to the configured [signer](../signers/index.md). |
 | `/authz/{id}` | `POST` | §7.5, §7.5.2 | — | One URL serves both the read and the deactivation, told apart by whether a payload arrived. |
@@ -73,6 +73,7 @@ nothing asks them to, and each nonce is a committed database write.
 | External Account Binding | §7.3.4 | off | [EAB](eab.md) |
 | Account key rollover | §7.3.5 | always on | [Key Rollover](key_change.md) |
 | Renewal Information (ARI) | RFC 9773 | always on | [ARI](renewal_info.md) |
+| ACME profiles | draft-ietf-acme-profiles | off | [ACME Profiles](acme_profiles.md) |
 | Terms of service | §7.3.3 | off | Set `meta.terms_of_service` and `newAccount` starts enforcing it. |
 | Wildcard identifiers | §7.1.3 | requires `dns-01` | [Challenge Validation](../challenges/index.md#wildcards) |
 
@@ -84,6 +85,8 @@ nothing.
 
 - `externalAccountRequired` appears as `true` when EAB is on for that endpoint.
 - `termsOfService`, `website` and `caaIdentities` come from `[meta]`.
+- `profiles` lists the [ACME profiles](acme_profiles.md) the endpoint's
+  signer offers.
 
 `meta.terms_of_service` is the one with teeth: setting it turns on §7.3.3, so
 `newAccount` then refuses a request without `termsOfServiceAgreed: true` (`403

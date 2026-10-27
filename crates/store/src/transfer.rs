@@ -269,6 +269,7 @@ pub const TABLES: &[TableSpec] = &[
             ("revoked_at", I64),
             ("revocation_reason", I64),
             ("cert_not_after", I64),
+            ("profile", Text),
         ],
     },
     TableSpec {

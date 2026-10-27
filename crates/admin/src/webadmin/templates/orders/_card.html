@@ -29,6 +29,7 @@
       {% if detail.order.replaces %}
         <dt>Replaces</dt><dd class="wrap-anywhere"><code>{{ detail.order.replaces }}</code></dd>
       {% endif %}
+      {% if detail.order.profile %}<dt>ACME profile</dt><dd><code>{{ detail.order.profile }}</code></dd>{% endif %}
       {#- The issued leaf, described three ways. `certSerial` is what an abuse
           report or an audit-trail search (`/api/audit?certSerial=`) is keyed
           on, so it belongs on the one page that names the order it came from;

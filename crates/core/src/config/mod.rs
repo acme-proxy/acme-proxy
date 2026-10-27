@@ -547,6 +547,34 @@ mod tests {
         assert_eq!(order("long").validity, ConfigDuration::from_hours(2));
     }
 
+    /// A local CA's ACME profiles are an operator-named table, so they can be
+    /// written entirely from the environment, nested under the profile's name.
+    #[test]
+    fn local_ca_profiles_load_from_the_environment() {
+        let file = TempConfig::new("");
+        let path = file.path();
+        let _guard = EnvGuard::new(&[
+            ("ACME_PROXY_CONFIG", &path),
+            (
+                "ACME_PROXY_SIGNER__LOCAL_CA__PROFILES__SHORTLIVED__LEAF_VALIDITY",
+                "160h",
+            ),
+            (
+                "ACME_PROXY_SIGNER__LOCAL_CA__PROFILES__SHORTLIVED__DESCRIPTION",
+                "160-hour certificates",
+            ),
+            ("ACME_PROXY_SIGNER__LOCAL_CA__DEFAULT_PROFILE", "shortlived"),
+            ("ACME_PROXY_SIGNER__RELAY__PROFILE", "tlsserver"),
+        ]);
+        let config = Config::load().unwrap();
+        let local_ca = &config.signer.local_ca;
+        assert_eq!(local_ca.default_profile, "shortlived");
+        let profile = &local_ca.profiles["shortlived"];
+        assert_eq!(profile.leaf_validity, ConfigDuration::from_hours(160));
+        assert_eq!(profile.description, "160-hour certificates");
+        assert_eq!(config.signer.relay.profile, "tlsserver");
+    }
+
     /// A bare number has no unit, from the environment too, where
     /// `try_parsing` has already turned it into an integer.
     #[test]
