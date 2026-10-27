@@ -34,6 +34,28 @@ The window is resolved in this order:
 Spreading clients across that window is what prevents the "stampede" effect
 where a whole fleet renews at the same moment.
 
+## How often a client asks again
+
+Every answer carries a `Retry-After` header, which RFC 9773 §4.3 makes "the
+desired (i.e., both requested minimum and maximum) amount of time to wait"
+before the next query. It is **half the window being served**, so a client
+polling at that pace checks at least twice inside it, between one minute and six
+hours:
+
+| Certificate lifetime | Window | `Retry-After` |
+|---|---|---|
+| 90 days | about 7½ days | 6 hours (the cap) |
+| 160 hours | about 13 hours | 6 hours (the cap) |
+| 24 hours | about 2 hours | about 1 hour |
+| 1 hour | about 10 minutes | about 5 minutes |
+
+That is what keeps [short-lived
+certificates](../signers/local_ca.md#short-lived-certificates) renewable through
+ARI: a fixed six-hour pace would step clean over a 24-hour certificate's whole
+window. A revoked certificate gets one minute, since its window is already in
+the past. The pace follows the window actually served, so a window relayed from
+an upstream CA is paced the same way.
+
 ## The `replaces` field
 
 During a `newOrder` request, an ARI-aware client can include a `replaces` field

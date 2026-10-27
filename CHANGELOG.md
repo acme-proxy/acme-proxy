@@ -109,6 +109,14 @@ migrated configuration before restarting.
   certificates whatever a client asks for — a client's `notAfter` can still only
   shorten one.
 
+### Changed
+
+- **ARI's `Retry-After` follows the window it is sent with** (#54): half the
+  suggested window, between one minute and six hours, instead of a fixed six
+  hours. A 90-day certificate still gets six hours; a 24-hour one gets about an
+  hour, so a client polling at that pace lands inside a window that a six-hour
+  pace would have stepped over.
+
 ## [0.7.0] — 2026-10-25
 
 ### Breaking
