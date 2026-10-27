@@ -582,7 +582,7 @@ mod tests {
         for (table, column) in [
             ("revocations", "issuer"),
             ("crls", "issuer"),
-            ("profile_issuers", "issuer"),
+            ("endpoint_issuers", "issuer"),
         ] {
             assert_eq!(
                 declared_type(&database, table, column).await,
@@ -958,6 +958,252 @@ mod tests {
         }
     }
 
+    /// Version of `20261026120000_profile_to_endpoint.sql`, which renamed every
+    /// `profile` column, table and index to `endpoint`.
+    const PROFILE_TO_ENDPOINT: i64 = 20_261_026_120_000;
+
+    /// The rename keeps every row reachable under its new name, and rewrites
+    /// the queued work the previous binary left behind: a job handler now reads
+    /// `endpoint`, so a `notify_deliver` or `relay` row still naming `profile`
+    /// would be claimed and fail, and `audit --event` could never select a row
+    /// left on the old event name.
+    #[tokio::test]
+    async fn the_endpoint_rename_keeps_every_row_and_rewrites_queued_payloads() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::from_str("sqlite::memory:")
+                    .unwrap()
+                    .foreign_keys(true),
+            )
+            .await
+            .unwrap();
+
+        let mut rename = None;
+        for migration in MIGRATOR.iter() {
+            if migration.version == PROFILE_TO_ENDPOINT {
+                rename = Some(migration);
+                break;
+            }
+            sqlx::raw_sql(migration.sql.clone())
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        let rename = rename.expect("the endpoint rename is in the embedded set");
+
+        sqlx::raw_sql(
+            "\
+INSERT INTO accounts (id, profile, pubkey, contact, status, created_at) VALUES
+  (X'01', 'le', X'AA', '[]', 'valid', 100);
+INSERT INTO eab_keys (kid, secret, label, profile, status, created_at) VALUES
+  (X'02', X'CC', 'lab', 'le', 'active', 99);
+INSERT INTO orders (id, profile, account_id, status, identifiers, expires, created_at) VALUES
+  (X'03', 'le', X'01', 'pending', '[]', 200, 102);
+INSERT INTO audit_log (created_at, event, outcome, profile, actor_kind) VALUES
+  (110, 'profile_issuer_accepted', 'success', 'le', 'cli');
+INSERT INTO profile_issuers (profile, issuer, recorded_at) VALUES ('le', 'abcd', 111);
+INSERT INTO jobs (id, kind, dedup_key, payload, status, run_at, max_attempts, created_at,
+                  updated_at) VALUES
+  (X'10', 'notify_deliver', 'n1',
+   '{\"profile\":\"le\",\"backend\":\"b\",\"event\":{\"hook\":\"profile_mounted\",\"profile\":\"le\"}}',
+   'ready', 1, 5, 1, 1),
+  (X'11', 'relay', 'r1', '{\"order_id\":\"o\",\"profile\":\"le\"}', 'ready', 1, 5, 1, 1),
+  (X'12', 'nonce_sweep', 's1', '{}', 'ready', 1, 5, 1, 1),
+  (X'13', 'k', 'bad', 'not json', 'ready', 1, 5, 1, 1);
+",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::raw_sql(rename.sql.clone())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        for (table, query) in [
+            ("accounts", "SELECT endpoint FROM accounts;"),
+            ("orders", "SELECT endpoint FROM orders;"),
+            ("eab_keys", "SELECT endpoint FROM eab_keys;"),
+            ("audit_log", "SELECT endpoint FROM audit_log;"),
+            ("endpoint_issuers", "SELECT endpoint FROM endpoint_issuers;"),
+        ] {
+            let endpoint: String = sqlx::query_scalar(query).fetch_one(&pool).await.unwrap();
+            assert_eq!(endpoint, "le", "{table} kept its row under `endpoint`");
+        }
+
+        let event: String = sqlx::query_scalar("SELECT event FROM audit_log;")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(event, "endpoint_issuer_accepted");
+
+        let payload = |dedup: &'static str| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_scalar::<_, String>("SELECT payload FROM jobs WHERE dedup_key = ?;")
+                    .bind(dedup)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap()
+            }
+        };
+        let notify: serde_json::Value = serde_json::from_str(&payload("n1").await).unwrap();
+        assert_eq!(
+            notify,
+            serde_json::json!({
+                "endpoint": "le",
+                "backend": "b",
+                "event": {"hook": "endpoint_mounted", "endpoint": "le"},
+            })
+        );
+        let relay: serde_json::Value = serde_json::from_str(&payload("r1").await).unwrap();
+        assert_eq!(
+            relay,
+            serde_json::json!({"order_id": "o", "endpoint": "le"})
+        );
+        assert_eq!(
+            payload("s1").await,
+            "{}",
+            "a payload without the key is untouched"
+        );
+        assert_eq!(
+            payload("bad").await,
+            "not json",
+            "invalid JSON cannot fail the migration"
+        );
+
+        let indexes: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'orders';",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert!(indexes.iter().any(|name| name == "idx_orders_endpoint"));
+        assert!(!indexes.iter().any(|name| name.contains("profile")));
+    }
+
+    /// The PostgreSQL twin of
+    /// [`the_endpoint_rename_keeps_every_row_and_rewrites_queued_payloads`]:
+    /// its payload rewrite is a `DO` block of its own, not a port of the
+    /// SQLite statements, and its constraint and index renames have no SQLite
+    /// counterpart at all. Skips without `TEST_POSTGRES_URL`.
+    #[tokio::test]
+    async fn the_endpoint_rename_keeps_every_row_on_postgres() {
+        let Some(url) = crate::testutil::postgres_url().await else {
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .unwrap();
+
+        let mut rename = None;
+        for migration in PG_MIGRATOR.iter() {
+            if migration.version == PROFILE_TO_ENDPOINT {
+                rename = Some(migration);
+                break;
+            }
+            sqlx::raw_sql(migration.sql.clone())
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        let rename = rename.expect("the endpoint rename is in the PostgreSQL set");
+
+        sqlx::raw_sql(
+            "\
+INSERT INTO accounts (id, profile, pubkey, contact, status, created_at) VALUES
+  ('01900000-0000-7000-8000-000000000001', 'le', '\\xaa', '[]', 'valid', 100);
+INSERT INTO audit_log (created_at, event, outcome, profile, actor_kind) VALUES
+  (110, 'profile_issuer_accepted', 'success', 'le', 'cli');
+INSERT INTO profile_issuers (profile, issuer, recorded_at) VALUES ('le', 'abcd', 111);
+INSERT INTO jobs (id, kind, dedup_key, payload, status, run_at, max_attempts, created_at,
+                  updated_at) VALUES
+  ('01900000-0000-7000-8000-000000000010', 'notify_deliver', 'n1',
+   '{\"profile\":\"le\",\"backend\":\"b\",\"event\":{\"hook\":\"profile_mounted\",\"profile\":\"le\"}}',
+   'ready', 1, 5, 1, 1),
+  ('01900000-0000-7000-8000-000000000011', 'relay', 'r1',
+   '{\"order_id\":\"o\",\"profile\":\"le\"}', 'ready', 1, 5, 1, 1),
+  ('01900000-0000-7000-8000-000000000012', 'k', 'bad', 'not json, profile',
+   'ready', 1, 5, 1, 1),
+  ('01900000-0000-7000-8000-000000000013', 'k', 'arr', '[\"profile\"]', 'ready', 1, 5, 1, 1);
+",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::raw_sql(rename.sql.clone())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let audit: (String, String) = sqlx::query_as("SELECT endpoint, event FROM audit_log;")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(audit, ("le".into(), "endpoint_issuer_accepted".into()));
+        for query in [
+            "SELECT endpoint FROM accounts;",
+            "SELECT endpoint FROM endpoint_issuers;",
+        ] {
+            let endpoint: String = sqlx::query_scalar(query).fetch_one(&pool).await.unwrap();
+            assert_eq!(endpoint, "le", "{query}");
+        }
+
+        let payload = |dedup: &'static str| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_scalar::<_, String>("SELECT payload FROM jobs WHERE dedup_key = $1;")
+                    .bind(dedup)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap()
+            }
+        };
+        let notify: serde_json::Value = serde_json::from_str(&payload("n1").await).unwrap();
+        assert_eq!(
+            notify,
+            serde_json::json!({
+                "endpoint": "le",
+                "backend": "b",
+                "event": {"hook": "endpoint_mounted", "endpoint": "le"},
+            })
+        );
+        let relay: serde_json::Value = serde_json::from_str(&payload("r1").await).unwrap();
+        assert_eq!(
+            relay,
+            serde_json::json!({"order_id": "o", "endpoint": "le"})
+        );
+        assert_eq!(payload("bad").await, "not json, profile");
+        assert_eq!(payload("arr").await, "[\"profile\"]");
+
+        let names: Vec<String> = sqlx::query_scalar(
+            "SELECT conname::text FROM pg_constraint \
+             WHERE connamespace = current_schema()::regnamespace \
+               AND conname::text ~ 'profile|endpoint' \
+             UNION SELECT indexname::text FROM pg_indexes \
+             WHERE schemaname = current_schema() AND indexname ~ 'profile|endpoint';",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        for expected in [
+            "accounts_endpoint_pubkey_key",
+            "endpoint_issuers_pkey",
+            "idx_orders_endpoint",
+        ] {
+            assert!(names.iter().any(|name| name == expected), "{names:?}");
+        }
+        assert!(
+            !names.iter().any(|name| name.contains("profile")),
+            "{names:?}"
+        );
+    }
+
     /// [`declared_type`] against a bare pool rather than a [`Database`].
     async fn declared_type_on(pool: &sqlx::SqlitePool, table: &str, column: &str) -> String {
         let columns: Vec<(String, String)> =
@@ -1041,7 +1287,7 @@ VALUES
         let cert_id = "aYhba4dGQEHhs3uEe6CuLN4ByNQ.AIdlQyE";
 
         crate::sql::query(
-            "INSERT INTO accounts (id, profile, pubkey, contact, status, created_at) \
+            "INSERT INTO accounts (id, endpoint, pubkey, contact, status, created_at) \
              VALUES ('acct', 'default', X'00', '[]', 'valid', 0);",
         )
         .execute(database.raw_pool())
@@ -1052,7 +1298,7 @@ VALUES
             let pool = database.raw_pool().clone();
             async move {
                 crate::sql::query(
-                    "INSERT INTO orders (id, profile, account_id, status, identifiers, expires, \
+                    "INSERT INTO orders (id, endpoint, account_id, status, identifiers, expires, \
                      replaces, created_at) VALUES (?, 'default', 'acct', ?, '[]', 0, ?, 0);",
                 )
                 .bind(id)
@@ -1104,7 +1350,7 @@ VALUES
         let database = Database::connect_in_memory().await.unwrap();
 
         let result = crate::sql::query(
-            "INSERT INTO accounts (id, profile, pubkey, contact, status, created_at) \
+            "INSERT INTO accounts (id, endpoint, pubkey, contact, status, created_at) \
              VALUES ('a', 'default', X'00', '[]', 'definitely-not-a-status', 0);",
         )
         .execute(database.raw_pool())
@@ -1113,7 +1359,7 @@ VALUES
 
         // And a legitimate one is accepted.
         crate::sql::query(
-            "INSERT INTO accounts (id, profile, pubkey, contact, status, created_at) \
+            "INSERT INTO accounts (id, endpoint, pubkey, contact, status, created_at) \
              VALUES ('a', 'default', X'00', '[]', 'valid', 0);",
         )
         .execute(database.raw_pool())
@@ -1129,14 +1375,14 @@ VALUES
         let database = Database::connect_in_memory().await.unwrap();
 
         crate::sql::query(
-            "INSERT INTO accounts (id, profile, pubkey, contact, status, created_at) \
+            "INSERT INTO accounts (id, endpoint, pubkey, contact, status, created_at) \
              VALUES ('acct', 'default', X'00', '[]', 'valid', 0);",
         )
         .execute(database.raw_pool())
         .await
         .unwrap();
         crate::sql::query(
-            "INSERT INTO orders (id, profile, account_id, status, identifiers, expires, created_at) \
+            "INSERT INTO orders (id, endpoint, account_id, status, identifiers, expires, created_at) \
              VALUES ('ord', 'default', 'acct', 'pending', '[]', 0, 0);",
         )
         .execute(database.raw_pool())
@@ -1180,14 +1426,14 @@ VALUES
     async fn an_order_cannot_have_duplicate_authorizations_for_one_identifier() {
         let database = Database::connect_in_memory().await.unwrap();
         crate::sql::query(
-            "INSERT INTO accounts (id, profile, pubkey, contact, status, created_at) \
+            "INSERT INTO accounts (id, endpoint, pubkey, contact, status, created_at) \
              VALUES ('acct', 'default', X'00', '[]', 'valid', 0);",
         )
         .execute(database.raw_pool())
         .await
         .unwrap();
         crate::sql::query(
-            "INSERT INTO orders (id, profile, account_id, status, identifiers, expires, created_at) \
+            "INSERT INTO orders (id, endpoint, account_id, status, identifiers, expires, created_at) \
              VALUES ('ord', 'default', 'acct', 'pending', '[]', 0, 0);",
         )
         .execute(database.raw_pool())

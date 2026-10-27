@@ -20,10 +20,11 @@ thing the older `filter.enabled` shape could not express.
 ## Naming
 
 Each name must match `^[a-z0-9-]+$`: lowercase letters, digits and `-`, the same
-restriction profile names have. The reason is that a name is also an environment
-variable segment (`ACME_PROXY_FILTER__CHECK__<NAME>__…`), and the `config` crate
-lowercases those, so `MgmtNet` in a file and `MGMTNET` in the environment would
-silently become two entries instead of one overriding the other.
+restriction endpoint names have. The reason is that a name is also an
+environment variable segment (`ACME_PROXY_FILTER__CHECK__<NAME>__…`), and the
+`config` crate lowercases those, so `MgmtNet` in a file and `MGMTNET` in the
+environment would silently become two entries instead of one overriding the
+other.
 
 `and`, `or` and `not` are the [condition language](policy.md)'s own words and
 cannot name a check.
@@ -34,9 +35,9 @@ A check defined here but mentioned by no selected rule is **never constructed**.
 It opens no connection, spawns no client and validates nothing; it is reported
 once at startup as `filter_check_unused`.
 
-That is deliberate, and it is what makes profile inheritance usable: a global
-`[filter]` section can carry a library of checks, every profile inherits all of
-them, and each profile's `filter.rules` picks the subset it actually wants
+That is deliberate, and it is what makes endpoint inheritance usable: a global
+`[filter]` section can carry a library of checks, every endpoint inherits all of
+them, and each endpoint's `filter.rules` picks the subset it actually wants
 without paying for — or failing startup on — the rest.
 
 ## Keys by type
@@ -50,14 +51,14 @@ an `allowed_ip` check would simply be read by nothing.
 | --- | --- | --- |
 | `allowed_ip` | `allow`, `deny` | [allowed_ip](allowed_ip.md) |
 | `path` | `allow`, `deny` | [path](path.md) |
-| `reverse_dns` | `allow`, `deny`, `allow_regex`, `deny_regex`, `require_forward_confirm`, `timeout_ms` | [reverse_dns](reverse_dns.md) |
+| `reverse_dns` | `allow`, `deny`, `allow_regex`, `deny_regex`, `require_forward_confirm`, `timeout` | [reverse_dns](reverse_dns.md) |
 | `identifiers` | `allow`, `deny`, `allow_regex`, `deny_regex`, `allowed_types`, `allow_wildcards` | [identifiers](identifiers.md) |
 | `eab` | `allow`, `deny`, `allow_regex`, `deny_regex`, `kids`, `require_active` | [eab](eab.md) |
 | `ipam` | *(none — configured by the `[ipam]` section)* | [ipam](../ipam/index.md) |
-| `custom` | `script_path`, `timeout_ms`, `pass_stdin`, `args` | [custom](custom.md) |
+| `custom` | `script_path`, `timeout`, `pass_stdin`, `args` | [custom](custom.md) |
 
 Defaults, where a type has one: `require_forward_confirm = true`,
-`timeout_ms = 2000` for `reverse_dns` and `5000` for `custom`,
+`timeout = "2s"` for `reverse_dns` and `5000` for `custom`,
 `pass_stdin = true`, `allow_wildcards = false`, `require_active = false`,
 `allowed_types = ["dns", "cn"]`.
 

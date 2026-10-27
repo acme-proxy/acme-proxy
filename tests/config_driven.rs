@@ -1,7 +1,7 @@
 //! Drives the router with a **non-default** configuration.
 //!
 //! Every other test crate builds its app from `Config::default()`, so
-//! `server.base_url`, `nonce.ttl_seconds`, `order.validity_seconds` and the
+//! `server.base_url`, `nonce.ttl`, `order.validity` and the
 //! signer's leaf policy were never exercised at any other value — a bug that
 //! hardcoded `http://localhost:3000` somewhere, or ignored a configured TTL,
 //! would have been invisible.
@@ -30,14 +30,14 @@ use common::{
 /// naming the process.
 const HOST: &str = "https://acme.example.test:8443";
 
-/// The profile base URL that follows from it — `server.base_url` plus the
+/// The endpoint base URL that follows from it — `server.base_url` plus the
 /// endpoint's own mount point, which is what every advertised URL is built
 /// from and what a JWS `url` must name.
-const BASE: &str = "https://acme.example.test:8443/profile/default";
+const BASE: &str = "https://acme.example.test:8443/endpoint/default";
 
 /// A config that differs from the defaults in every value this crate asserts on.
 ///
-/// `nonce.ttl_seconds` is deliberately *not* shortened here. It used to be `1`
+/// `nonce.ttl` is deliberately *not* shortened here. It used to be `1`
 /// for every test in this file, which made each of them a race against the
 /// clock: a multi-request flow only had one second from each nonce being minted,
 /// and under a loaded machine — the whole suite in parallel, or a compile
@@ -47,24 +47,24 @@ const BASE: &str = "https://acme.example.test:8443/profile/default";
 fn config() -> Config {
     let mut config = Config::default();
     config.server.base_url = HOST.to_string();
-    config.order.validity_seconds = 3600;
-    config.signer.local_ca.leaf_validity_days = 7;
+    config.order.validity = acme_proxy_core::config::ConfigDuration::from_hours(1);
+    config.signer.local_ca.leaf_validity = acme_proxy_core::config::ConfigDuration::from_days(7);
     config
 }
 
 /// [`config`] with a nonce lifetime short enough to outlive in a test.
 fn config_with_short_nonce_ttl() -> Config {
     let mut config = config();
-    config.nonce.ttl_seconds = 1;
+    config.nonce.ttl = acme_proxy_core::config::ConfigDuration::from_secs(1);
     config
 }
 
 async fn app_with(config: Config) -> (Router, Arc<Database>) {
-    let leaf_days = config.signer.local_ca.leaf_validity_days;
+    let leaf_validity = config.signer.local_ca.leaf_validity;
     let signer = Arc::new(
-        LocalCa::generate_in_memory(
+        LocalCa::generate_in_memory_lasting(
             "ecdsa-p256",
-            leaf_days,
+            leaf_validity,
             Arc::new(Database::connect_in_memory().await.unwrap()),
         )
         .unwrap(),
@@ -168,7 +168,7 @@ async fn a_url_for_the_default_base_is_refused() {
 
     let n = nonce(&app).await;
     let body = signer.sign(
-        "http://localhost:3000/profile/default/newAccount",
+        "http://localhost:3000/endpoint/default/newAccount",
         &n,
         &json!({ "termsOfServiceAgreed": true }),
     );
@@ -179,7 +179,7 @@ async fn a_url_for_the_default_base_is_refused() {
     assert_eq!(problem["type"], "urn:ietf:params:acme:error:malformed");
 }
 
-/// `nonce.ttl_seconds` is honoured: a nonce older than the window is refused
+/// `nonce.ttl` is honoured: a nonce older than the window is refused
 /// with `badNonce` rather than accepted. Only ever tested for *unknown* and
 /// *replayed* nonces before, never for an expired one.
 #[tokio::test]
@@ -203,8 +203,8 @@ async fn a_nonce_older_than_the_configured_ttl_is_refused() {
     assert_eq!(problem["type"], "urn:ietf:params:acme:error:badNonce");
 }
 
-/// `order.validity_seconds` sets the order's `expires`, and
-/// `signer.local_ca.leaf_validity_days` the issued certificate's — two separate
+/// `order.validity` sets the order's `expires`, and
+/// `signer.local_ca.leaf_validity` the issued certificate's — two separate
 /// knobs that are easy to conflate.
 #[tokio::test]
 async fn the_order_window_and_the_leaf_window_are_configured_separately() {
@@ -224,7 +224,7 @@ async fn the_order_window_and_the_leaf_window_are_configured_separately() {
         .to_string();
     let order = body_json(res).await;
 
-    // `expires` is now + order.validity_seconds (3600), so within the hour.
+    // `expires` is now + order.validity (3600), so within the hour.
     let expires = order["expires"].as_str().expect("order must carry expires");
     let expires =
         time::OffsetDateTime::parse(expires, &time::format_description::well_known::Rfc3339)
@@ -299,7 +299,7 @@ async fn the_order_window_and_the_leaf_window_are_configured_separately() {
     )
     .unwrap();
 
-    // The leaf's validity comes from `leaf_validity_days` (7), not the order's.
+    // The leaf's validity comes from `leaf_validity` (7), not the order's.
     let leaf = first_certificate(&pem);
     let (_, parsed) = x509_parser::parse_x509_certificate(&leaf).unwrap();
     let validity = parsed.validity().not_after.to_datetime() - time::OffsetDateTime::now_utc();

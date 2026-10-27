@@ -8,13 +8,13 @@
 //!
 //! ## Building an app
 //!
-//! [`test_app_full`] is the single place the ACME app is built: one profile,
+//! [`test_app_full`] is the single place the ACME app is built: one endpoint,
 //! `default`, through the real `build_app`, so paths carry the endpoint prefix
 //! ([`p`] builds one). Every other `test_app_*` and `test_admin_app*` is a
-//! variant of it, and `one_profile` is shared with the admin builders so the
+//! variant of it, and `one_endpoint` is shared with the admin builders so the
 //! two cannot drift into mounting different endpoints.
 //!
-//! - **A profile is served from its signer's read side**, never the backend.
+//! - **An endpoint is served from its signer's read side**, never the backend.
 //!   [`read_side`] is `signer.info()`, except for a local CA whose revocation
 //!   state lives outside the app's database: its route becomes `Delegated`,
 //!   since a ledger row in the app's database would be one its CRL never sees.
@@ -61,8 +61,8 @@ use std::time::Duration;
 use acme_proxy_jobs::auditor::Auditor;
 // Re-exported for the suites that build an `Account` directly.
 pub use acme_proxy_core::audit::ClientContext;
-use acme_proxy_protocol::profile::Profile;
-use acme_proxy_protocol::profile::ProfileParts;
+use acme_proxy_protocol::endpoint::Endpoint;
+use acme_proxy_protocol::endpoint::EndpointParts;
 use acme_proxy_protocol::router::build_app;
 
 use acme_proxy_admin::admin::password::PasswordContext;
@@ -100,8 +100,8 @@ use acme_proxy_protocol::acme::validate::ChallengeValidateJob;
 use acme_proxy_signer::CrlRefresher;
 use acme_proxy_signer::Http01TokenStore;
 use acme_proxy_signer::IssueOutcome;
+use acme_proxy_signer::OrderRequest;
 use acme_proxy_signer::RenewalWindow;
-use acme_proxy_signer::RequestedValidity;
 use acme_proxy_signer::RevocationRoute;
 use acme_proxy_signer::SignerBackend;
 use acme_proxy_signer::SignerError;
@@ -227,19 +227,19 @@ pub fn first_certificate(chain: &str) -> Vec<u8> {
 /// than any one endpoint. Nothing ACME is served here.
 pub const HOST: &str = "http://localhost:3000";
 
-/// The profile every helper below mounts.
-pub const PROFILE: &str = "default";
+/// The endpoint every helper below mounts.
+pub const ENDPOINT: &str = "default";
 
-/// Where that profile is mounted: `/profile/<name>`, the namespace `build_app`
+/// Where that endpoint is mounted: `/endpoint/<name>`, the namespace `build_app`
 /// reserves for ACME endpoints.
-pub const PREFIX: &str = "/profile/default";
+pub const PREFIX: &str = "/endpoint/default";
 
-/// The base URL for that profile — what its `directory` advertises, and what
+/// The base URL for that endpoint — what its `directory` advertises, and what
 /// every JWS `url` must name (RFC 8555 §6.4).
-pub const BASE: &str = "http://localhost:3000/profile/default";
+pub const BASE: &str = "http://localhost:3000/endpoint/default";
 
-/// A route path under the test profile: `p("/newOrder")` →
-/// `/profile/default/newOrder`.
+/// A route path under the test endpoint: `p("/newOrder")` →
+/// `/endpoint/default/newOrder`.
 ///
 /// An absolute URL a response handed back (a `Location` header, an
 /// `authorizations` entry) becomes a request path by stripping [`HOST`], not
@@ -354,7 +354,7 @@ pub async fn no_notifications() -> Arc<NotifyDispatcher> {
 }
 
 /// A queue over its own in-memory database, for a dispatcher a test builds
-/// directly rather than through `server::profile::build_all`.
+/// directly rather than through `server::endpoint::build_all`.
 pub async fn test_job_queue() -> JobQueue {
     let database = Arc::new(Database::connect_in_memory().await.unwrap());
     JobQueue::new(database, &JobsConfig::default())
@@ -405,7 +405,7 @@ impl NotifyHarness {
     }
 
     async fn over(recorder: Arc<RecordingNotifyBackend>) -> Self {
-        Self::over_key(PROFILE, recorder).await
+        Self::over_key(ENDPOINT, recorder).await
     }
 
     async fn over_key(key: &str, recorder: Arc<RecordingNotifyBackend>) -> Self {
@@ -417,9 +417,9 @@ impl NotifyHarness {
         // between attempts would only make them wait. The retry behaviour itself
         // is covered inline, in `crates/jobs/src/notify/job.rs`.
         let config = JobsConfig {
-            poll_interval_ms: 5,
+            poll_interval: acme_proxy_core::config::ConfigDuration::from_millis(5),
             max_attempts: 1,
-            retry_base_seconds: 0,
+            retry_base: acme_proxy_core::config::ConfigDuration::from_secs(0),
             ..JobsConfig::default()
         };
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
@@ -533,12 +533,12 @@ pub fn bypassing_challenges(types: &[&str]) -> Arc<ChallengeRegistry> {
     ))
 }
 
-/// One endpoint in a multi-profile app, for `tests/profiles.rs`.
+/// One endpoint in a multi-endpoint app, for `tests/endpoints.rs`.
 ///
-/// Defaults mirror [`test_app_full`]'s single profile — an in-memory local CA,
+/// Defaults mirror [`test_app_full`]'s single endpoint — an in-memory local CA,
 /// no filters, a bypassing `http-01` registry — so a test states only the
 /// difference it is about.
-pub struct TestProfile {
+pub struct TestEndpoint {
     pub name: &'static str,
     pub signer: Arc<dyn SignerBackend>,
     pub filter: Arc<FilterPolicy>,
@@ -548,8 +548,8 @@ pub struct TestProfile {
     pub notify: Option<Arc<NotifyDispatcher>>,
 }
 
-impl TestProfile {
-    /// A profile named `name`, with its **own** local CA — two of these issue
+impl TestEndpoint {
+    /// An endpoint named `name`, with its **own** local CA — two of these issue
     /// certificates with different issuers, which is how a test proves which
     /// endpoint actually signed.
     pub async fn new(name: &'static str) -> Self {
@@ -588,43 +588,43 @@ impl TestProfile {
     /// JWS `url` sent to it must name.
     #[must_use]
     pub fn base(name: &str) -> String {
-        format!("{HOST}/profile/{name}")
+        format!("{HOST}/endpoint/{name}")
     }
 
     /// A request path under this endpoint.
     #[must_use]
     pub fn path(name: &str, path: &str) -> String {
-        format!("/profile/{name}{path}")
+        format!("/endpoint/{name}{path}")
     }
 }
 
 /// Builds an app mounting several endpoints over one database — the real
-/// multi-profile shape, through the real `build_app`.
-pub async fn test_app_with_profiles(profiles: Vec<TestProfile>) -> (Router, Arc<Database>) {
+/// multi-endpoint shape, through the real `build_app`.
+pub async fn test_app_with_endpoints(endpoints: Vec<TestEndpoint>) -> (Router, Arc<Database>) {
     init_tracing();
     let config = Config::default();
     let database = Arc::new(Database::connect_in_memory().await.unwrap());
     // A `for` loop rather than `map`: resolving the default dispatcher opens a
     // database, so the body has to be able to await.
-    let mut built = Vec::with_capacity(profiles.len());
-    let mut backends = Vec::with_capacity(profiles.len());
-    for profile in profiles {
-        let notify = match profile.notify {
+    let mut built = Vec::with_capacity(endpoints.len());
+    let mut backends = Vec::with_capacity(endpoints.len());
+    for endpoint in endpoints {
+        let notify = match endpoint.notify {
             Some(notify) => notify,
             None => no_notifications().await,
         };
-        met_by_a_worker(profile.signer.as_ref()).await;
-        backends.push((profile.name.to_string(), profile.signer.clone()));
-        built.push(Arc::new(Profile::new(
-            profile.name,
+        met_by_a_worker(endpoint.signer.as_ref()).await;
+        backends.push((endpoint.name.to_string(), endpoint.signer.clone()));
+        built.push(Arc::new(Endpoint::new(
+            endpoint.name,
             &config.server.base_url,
-            ProfileParts {
-                signer_info: read_side(profile.signer.as_ref(), &database).await,
-                filter: profile.filter,
-                challenges: profile.challenges,
+            EndpointParts {
+                signer_info: read_side(endpoint.signer.as_ref(), &database).await,
+                filter: endpoint.filter,
+                challenges: endpoint.challenges,
                 order: config.order.clone(),
-                eab: profile.eab,
-                meta: profile.meta,
+                eab: endpoint.eab,
+                meta: endpoint.meta,
                 notify,
             },
         )));
@@ -657,8 +657,8 @@ pub async fn test_app_with_profiles(profiles: Vec<TestProfile>) -> (Router, Arc<
 /// a backend failing `Internal` spends its attempt budget in milliseconds and
 /// the order reaches `invalid` while the test is still polling for it.
 ///
-/// `backends` is each profile's signer — what a `worker` holds and a
-/// [`Profile`] never does.
+/// `backends` is each endpoint's signer — what a `worker` holds and a
+/// [`Endpoint`] never does.
 ///
 /// `audit` is what the worker writes its rows through — the app's own, so an
 /// issuance recorded here is counted into the same registry the app renders,
@@ -672,7 +672,7 @@ pub async fn test_app_with_profiles(profiles: Vec<TestProfile>) -> (Router, Arc<
 /// nothing to drain gracefully, the database being in memory and going with it.
 fn spawn_worker_runner(
     database: &Arc<Database>,
-    profiles: &[Arc<Profile>],
+    endpoints: &[Arc<Endpoint>],
     backends: &[(String, Arc<dyn SignerBackend>)],
     audit: Arc<Auditor>,
 ) -> JobQueue {
@@ -683,20 +683,20 @@ fn spawn_worker_runner(
         .register(Arc::new(ChallengeValidateJob::new(
             database.clone(),
             audit.clone(),
-            profiles
+            endpoints
                 .iter()
-                .map(|profile| (profile.name.clone(), profile.clone()))
+                .map(|endpoint| (endpoint.name.clone(), endpoint.clone()))
                 .collect(),
         )))
         .expect("the validation handler registers");
-    // The notifier each profile announces through, as the process-wide map a
+    // The notifier each endpoint announces through, as the process-wide map a
     // worker reads them from. The sender is leaked for the shutdown sender's
     // reason: the map never changes here, and a dropped sender is harmless to
     // a `watch` receiver but pointless to keep.
     let (notifiers_tx, notifiers) = acme_proxy_jobs::notify::notifiers_channel(
-        profiles
+        endpoints
             .iter()
-            .map(|profile| (profile.name.clone(), profile.notify.clone()))
+            .map(|endpoint| (endpoint.name.clone(), endpoint.notify.clone()))
             .collect(),
     );
     let revoke_notifiers = notifiers.clone();
@@ -747,18 +747,18 @@ fn spawn_worker_runner(
 /// The `[jobs]` pacing [`spawn_worker_runner`] drains at.
 fn worker_jobs_config() -> JobsConfig {
     JobsConfig {
-        poll_interval_ms: 10,
-        retry_base_seconds: 0,
-        retry_max_seconds: 0,
+        poll_interval: acme_proxy_core::config::ConfigDuration::from_millis(10),
+        retry_base: acme_proxy_core::config::ConfigDuration::from_secs(0),
+        retry_max: acme_proxy_core::config::ConfigDuration::from_secs(0),
         ..JobsConfig::default()
     }
 }
 
 /// The one place the app is actually constructed: every other `test_app_*`
-/// helper delegates here, so a new `build_app`/`Profile` parameter is added in
+/// helper delegates here, so a new `build_app`/`Endpoint` parameter is added in
 /// one place rather than at each call site.
 ///
-/// It builds the real thing — root routes plus one profile mounted under
+/// It builds the real thing — root routes plus one endpoint mounted under
 /// [`PREFIX`] — so the suite exercises the mounting itself, not a router that
 /// only exists in tests.
 pub async fn test_app_full(
@@ -770,18 +770,18 @@ pub async fn test_app_full(
 ) -> (Router, Arc<Database>) {
     init_tracing();
     let database = Arc::new(Database::connect_in_memory().await.unwrap());
-    let (profile, backends) =
-        one_profile(&database, &config, signer, filter, challenges, notify).await;
+    let (endpoint, backends) =
+        one_endpoint(&database, &config, signer, filter, challenges, notify).await;
     let jobs = spawn_worker_runner(
         &database,
-        std::slice::from_ref(&profile),
+        std::slice::from_ref(&endpoint),
         &backends,
         test_auditor(database.clone()),
     );
     let router = build_app(
         database.clone(),
         Arc::new(config),
-        vec![profile],
+        vec![endpoint],
         test_auditor(database.clone()),
         Arc::new(Metrics::new(database.clone())),
         jobs,
@@ -795,7 +795,7 @@ pub async fn test_app_full(
 pub async fn test_app_over(database: Arc<Database>, signer: Arc<dyn SignerBackend>) -> Router {
     init_tracing();
     let config = Config::default();
-    let (profile, backends) = one_profile(
+    let (endpoint, backends) = one_endpoint(
         &database,
         &config,
         signer,
@@ -806,14 +806,14 @@ pub async fn test_app_over(database: Arc<Database>, signer: Arc<dyn SignerBacken
     .await;
     let jobs = spawn_worker_runner(
         &database,
-        std::slice::from_ref(&profile),
+        std::slice::from_ref(&endpoint),
         &backends,
         test_auditor(database.clone()),
     );
     build_app(
         database.clone(),
         Arc::new(config),
-        vec![profile],
+        vec![endpoint],
         test_auditor(database.clone()),
         Arc::new(Metrics::new(database)),
         jobs,
@@ -851,7 +851,7 @@ pub async fn test_app_on_disk() -> (Router, Arc<Database>, DiskDb) {
             .unwrap(),
     );
     let config = Config::default();
-    let (profile, backends) = one_profile(
+    let (endpoint, backends) = one_endpoint(
         &database,
         &config,
         Arc::new(memory_ca().await),
@@ -862,14 +862,14 @@ pub async fn test_app_on_disk() -> (Router, Arc<Database>, DiskDb) {
     .await;
     let jobs = spawn_worker_runner(
         &database,
-        std::slice::from_ref(&profile),
+        std::slice::from_ref(&endpoint),
         &backends,
         test_auditor(database.clone()),
     );
     let router = build_app(
         database.clone(),
         Arc::new(config),
-        vec![profile],
+        vec![endpoint],
         test_auditor(database.clone()),
         Arc::new(Metrics::new(database.clone())),
         jobs,
@@ -896,7 +896,7 @@ pub async fn test_app_with_metrics(
     config.metrics.enabled = true;
     let database = Arc::new(Database::connect_in_memory().await.unwrap());
     let metrics = Arc::new(Metrics::new(database.clone()));
-    let (profile, backends) = one_profile(
+    let (endpoint, backends) = one_endpoint(
         &database,
         &config,
         signer,
@@ -915,14 +915,14 @@ pub async fn test_app_with_metrics(
     );
     let jobs = spawn_worker_runner(
         &database,
-        std::slice::from_ref(&profile),
+        std::slice::from_ref(&endpoint),
         &backends,
         auditor.clone(),
     );
     let router = build_app(
         database.clone(),
         Arc::new(config),
-        vec![profile],
+        vec![endpoint],
         auditor,
         metrics.clone(),
         jobs,
@@ -930,23 +930,23 @@ pub async fn test_app_with_metrics(
     (router, database, metrics)
 }
 
-/// The single `default` profile both app builders mount.
+/// The single `default` endpoint both app builders mount.
 ///
 /// Factored out rather than copied so `test_admin_app` and `test_app_full`
 /// cannot drift into mounting subtly different endpoints.
-async fn one_profile(
+async fn one_endpoint(
     database: &Database,
     config: &Config,
     signer: Arc<dyn SignerBackend>,
     filter: Arc<FilterPolicy>,
     challenges: Arc<ChallengeRegistry>,
     notify: Arc<NotifyDispatcher>,
-) -> (Arc<Profile>, Vec<(String, Arc<dyn SignerBackend>)>) {
+) -> (Arc<Endpoint>, Vec<(String, Arc<dyn SignerBackend>)>) {
     met_by_a_worker(signer.as_ref()).await;
-    let profile = Arc::new(Profile::new(
-        PROFILE,
+    let endpoint = Arc::new(Endpoint::new(
+        ENDPOINT,
         &config.server.base_url,
-        ProfileParts {
+        EndpointParts {
             signer_info: read_side(signer.as_ref(), database).await,
             filter,
             challenges,
@@ -956,7 +956,7 @@ async fn one_profile(
             notify,
         },
     ));
-    (profile, vec![(PROFILE.to_string(), signer)])
+    (endpoint, vec![(ENDPOINT.to_string(), signer)])
 }
 
 /// What a worker's first pass leaves behind for `signer`: a local CA's first
@@ -1016,6 +1016,10 @@ impl SignerInfo for OwnDatabase {
 
     async fn renewal_info(&self, cert_der: &[u8]) -> Result<Option<RenewalWindow>, SignerError> {
         self.0.renewal_info(cert_der).await
+    }
+
+    async fn acme_profiles(&self) -> acme_proxy_signer::AcmeProfiles {
+        self.0.acme_profiles().await
     }
 
     fn http01_tokens(&self) -> Option<Arc<dyn Http01TokenStore>> {
@@ -1082,13 +1086,13 @@ pub fn admin_config() -> Config {
 }
 
 /// Builds the **admin** router (not the ACME one) over a throwaway in-memory
-/// database, plus the one `default` profile so `revoke` can resolve a signer.
+/// database, plus the one `default` endpoint so `revoke` can resolve a signer.
 pub async fn test_admin_app(config: Config) -> (Router, Arc<Database>) {
     let (router, database, _signer) = test_admin_app_with_signer(config).await;
     (router, database)
 }
 
-/// [`test_admin_app`], also handing back the signer the profile was built with.
+/// [`test_admin_app`], also handing back the signer the endpoint was built with.
 ///
 /// A test that needs an order to be genuinely *issued* — so the admin API's
 /// revoke path has a certificate to act on — must issue through the very same
@@ -1125,7 +1129,7 @@ async fn admin_app_with_notifiers(
         LocalCa::generate_in_memory("ecdsa-p256", 90, database.clone())
             .expect("an in-memory CA is always available"),
     );
-    let (profile, backends) = one_profile(
+    let (endpoint, backends) = one_endpoint(
         &database,
         &config,
         signer.clone(),
@@ -1136,14 +1140,14 @@ async fn admin_app_with_notifiers(
     .await;
     let jobs = spawn_worker_runner(
         &database,
-        std::slice::from_ref(&profile),
+        std::slice::from_ref(&endpoint),
         &backends,
         test_auditor(database.clone()),
     );
     let router = acme_proxy_admin::webadmin::build_admin_app(
         database.clone(),
         Arc::new(config),
-        &[profile],
+        &[endpoint],
         test_auditor(database.clone()),
         notifiers,
         jobs,
@@ -1284,7 +1288,7 @@ pub async fn seed(database: &Arc<Database>, count: u8) -> Vec<String> {
     let mut ids = Vec::new();
     for index in 0..count {
         let (account, _) = Account::find_or_create(
-            PROFILE,
+            ENDPOINT,
             &[1u8, index],
             vec![format!("mailto:user{index}@example.com")],
             &ClientContext {
@@ -1297,7 +1301,7 @@ pub async fn seed(database: &Arc<Database>, count: u8) -> Vec<String> {
         .await
         .unwrap();
         Order::create(
-            PROFILE,
+            ENDPOINT,
             account.id,
             vec![Identifier::dns(format!("host{index}.example.com"))],
             2_000_000_000,
@@ -1324,12 +1328,12 @@ pub async fn issue_into_an_order(
     name: &str,
 ) -> (String, String) {
     use acme_proxy_core::identifier::Identifier;
-    use acme_proxy_signer::RequestedValidity;
+    use acme_proxy_signer::OrderRequest;
     use acme_proxy_store::account::Account;
     use acme_proxy_store::order::Order;
 
     let (account, _) = Account::find_or_create(
-        PROFILE,
+        ENDPOINT,
         &[9u8, 9],
         vec![],
         &ClientContext::default(),
@@ -1339,7 +1343,7 @@ pub async fn issue_into_an_order(
     .unwrap();
     let identifier = Identifier::dns(name);
     let mut order = Order::create(
-        PROFILE,
+        ENDPOINT,
         account.id,
         vec![identifier.clone()],
         2_000_000_000,
@@ -1359,7 +1363,7 @@ pub async fn issue_into_an_order(
             &order.id.to_string(),
             &csr_der,
             &[identifier],
-            RequestedValidity::default(),
+            OrderRequest::default(),
         )
         .await
         .expect("the in-memory CA must issue");
@@ -1409,7 +1413,7 @@ pub async fn test_admin_app_logged_in(
     test_admin_app_logged_in_with_filter(config, Arc::new(FilterPolicy::default())).await
 }
 
-/// [`test_admin_app_logged_in`], over a profile mounting a policy of the
+/// [`test_admin_app_logged_in`], over an endpoint mounting a policy of the
 /// caller's choosing — for the surfaces whose subject *is* the policy.
 pub async fn test_admin_app_logged_in_with_filter(
     config: Config,
@@ -1985,7 +1989,7 @@ impl SignerBackend for FailingSigner {
         _order_id: &str,
         _csr_der: &[u8],
         _identifiers: &[Identifier],
-        _validity: RequestedValidity,
+        _validity: OrderRequest,
     ) -> Result<IssueOutcome, SignerError> {
         Err(SignerError::Internal("boom".to_string()))
     }
@@ -2057,7 +2061,7 @@ impl SignerBackend for GatedSigner {
         order_id: &str,
         csr_der: &[u8],
         identifiers: &[Identifier],
-        validity: RequestedValidity,
+        validity: OrderRequest,
     ) -> Result<IssueOutcome, SignerError> {
         let first = self.calls.fetch_add(1, Ordering::SeqCst) == 0;
         self.entered.add_permits(1);
@@ -2125,7 +2129,7 @@ impl SignerBackend for GatedCrlSigner {
         order_id: &str,
         csr_der: &[u8],
         identifiers: &[Identifier],
-        validity: RequestedValidity,
+        validity: OrderRequest,
     ) -> Result<IssueOutcome, SignerError> {
         self.ca
             .issue(order_id, csr_der, identifiers, validity)
@@ -2196,7 +2200,7 @@ impl SignerBackend for RevokeFailingSigner {
         order_id: &str,
         csr_der: &[u8],
         identifiers: &[Identifier],
-        validity: RequestedValidity,
+        validity: OrderRequest,
     ) -> Result<IssueOutcome, SignerError> {
         self.0.issue(order_id, csr_der, identifiers, validity).await
     }
@@ -2258,7 +2262,7 @@ impl SignerBackend for RevokePersistFailingSigner {
         order_id: &str,
         csr_der: &[u8],
         identifiers: &[Identifier],
-        validity: RequestedValidity,
+        validity: OrderRequest,
     ) -> Result<IssueOutcome, SignerError> {
         self.ca
             .issue(order_id, csr_der, identifiers, validity)
@@ -2318,7 +2322,7 @@ impl SignerBackend for TokenStoreSigner {
         _order_id: &str,
         _csr_der: &[u8],
         _identifiers: &[Identifier],
-        _validity: RequestedValidity,
+        _validity: OrderRequest,
     ) -> Result<IssueOutcome, SignerError> {
         Err(SignerError::Internal("not a signing backend".to_string()))
     }
@@ -2373,7 +2377,7 @@ impl SignerBackend for RecordingSigner {
         _order_id: &str,
         _csr_der: &[u8],
         _identifiers: &[Identifier],
-        _validity: RequestedValidity,
+        _validity: OrderRequest,
     ) -> Result<IssueOutcome, SignerError> {
         self.issued.store(true, std::sync::atomic::Ordering::SeqCst);
         Err(SignerError::Internal("recorded".to_string()))
@@ -2396,7 +2400,7 @@ impl SignerBackend for DelegatingSigner {
         _order_id: &str,
         _csr_der: &[u8],
         _identifiers: &[Identifier],
-        _validity: RequestedValidity,
+        _validity: OrderRequest,
     ) -> Result<IssueOutcome, SignerError> {
         Ok(IssueOutcome::Processing)
     }
@@ -2449,7 +2453,7 @@ impl SignerBackend for ScriptedAriSigner {
         order_id: &str,
         csr_der: &[u8],
         identifiers: &[Identifier],
-        validity: RequestedValidity,
+        validity: OrderRequest,
     ) -> Result<IssueOutcome, SignerError> {
         self.inner
             .issue(order_id, csr_der, identifiers, validity)
@@ -2519,7 +2523,7 @@ impl SignerBackend for GarbageChainSigner {
         _order_id: &str,
         _csr_der: &[u8],
         _identifiers: &[Identifier],
-        _validity: RequestedValidity,
+        _validity: OrderRequest,
     ) -> Result<IssueOutcome, SignerError> {
         Ok(IssueOutcome::Issued("not a certificate at all".to_string()))
     }
@@ -2744,7 +2748,7 @@ pub async fn body_json(response: Response) -> Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
-/// Issues a real nonce by hitting the profile's `/newNonce` and returning its
+/// Issues a real nonce by hitting the endpoint's `/newNonce` and returning its
 /// `Replay-Nonce`
 /// header value (minted and persisted by the middleware).
 pub async fn fetch_nonce(app: &Router) -> String {
@@ -3123,7 +3127,7 @@ pub mod acme {
     use serde_json::{Value, json};
     use tower::ServiceExt;
 
-    /// The absolute URL of a resource under the test profile — what a JWS
+    /// The absolute URL of a resource under the test endpoint — what a JWS
     /// `url` header must name (RFC 8555 §6.4).
     #[must_use]
     pub fn url(path: &str) -> String {
@@ -3207,7 +3211,7 @@ pub mod acme {
 
     /// An absolute URL the server handed back, as a request path.
     ///
-    /// Strips [`HOST`] and not [`BASE`]: the `/profile/<name>` prefix is part
+    /// Strips [`HOST`] and not [`BASE`]: the `/endpoint/<name>` prefix is part
     /// of the route, so removing it would ask the root router instead.
     #[must_use]
     pub fn path_of(absolute: &str) -> String {

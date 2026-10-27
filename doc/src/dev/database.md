@@ -50,7 +50,7 @@ erDiagram
 
     accounts {
         blob id PK
-        text profile "UNIQUE(profile, pubkey)"
+        text endpoint "UNIQUE(endpoint, pubkey)"
         blob pubkey
         text status "CHECK valid|deactivated|revoked"
         blob eab_kid "no FK - see below"
@@ -59,7 +59,7 @@ erDiagram
     }
     orders {
         blob id PK
-        text profile
+        text endpoint
         blob account_id FK
         text status "CHECK pending|ready|processing|valid|invalid"
         text identifiers "JSON array"
@@ -92,7 +92,7 @@ erDiagram
     eab_keys {
         blob kid PK
         blob secret "retrievable on purpose"
-        text profile "NULL = every endpoint"
+        text endpoint "NULL = every endpoint"
         text status "CHECK active|revoked"
     }
     nonces {
@@ -169,10 +169,10 @@ erDiagram
         integer expires_at "consumed by the callback"
         integer max_age "a step-up's auth_time bound"
     }
-    profile_issuers {
-        text profile PK
+    endpoint_issuers {
+        text endpoint PK
         text issuer "SHA-256 of the CA's SPKI"
-        integer recorded_at "changed only by profile issuer accept"
+        integer recorded_at "changed only by endpoint issuer accept"
     }
     admin_login_buckets {
         text scope PK "password or oidc_start"
@@ -190,7 +190,7 @@ edges that are not drawn**:
   `upstream_orders` hanging off an order and `eab_keys` and `nonces` standing
   alone.
 - `audit_log`, `jobs` and a local CA's `revocations`, `crls`, plus the relay's
-  `http01_tokens` and each profile's recorded CA in `profile_issuers`, all
+  `http01_tokens` and each endpoint's recorded CA in `endpoint_issuers`, all
   connected to nothing. That is policy in each case, not an
   omission. The audit trail and the revocation ledger must outlive what they
   describe, the job queue is generic (both below), and the last three are state
@@ -218,19 +218,25 @@ callback. Its `max_age` is set only for a step-up sign-in, and holds the
 callback to the re-authentication the request asked for: it is in the row, not
 the callback's query, because the query is the browser's to write.
 
-## Profiles are a database boundary
+## Endpoints are a database boundary
 
-`accounts.profile` and `orders.profile` are `NOT NULL`, and `accounts` is keyed
-`UNIQUE(profile, pubkey)`. One client key presenting itself at two endpoints is
-**two independent accounts** with separate orders and separate authorizations —
-see [Profiles & Routing](../core/profiles.md).
+`accounts.endpoint` and `orders.endpoint` are `NOT NULL`, and `accounts` is
+keyed `UNIQUE(endpoint, pubkey)`. One client key presenting itself at two
+endpoints is **two independent accounts** with separate orders and separate
+authorizations — see [Endpoints & Routing](../core/endpoints.md).
 
-`eab_keys.profile` is the one nullable member of the set, and `NULL` means
+`eab_keys.endpoint` is the one nullable member of the set, and `NULL` means
 "valid at every endpoint" rather than "unknown".
 
-Request-path lookups always take the profile. The admin CLI deliberately uses
+Request-path lookups always take the endpoint. The admin CLI deliberately uses
 unscoped lookups (`find_any_by_id`, `find_any_by_kid`), because an operator
 holding an id wants the row, not a reminder about which endpoint it belongs to.
+
+These columns were named `profile` until `20261026120000_profile_to_endpoint`,
+which renamed them (and `profile_issuers` to `endpoint_issuers`) and rewrote
+the `profile` member of every queued job payload, so work queued by the
+previous release still runs. The migrations before it still say `profile`:
+they are frozen, and describe the schema as it was.
 
 ## Every foreign key is indexed and cascades
 
@@ -246,13 +252,13 @@ tables to add both halves at once:
 - An index on every foreign key: `idx_orders_account_id`,
   `idx_authorizations_order`, `idx_challenges_authz`.
 
-Two later indexes serve one query each: `idx_orders_cert_serial` on `(profile,
+Two later indexes serve one query each: `idx_orders_cert_serial` on `(endpoint,
 cert_serial)`, which `POST /revokeCert` uses on every request, and
 `idx_orders_created_at` / `idx_orders_status_created_at`, which the web admin's
 newest-first cross-account listing needs and the ACME path never did.
 
 `idx_orders_replaces_claim` is different — it is a **partial unique** index on
-`(profile, replaces)` where `replaces IS NOT NULL AND status != 'invalid'`. It
+`(endpoint, replaces)` where `replaces IS NOT NULL AND status != 'invalid'`. It
 is not a lookup index at all; it is RFC 9773 §5's "already replaced?" rule
 enforced in SQL, which is what makes `409 alreadyReplaced` race-free and what
 lets an order that fails release its claim. See
@@ -444,7 +450,7 @@ as a blob and wants `hex()`:
 
 ```bash
 # Readable ids.
-sqlite3 sqlite.db "SELECT lower(hex(id)), profile, status FROM accounts;"
+sqlite3 sqlite.db "SELECT lower(hex(id)), endpoint, status FROM accounts;"
 
 # Looking one up by the id from a URL or a log line.
 sqlite3 sqlite.db "SELECT status FROM orders
@@ -454,7 +460,7 @@ sqlite3 sqlite.db "SELECT status FROM orders
 PostgreSQL needs neither, since it prints and parses the hyphenated form:
 
 ```bash
-psql -c "SELECT id, profile, status FROM accounts;"
+psql -c "SELECT id, endpoint, status FROM accounts;"
 psql -c "SELECT status FROM orders WHERE id = '6ba7b810-9dad-41d1-80b4-00c04fd430c8';"
 ```
 
@@ -491,7 +497,7 @@ sqlite3 sqlite.db "SELECT lower(hex(id)), status, identifiers,
                     ORDER BY created_at DESC;"
 
 # Everything refused in the last day.
-sqlite3 sqlite.db "SELECT datetime(created_at,'unixepoch'), event, profile, client_ip, reason
+sqlite3 sqlite.db "SELECT datetime(created_at,'unixepoch'), event, endpoint, client_ip, reason
                      FROM audit_log WHERE outcome = 'failure'
                       AND created_at > strftime('%s','now','-1 day');"
 

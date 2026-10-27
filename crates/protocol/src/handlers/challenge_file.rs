@@ -20,7 +20,7 @@ use acme_proxy_signer::Http01TokenStore;
 
 /// The stores `GET /.well-known/acme-challenge/{token}` answers from.
 ///
-/// A `Vec` rather than one store because two profiles may relay to two
+/// A `Vec` rather than one store because two endpoints may relay to two
 /// different upstreams and so carry two backends; see
 /// `http01_stores`, which builds it.
 #[derive(Clone)]
@@ -29,7 +29,7 @@ pub struct Http01Stores(pub Arc<Vec<Arc<dyn Http01TokenStore>>>);
 /// Serves the key authorization the upstream CA is about to fetch
 /// (RFC 8555 §8.3).
 ///
-/// Mounted on the **root** router, outside every profile — so it is
+/// Mounted on the **root** router, outside every endpoint — so it is
 /// unauthenticated and unfiltered, mints no `Replay-Nonce` and carries no
 /// `Link: rel="index"`, exactly like `GET /health`. That is correct rather than
 /// an oversight: the fetcher is a CA that holds no account here, and the path

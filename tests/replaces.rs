@@ -20,8 +20,8 @@ use common::{
     EcSigner, TestSigner, body_json, fetch_nonce, first_certificate, make_csr, p, test_app,
 };
 
-const NEW_ACCOUNT_URL: &str = "http://localhost:3000/profile/default/newAccount";
-const NEW_ORDER_URL: &str = "http://localhost:3000/profile/default/newOrder";
+const NEW_ACCOUNT_URL: &str = "http://localhost:3000/endpoint/default/newAccount";
+const NEW_ORDER_URL: &str = "http://localhost:3000/endpoint/default/newOrder";
 
 async fn post(app: &Router, path: &str, body: String) -> Response {
     app.clone()
@@ -472,7 +472,7 @@ async fn a_replaces_with_the_wrong_key_identifier_is_refused() {
 /// sequential case, where the second order's `check_replaces` reads the claim
 /// the first one already committed. This is the interleaving it cannot reach:
 /// both orders pass that check, and the partial unique index on
-/// `(profile, replaces)` is what stops the second claim landing. §5 gives that
+/// `(endpoint, replaces)` is what stops the second claim landing. §5 gives that
 /// collision a status and a problem type, so answering `serverInternal` would
 /// describe a server fault for a condition the RFC defines — and a client that
 /// reads `alreadyReplaced` knows to stop retrying, where one that reads a 500

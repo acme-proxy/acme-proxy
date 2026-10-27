@@ -77,7 +77,7 @@ const SESSION_TOUCH_INTERVAL: i64 = 60;
 
 /// How long a half-authenticated session may sit unfinished.
 ///
-/// Deliberately **not** `admin.session_ttl_seconds` and deliberately not a
+/// Deliberately **not** `admin.session_ttl` and deliberately not a
 /// configuration key. A `pending_mfa` row is a password that has been accepted
 /// and nothing more; it should not outlive the tab that created it. Five
 /// minutes is longer than reading a code off a phone and shorter than walking
@@ -499,7 +499,7 @@ async fn resolve_live(
         AdminSession::delete(&token_hash, &state.database).await?;
         return Err(AdminError::session_expired());
     }
-    let idle_timeout = Duration::from_secs(state.config.admin.session_idle_timeout_seconds);
+    let idle_timeout = state.config.admin.session_idle_timeout.as_std();
     if session.is_idle(now, idle_timeout) {
         AdminSession::delete(&token_hash, &state.database).await?;
         return Err(AdminError::session_idle());

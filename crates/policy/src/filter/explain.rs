@@ -3,8 +3,8 @@
 //! Everything `acme-proxy filter show` and `acme-proxy filter explain` print
 //! lives here; `cli::filter` marshals arguments and does nothing else.
 //! That split is the one the rest of the admin surface uses, and it is what
-//! lets the web panel serve `show` — `GET /api/profiles/{name}/filter` and
-//! `/ui/profiles/{name}/filter` render [`policy_json`], the same document
+//! lets the web panel serve `show` — `GET /api/endpoints/{name}/filter` and
+//! `/ui/endpoints/{name}/filter` render [`policy_json`], the same document
 //! `filter show --json` prints, without moving any logic. The warning below is
 //! about `explain`, which has no web surface and is not getting one.
 //!
@@ -192,9 +192,9 @@ fn report(
 /// `Display`, which makes every grouping explicit — so an operator who wrote
 /// `a or b and c` sees `a or (b and c)` and has their answer about precedence.
 #[must_use]
-pub fn render_policy(profile: &str, policy: &FilterPolicy, palette: Palette) -> String {
+pub fn render_policy(endpoint: &str, policy: &FilterPolicy, palette: Palette) -> String {
     let mut out = String::new();
-    let _ = writeln!(out, "profile: {profile}");
+    let _ = writeln!(out, "endpoint: {endpoint}");
 
     if !policy.is_active() {
         let _ = writeln!(out, "\n{}", palette.warn(INACTIVE_WARNING));
@@ -239,13 +239,13 @@ pub fn render_policy(profile: &str, policy: &FilterPolicy, palette: Palette) -> 
 /// The human rendering of [`explain`].
 #[must_use]
 pub fn render_explanation(
-    profile: &str,
+    endpoint: &str,
     subject: &Subject,
     explanation: &Explanation,
     palette: Palette,
 ) -> String {
     let mut out = String::new();
-    let _ = writeln!(out, "profile: {profile}");
+    let _ = writeln!(out, "endpoint: {endpoint}");
     let _ = writeln!(
         out,
         "client:  {}",
@@ -350,7 +350,7 @@ pub fn render_explanation(
 
 /// The `--json` rendering of [`explain`].
 #[must_use]
-pub fn explanation_json(profile: &str, subject: &Subject, explanation: &Explanation) -> Value {
+pub fn explanation_json(endpoint: &str, subject: &Subject, explanation: &Explanation) -> Value {
     let stages: Vec<Value> = explanation
         .stages
         .iter()
@@ -389,7 +389,7 @@ pub fn explanation_json(profile: &str, subject: &Subject, explanation: &Explanat
         .collect();
 
     json!({
-        "profile": profile,
+        "endpoint": endpoint,
         "request": {
             "clientIp": subject.client_ip.map(|ip| ip.to_string()),
             "path": subject.path,
@@ -405,7 +405,7 @@ pub fn explanation_json(profile: &str, subject: &Subject, explanation: &Explanat
 /// The resolved policy as a JSON document.
 ///
 /// The one shape three consumers share: `filter show --json`,
-/// `GET /api/profiles/{name}/filter`, and the context the `/ui` page's
+/// `GET /api/endpoints/{name}/filter`, and the context the `/ui` page's
 /// template walks. Member for member it carries what [`render_policy`] prints
 /// and nothing more — an operator reading the panel and an operator reading
 /// the terminal are looking at the same policy, and neither front end may grow
@@ -426,10 +426,10 @@ pub fn explanation_json(profile: &str, subject: &Subject, explanation: &Explanat
 /// value is not a fact about this endpoint's behaviour — which is the same
 /// thing [`render_policy`] says by returning before it prints one.
 #[must_use]
-pub fn policy_json(profile: &str, policy: &FilterPolicy) -> Value {
+pub fn policy_json(endpoint: &str, policy: &FilterPolicy) -> Value {
     if !policy.is_active() {
         return json!({
-            "profile": profile,
+            "endpoint": endpoint,
             "active": false,
             "defaultEffect": Value::Null,
             "warning": INACTIVE_WARNING,
@@ -467,7 +467,7 @@ pub fn policy_json(profile: &str, policy: &FilterPolicy) -> Value {
         .collect();
 
     json!({
-        "profile": profile,
+        "endpoint": endpoint,
         "active": true,
         "defaultEffect": policy.default_effect().as_str(),
         "warning": Value::Null,
@@ -690,7 +690,7 @@ mod tests {
         let explanation = explain(&policy, &subject).await;
         let value = explanation_json("default", &subject, &explanation);
 
-        assert_eq!(value["profile"], "default");
+        assert_eq!(value["endpoint"], "default");
         assert_eq!(value["allowed"], false);
         assert_eq!(value["request"]["clientIp"], "203.0.113.9");
         let stages = value["stages"].as_array().unwrap();
@@ -779,7 +779,7 @@ mod tests {
     fn the_policy_json_carries_every_check_and_every_rule() {
         let value = policy_json("default", &two_rule_policy());
 
-        assert_eq!(value["profile"], "default");
+        assert_eq!(value["endpoint"], "default");
         assert_eq!(value["active"], true);
         assert_eq!(value["defaultEffect"], "deny");
         assert!(value["warning"].is_null());

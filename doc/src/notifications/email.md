@@ -52,7 +52,7 @@ smtp_security = "starttls"
 from = "acme-proxy@internal.corp"
 to = ["pki-admins@internal.corp", "security@internal.corp"]
 events = ["certificate_issued", "certificate_revoked"]
-timeout_ms = 5000
+timeout = "5s"
 ```
 
 ### Reference
@@ -88,7 +88,7 @@ Sender email address.
 
 **`to`** (`Array`) — *Default: `[]` | Env: `ACME_PROXY_NOTIFY__EMAIL__TO`*
 
-List of recipient email addresses. Required for a per-profile `[notify]`
+List of recipient email addresses. Required for a per-endpoint `[notify]`
 backend. Under `[admin.notify]` it is the **fallback**: the web-admin security
 events (`admin_sign_in`, `admin_credential_changed`) are delivered to the
 affected operator's own contact address, and `to` is used only when that
@@ -101,6 +101,6 @@ send to — see [Addressed to the account](index.md#addressed-to-the-account).
 
 Lifecycle events this backend reacts to.
 
-**`timeout_ms`** (`Integer`) — *Default: `5000` | Env: `ACME_PROXY_NOTIFY__EMAIL__TIMEOUT_MS`*
+**`timeout`** (`Duration`) — *Default: `"5s"` | Env: `ACME_PROXY_NOTIFY__EMAIL__TIMEOUT`*
 
 Timeout budget for the SMTP exchange.

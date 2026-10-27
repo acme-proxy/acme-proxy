@@ -483,7 +483,7 @@ jobs:
   #
   # Still a filter rather than `binary(e2e)` only because the runtime of the
   # remaining scenarios (six `certbot`/`acme_sh` client scenarios, `eab`,
-  # `key_change`, `ari`, `profiles`, `custom_signer`, `admin_cli`) has not been
+  # `key_change`, `ari`, `endpoints`, `custom_signer`, `admin_cli`) has not been
   # measured against this job's budget. Widening it further is the right
   # direction; raise `timeout-minutes` with it.
   e2e:

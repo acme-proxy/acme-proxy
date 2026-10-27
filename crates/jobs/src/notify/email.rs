@@ -7,7 +7,6 @@
 //! retried.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use lettre::message::Mailbox;
@@ -37,7 +36,7 @@ impl EmailNotifier {
     /// dispatcher, whose events carry their own recipient
     /// ([`NotifyEvent::recipients`]): there, an empty `to` is a valid "deliver
     /// to each operator's own `contact_email` and nowhere else". Every
-    /// per-profile dispatcher passes `false` and keeps the startup error, since
+    /// per-endpoint dispatcher passes `false` and keeps the startup error, since
     /// its events name no recipient and a `send` would have nowhere to go.
     pub fn from_config(
         cfg: &EmailNotifyConfig,
@@ -84,7 +83,7 @@ impl EmailNotifier {
         };
         builder = builder
             .port(cfg.smtp_port)
-            .timeout(Some(Duration::from_millis(cfg.timeout_ms)));
+            .timeout(Some(cfg.timeout.as_std()));
         if !cfg.smtp_username.is_empty() {
             builder = builder.credentials(Credentials::new(
                 cfg.smtp_username.clone(),
@@ -263,7 +262,7 @@ mod tests {
             smtp_host: "127.0.0.1".to_string(),
             smtp_port: 1,
             smtp_security: "none".to_string(),
-            timeout_ms: 2000,
+            timeout: acme_proxy_core::config::ConfigDuration::from_millis(2000),
             ..cfg()
         };
         let notifier =
@@ -271,9 +270,9 @@ mod tests {
         assert_eq!(notifier.name(), "email");
 
         let error = notifier
-            .send(&NotifyEvent::ProfileMounted(
-                crate::notify::ProfileMountedData {
-                    profile: "le".to_string(),
+            .send(&NotifyEvent::EndpointMounted(
+                crate::notify::EndpointMountedData {
+                    endpoint: "le".to_string(),
                 },
             ))
             .await
@@ -289,7 +288,7 @@ mod tests {
         let notifier =
             EmailNotifier::from_config(&cfg(), Arc::new(build_environment("")), false).unwrap();
         let event = NotifyEvent::CertificateIssued(CertificateIssuedData {
-            profile: "le".to_string(),
+            endpoint: "le".to_string(),
             order_id: "ord-1".to_string(),
             account_id: "acc-1".to_string(),
             cert_serial: "AA:BB".to_string(),
@@ -321,7 +320,7 @@ mod tests {
 
     fn admin_sign_in(recipient: Option<&str>) -> NotifyEvent {
         NotifyEvent::AdminSignIn(crate::notify::AdminSignInData {
-            profile: crate::notify::ADMIN_DISPATCHER_KEY.to_string(),
+            endpoint: crate::notify::ADMIN_DISPATCHER_KEY.to_string(),
             username: "alice".to_string(),
             recipient: recipient.map(str::to_string),
             outcome: crate::notify::AdminSignInOutcome::SucceededFromNewAddress,
@@ -340,7 +339,7 @@ mod tests {
             smtp_host: "127.0.0.1".to_string(),
             smtp_port: 1,
             smtp_security: "none".to_string(),
-            timeout_ms: 2000,
+            timeout: acme_proxy_core::config::ConfigDuration::from_millis(2000),
             ..cfg()
         };
         let notifier =
@@ -380,7 +379,7 @@ mod tests {
             smtp_host: "127.0.0.1".to_string(),
             smtp_port: 1,
             smtp_security: "none".to_string(),
-            timeout_ms: 2000,
+            timeout: acme_proxy_core::config::ConfigDuration::from_millis(2000),
             ..cfg()
         };
         let notifier =
@@ -397,7 +396,7 @@ mod tests {
 
     fn account_digest(recipients: &[&str]) -> NotifyEvent {
         NotifyEvent::AccountCertificatesExpiring(crate::notify::AccountCertificatesExpiringData {
-            profile: "le".to_string(),
+            endpoint: "le".to_string(),
             account_id: "acct-1".to_string(),
             recipients: recipients.iter().map(|r| (*r).to_string()).collect(),
             generated_at: 1_700_000_000,
@@ -440,7 +439,7 @@ mod tests {
             smtp_host: "127.0.0.1".to_string(),
             smtp_port: 1,
             smtp_security: "none".to_string(),
-            timeout_ms: 2000,
+            timeout: acme_proxy_core::config::ConfigDuration::from_millis(2000),
             ..cfg()
         };
         let notifier =

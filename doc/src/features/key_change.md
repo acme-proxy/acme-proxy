@@ -28,15 +28,15 @@ hijacking.
 5. **Update**: the account's stored public key is replaced in a single
    statement.
 
-Because accounts are keyed `UNIQUE(profile, pubkey)`, the collision check is
-scoped per profile — the same key legitimately belonging to a different account
-at a *different* profile is not a conflict.
+Because accounts are keyed `UNIQUE(endpoint, pubkey)`, the collision check is
+scoped per endpoint — the same key legitimately belonging to a different account
+at a *different* endpoint is not a conflict.
 
 ## Client support
 
 Many modern clients support key rollover natively. For instance, using `lego`:
 ```bash
-lego --server https://acme.internal/profile/default/directory \
+lego --server https://acme.internal/endpoint/default/directory \
      --email "admin@example.com" \
      accounts keyrollover
 ```

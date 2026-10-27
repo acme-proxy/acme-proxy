@@ -88,7 +88,7 @@ impl std::fmt::Debug for CustomIpamBackend {
 impl CustomIpamBackend {
     /// Validates the configuration and builds the hook. Runs nothing.
     ///
-    /// `timeout_ms` is [`IpamConfig::timeout_ms`](acme_proxy_core::config::IpamConfig),
+    /// `timeout` is [`IpamConfig::timeout`](acme_proxy_core::config::IpamConfig),
     /// not a budget of this section's own: the registry already wraps every
     /// lookup in it, and giving the hook the same value is what makes the
     /// child actually killed at the deadline rather than left to

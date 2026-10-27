@@ -8,9 +8,9 @@
 //! this CA issued before either key existed.
 //!
 //! Nothing derives these from `server.base_url`. The value is frozen into every
-//! certificate signed while it is set — for `leaf_validity_days`, long after a
-//! rename — and this server's own `/crl` sits inside a profile router, behind
-//! that profile's filter chain, so an address-based policy refuses it to
+//! certificate signed while it is set — for `leaf_validity`, long after a
+//! rename — and this server's own `/crl` sits inside an endpoint router, behind
+//! that endpoint's filter chain, so an address-based policy refuses it to
 //! exactly the relying parties the extension exists for. The operator names a
 //! URL they know is reachable.
 //!
@@ -117,7 +117,7 @@ impl LeafPolicy {
 /// Checks every URL a list holds, in order, and hands back the ones to write.
 ///
 /// The strictness is deliberate: whatever survives here is signed into
-/// certificates that outlive the mistake by `leaf_validity_days`.
+/// certificates that outlive the mistake by `leaf_validity`.
 fn check_urls(key: &str, values: &[String]) -> anyhow::Result<Vec<String>> {
     let mut checked = Vec::with_capacity(values.len());
     for value in values {

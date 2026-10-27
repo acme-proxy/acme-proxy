@@ -6,6 +6,8 @@
 
 use serde::Deserialize;
 
+use super::ConfigDuration;
+
 use super::string_list;
 
 /// The resolver every DNS lookup this server makes goes through.
@@ -42,14 +44,14 @@ pub struct ServerConfig {
     /// How long a request may wait for a slot before it is refused. Long enough
     /// to absorb a burst, short enough that the queue behind the limit can never
     /// grow deeper than this in time.
-    pub admission_wait_ms: u64,
+    pub admission_wait: ConfigDuration,
     /// A whole-request deadline. Must exceed every hook the server still runs
     /// *inside* a request, or work still in progress is cut off and reported as a
     /// server failure. Challenge validation runs in the job queue, so that is
-    /// `signer.custom.timeout_ms` while a custom signer answers `GET /crl` or
-    /// renewal information; `server::profile::check_request_timeout` refuses to
+    /// `signer.custom.timeout` while a custom signer answers `GET /crl` or
+    /// renewal information; `server::endpoint::check_request_timeout` refuses to
     /// start if it does not.
-    pub request_timeout_ms: u64,
+    pub request_timeout: ConfigDuration,
     /// Largest request body accepted. An ACME body is a JWS carrying at most a
     /// CSR, i.e. kilobytes; axum's implicit default is 2 MiB.
     pub max_body_bytes: usize,
@@ -62,8 +64,8 @@ impl Default for ServerConfig {
             base_url: "http://localhost:3000".to_string(),
             tls: TlsConfig::default(),
             max_concurrent_requests: 100,
-            admission_wait_ms: 50,
-            request_timeout_ms: 60_000,
+            admission_wait: ConfigDuration::from_millis(50),
+            request_timeout: ConfigDuration::from_millis(60_000),
             max_body_bytes: 128 * 1024,
         }
     }
@@ -75,7 +77,7 @@ pub struct TlsConfig {
     pub enabled: bool,
     pub cert_path: String,
     pub key_path: String,
-    pub handshake_timeout_ms: u64,
+    pub handshake_timeout: ConfigDuration,
 }
 
 impl Default for TlsConfig {
@@ -84,16 +86,16 @@ impl Default for TlsConfig {
             enabled: false,
             cert_path: "server.pem".to_string(),
             key_path: "server.key".to_string(),
-            handshake_timeout_ms: 10_000,
+            handshake_timeout: ConfigDuration::from_millis(10_000),
         }
     }
 }
 /// The web admin interface: a **second listener**, on its own socket, serving
 /// no ACME.
 ///
-/// Process-wide, not per-profile -- an operator manages every endpoint this
-/// process serves, so there is no `[profiles.<name>].admin` and this is not in
-/// `PROFILE_SECTIONS`.
+/// Process-wide, not per-endpoint -- an operator manages every endpoint this
+/// process serves, so there is no `[endpoints.<name>].admin` and this is not in
+/// `ENDPOINT_SECTIONS`.
 ///
 /// Off by default. A certificate authority should not grow a management
 /// surface because somebody upgraded it.
@@ -113,15 +115,15 @@ pub struct AdminConfig {
     pub base_url: String,
     /// Absolute session lifetime. Never extended by activity: past it, the
     /// operator signs in again.
-    pub session_ttl_seconds: u64,
+    pub session_ttl: ConfigDuration,
     /// Idle session lifetime, advanced on use (at most once a minute, so a
     /// polling page is not a stream of database writes).
-    pub session_idle_timeout_seconds: u64,
+    pub session_idle_timeout: ConfigDuration,
     /// Failed logins allowed from one address per window, then `429` with a
     /// `Retry-After`. The password hash is deliberately expensive, so this is
     /// an availability control as much as a credential one.
     pub login_max_attempts: u32,
-    pub login_window_seconds: u64,
+    pub login_window: ConfigDuration,
     /// Require a second factor of every operator.
     ///
     /// What this changes is the operator who has **none**: with it on, their
@@ -147,7 +149,7 @@ pub struct AdminConfig {
     pub tls: AdminTlsConfig,
     /// Where web-admin operator security events (a sign-in from an unfamiliar
     /// address, a refused second factor, a lockout, a credential change --
-    /// ASVS V6.3.5 / V6.3.7) are sent. Same shape as the per-profile
+    /// ASVS V6.3.5 / V6.3.7) are sent. Same shape as the per-endpoint
     /// `[notify]`, but process-wide and email delivery goes to each operator's
     /// own `contact_email`. Disabled (empty `enabled`) by default, and only
     /// built at all when `admin.enabled`.
@@ -156,7 +158,7 @@ pub struct AdminConfig {
     /// the connection stage on every request, `/health` included.
     ///
     /// Its own section rather than an inheritance of the global `[filter]`:
-    /// that one is the ACME profiles' base, and a panel that silently took the
+    /// that one is the ACME endpoints' base, and a panel that silently took the
     /// ACME policy would be refused or opened by an edit made for another
     /// listener. Empty (no `rules`) filters nothing, as `[filter]` does.
     /// `webadmin::check_config` refuses a rule that cannot decide at the
@@ -173,10 +175,10 @@ impl Default for AdminConfig {
             enabled: false,
             bind_address: "127.0.0.1:3001".to_string(),
             base_url: "http://localhost:3001".to_string(),
-            session_ttl_seconds: 43_200,
-            session_idle_timeout_seconds: 3_600,
+            session_ttl: ConfigDuration::from_secs(43_200),
+            session_idle_timeout: ConfigDuration::from_secs(3_600),
             login_max_attempts: 5,
-            login_window_seconds: 300,
+            login_window: ConfigDuration::from_secs(300),
             require_mfa: false,
             max_body_bytes: 64 * 1024,
             page_size_max: 200,
@@ -201,7 +203,7 @@ pub struct AdminTlsConfig {
     pub enabled: bool,
     pub cert_path: String,
     pub key_path: String,
-    pub handshake_timeout_ms: u64,
+    pub handshake_timeout: ConfigDuration,
 }
 
 impl Default for AdminTlsConfig {
@@ -210,7 +212,7 @@ impl Default for AdminTlsConfig {
             enabled: false,
             cert_path: "admin.pem".to_string(),
             key_path: "admin.key".to_string(),
-            handshake_timeout_ms: 10_000,
+            handshake_timeout: ConfigDuration::from_millis(10_000),
         }
     }
 }
@@ -218,12 +220,14 @@ impl Default for AdminTlsConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct NonceConfig {
-    pub ttl_seconds: u64,
+    pub ttl: ConfigDuration,
 }
 
 impl Default for NonceConfig {
     fn default() -> Self {
-        Self { ttl_seconds: 300 }
+        Self {
+            ttl: ConfigDuration::from_secs(300),
+        }
     }
 }
 /// Logging and tracing configuration.
@@ -266,7 +270,7 @@ impl Default for LoggingConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct OrderConfig {
-    pub validity_seconds: u64,
+    pub validity: ConfigDuration,
     /// Most identifiers one `newOrder` may name.
     ///
     /// The only other bound is `server.max_body_bytes` (128 KiB), which at the
@@ -282,7 +286,7 @@ pub struct OrderConfig {
     /// `malformed`, not `rateLimited` — the order is malformed for this server
     /// whenever it is sent, and §6.6's retry-later reading would be a lie.
     pub max_identifiers: usize,
-    /// Days an order is kept after it expires, before the retention sweep
+    /// How long an order is kept after it expires, before the retention sweep
     /// deletes it. `0` keeps everything for ever.
     ///
     /// Nothing pruned `orders` before this, so the table and the
@@ -296,20 +300,20 @@ pub struct OrderConfig {
     /// RFC 9773 renewal information is derived from; deleting one would make an
     /// issued certificate unrevokable. Only orders that ended some other way —
     /// `invalid`, or abandoned `pending`/`ready`/`processing` — are eligible,
-    /// and only once their own `expires` is `retention_days` behind, at which
+    /// and only once their own `expires` is `retention` behind, at which
     /// point no client can act on them either.
     ///
-    /// Per-profile like the rest of `[order]`: the sweep is one handler that
-    /// applies each mounted profile's own value to that profile's rows.
-    pub retention_days: u64,
+    /// Per-endpoint like the rest of `[order]`: the sweep is one handler that
+    /// applies each mounted endpoint's own value to that endpoint's rows.
+    pub retention: ConfigDuration,
 }
 
 impl Default for OrderConfig {
     fn default() -> Self {
         Self {
-            validity_seconds: 604800,
+            validity: ConfigDuration::from_secs(604800),
             max_identifiers: 100,
-            retention_days: 30,
+            retention: ConfigDuration::from_days(30),
         }
     }
 }

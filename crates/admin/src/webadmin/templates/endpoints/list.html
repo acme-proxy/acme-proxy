@@ -1,12 +1,12 @@
 {% extends "layout.html" %}
 {% block content %}
-  <h1>Profiles</h1>
+  <h1>Endpoints</h1>
   <p class="muted small">
-    Every ACME endpoint this process serves. A profile is also a database
+    Every ACME endpoint this process serves. An endpoint is also a database
     boundary, not just a URL prefix: one client key at two endpoints is two
     independent accounts.
   </p>
-  {% include "profiles/_table.html" %}
+  {% include "endpoints/_table.html" %}
 
   {#- Computed in the handler rather than filtered here: a warning this
       load-bearing should be a value a Rust test can assert on. -#}

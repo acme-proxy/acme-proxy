@@ -52,22 +52,22 @@ To create a new credential for a client:
 ```bash
 acme-proxy eab create --label "DevOps Team"
 
-# Bind it to a single endpoint in a multi-profile deployment:
-acme-proxy eab create --label "DevOps Team" --profile prod
+# Bind it to a single endpoint in a multi-endpoint deployment:
+acme-proxy eab create --label "DevOps Team" --endpoint prod
 ```
 
 The CLI prints a `kid` (Key Identifier) and an HMAC secret. **The secret is
 printed only once.** It is stored but never displayed again, so a lost secret is
 replaced, not recovered.
 
-`--profile` matters in a multi-tenant deployment: **omitted, the credential is
-accepted at every profile**, which is what an unscoped credential means. Bind it
-unless you intend that.
+`--endpoint` matters in a multi-tenant deployment: **omitted, the credential is
+accepted at every endpoint**, which is what an unscoped credential means. Bind
+it unless you intend that.
 
 A client then uses the credential at registration:
 ```bash
 certbot register \
-  --server https://acme.internal/profile/default/directory \
+  --server https://acme.internal/endpoint/default/directory \
   --eab-kid "the-kid" \
   --eab-hmac-key "the-secret"
 ```

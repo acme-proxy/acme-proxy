@@ -7,7 +7,7 @@
 //! nonce or an ACME problem document. `crates/signer/src/relay/mod.rs`'s own tests
 //! cover the relay publishing into the store — what is pinned here is the
 //! **mounting**: that `build_app` exposes the route exactly when a backend has
-//! tokens to serve, outside the layers a profile carries.
+//! tokens to serve, outside the layers an endpoint carries.
 
 use std::sync::Arc;
 
@@ -134,7 +134,7 @@ async fn the_route_is_absent_without_a_token_store() {
     assert!(body.is_empty(), "no handler should have run");
 }
 
-/// The route sits on the root router, so it carries none of the per-profile
+/// The route sits on the root router, so it carries none of the per-endpoint
 /// ACME layers — the "routing splits by concern" invariant, from the one side
 /// where a CA that knows nothing about ACME is the client.
 #[tokio::test]
@@ -172,7 +172,7 @@ async fn the_route_carries_no_acme_layers() {
     }
 }
 
-/// A profile's filter chain must not reach the responder.
+/// An endpoint's filter chain must not reach the responder.
 ///
 /// The upstream CA's validation fetch comes from wherever that CA validates
 /// from — several unpredictable addresses, for a multi-perspective one — and it

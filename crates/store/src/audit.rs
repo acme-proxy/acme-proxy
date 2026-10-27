@@ -32,7 +32,7 @@ pub struct AuditEntry {
     pub created_at: i64,
     pub event: String,
     pub outcome: String,
-    pub profile: String,
+    pub endpoint: String,
     pub actor_kind: String,
     pub actor_id: Option<String>,
     pub account_id: Option<String>,
@@ -49,7 +49,7 @@ pub struct AuditEntry {
 
 /// Every column, in one place: the page query, the count and the single-row
 /// read must select the same set or `from_row` fails on whichever forgot one.
-const COLUMNS: &str = "id, created_at, event, outcome, profile, actor_kind, actor_id, \
+const COLUMNS: &str = "id, created_at, event, outcome, endpoint, actor_kind, actor_id, \
                        account_id, order_id, cert_serial, identifiers, client_ip, client_ptr, \
                        user_agent, request_id, reason, detail";
 
@@ -59,7 +59,7 @@ const COLUMNS: &str = "id, created_at, event, outcome, profile, actor_kind, acto
 /// `AuditQuery { limit, offset, .. }` is "the newest page of everything".
 #[derive(Debug, Clone, Default)]
 pub struct AuditQuery {
-    pub profile: Option<String>,
+    pub endpoint: Option<String>,
     pub account_id: Option<String>,
     pub order_id: Option<String>,
     pub cert_serial: Option<String>,
@@ -82,7 +82,7 @@ impl AuditQuery {
             builder,
             crate::query::WHERE,
             &[
-                ("profile = ", self.profile.as_deref()),
+                ("endpoint = ", self.endpoint.as_deref()),
                 ("account_id = ", self.account_id.as_deref()),
                 ("order_id = ", self.order_id.as_deref()),
                 ("cert_serial = ", self.cert_serial.as_deref()),
@@ -109,7 +109,7 @@ impl AuditEntry {
             created_at: row.try_get("created_at")?,
             event: row.try_get("event")?,
             outcome: row.try_get("outcome")?,
-            profile: row.try_get("profile")?,
+            endpoint: row.try_get("endpoint")?,
             actor_kind: row.try_get("actor_kind")?,
             actor_id: row.try_get("actor_id")?,
             account_id: row.try_get("account_id")?,
@@ -140,7 +140,7 @@ impl AuditEntry {
     pub async fn insert(record: AuditRecord, database: &Database) -> Result<i64, sqlx::Error> {
         let AuditRecord {
             event,
-            profile,
+            endpoint,
             actor,
             account_id,
             order_id,
@@ -163,7 +163,7 @@ impl AuditEntry {
         let created_at = now_secs();
 
         let id = crate::sql::query(
-            "INSERT INTO audit_log (created_at, event, outcome, profile, actor_kind, actor_id, \
+            "INSERT INTO audit_log (created_at, event, outcome, endpoint, actor_kind, actor_id, \
              account_id, order_id, cert_serial, identifiers, client_ip, client_ptr, user_agent, \
              request_id, reason, detail) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id;",
@@ -171,7 +171,7 @@ impl AuditEntry {
         .bind(created_at)
         .bind(event.as_str())
         .bind(event.outcome())
-        .bind(&profile)
+        .bind(&endpoint)
         .bind(kind.as_str())
         .bind(&actor_id)
         .bind(&account_id)
@@ -193,7 +193,7 @@ impl AuditEntry {
             outcome = "success",
             audit_id = id,
             audit_event = event.as_str(),
-            profile = %profile,
+            endpoint = %endpoint,
             actor_kind = kind.as_str(),
         );
         Ok(id)
@@ -222,7 +222,7 @@ impl AuditEntry {
         debug!(
             event = "db_audit_search_started",
             outcome = "progress",
-            profile = ?query.profile,
+            endpoint = ?query.endpoint,
             account_id = ?query.account_id,
             audit_event = ?query.event,
             outcome = ?query.outcome,
@@ -272,7 +272,7 @@ impl AuditEntry {
     ///
     /// The only statement in the crate that removes an audit row, and it takes
     /// an absolute cutoff rather than a duration so the CLI's `--older-than`
-    /// and the `audit.retention_days` sweep run the identical delete.
+    /// and the `audit.retention` sweep run the identical delete.
     pub async fn cleanup(cutoff: i64, database: &Database) -> Result<u64, sqlx::Error> {
         let deleted = crate::sql::query("DELETE FROM audit_log WHERE created_at < ?;")
             .bind(cutoff)
@@ -301,7 +301,7 @@ impl AuditEntry {
             "createdAt": rfc3339(self.created_at),
             "event": self.event,
             "outcome": self.outcome,
-            "profile": self.profile,
+            "endpoint": self.endpoint,
             "actorKind": self.actor_kind,
             "identifiers": self.identifiers,
         });
@@ -328,15 +328,24 @@ impl AuditEntry {
     }
 }
 
-/// The `created_at` below which an audit row is past `retention_days`.
+/// The `created_at` below which a row is older than `age`.
 ///
 /// One function so `acme-proxy audit cleanup --older-than` and the
-/// `audit.retention_days` sweep delete the identical set — a CLI that computed
-/// its own cutoff would eventually disagree with the timer by a rounding rule.
+/// `audit.retention` sweep delete the identical set — a CLI that computed its
+/// own cutoff would eventually disagree with the timer by a rounding rule.
+#[must_use]
+pub fn cutoff_before(age: std::time::Duration) -> i64 {
+    let seconds = i64::try_from(age.as_secs()).unwrap_or(i64::MAX);
+    crate::nonce::now_secs().saturating_sub(seconds)
+}
+
+/// [`cutoff_before`] for an age in whole days, which is how the CLI's
+/// `--older-than` and `--since` flags take it.
 #[must_use]
 pub fn audit_cutoff(days: u64) -> i64 {
-    let seconds = i64::try_from(days.saturating_mul(24 * 60 * 60)).unwrap_or(i64::MAX);
-    crate::nonce::now_secs().saturating_sub(seconds)
+    cutoff_before(std::time::Duration::from_secs(
+        days.saturating_mul(24 * 60 * 60),
+    ))
 }
 
 #[cfg(test)]
@@ -360,8 +369,8 @@ mod tests {
         }
     }
 
-    fn record(event: AuditEvent, profile: &str) -> AuditRecord {
-        AuditRecord::new(event, profile, Actor::acme("acct-1"))
+    fn record(event: AuditEvent, endpoint: &str) -> AuditRecord {
+        AuditRecord::new(event, endpoint, Actor::acme("acct-1"))
     }
 
     /// The two fields production only ever sets through `with_order`, which
@@ -396,7 +405,7 @@ mod tests {
         assert_eq!(entry.event, "certificate_issued");
         assert_eq!(entry.outcome, "success");
         assert_eq!(entry.event(), Some(AuditEvent::CertificateIssued));
-        assert_eq!(entry.profile, "le");
+        assert_eq!(entry.endpoint, "le");
         assert_eq!(entry.actor_kind, "acme");
         assert_eq!(entry.actor_id.as_deref(), Some("acct-1"));
         assert_eq!(entry.order_id.as_deref(), Some("order-1"));
@@ -474,14 +483,14 @@ mod tests {
     #[tokio::test]
     async fn every_filter_narrows_the_page_and_the_total_together() {
         let db = db().await;
-        for (event, profile, account, serial) in [
+        for (event, endpoint, account, serial) in [
             (AuditEvent::CertificateIssued, "le", "acct-1", "aa"),
             (AuditEvent::CertificateIssued, "le", "acct-2", "bb"),
             (AuditEvent::CertificateIssueFailed, "le", "acct-1", "cc"),
             (AuditEvent::CertificateRevoked, "internal", "acct-1", "dd"),
         ] {
             AuditEntry::insert(
-                AuditRecord::new(event, profile, Actor::acme(account))
+                AuditRecord::new(event, endpoint, Actor::acme(account))
                     // `Actor::acme` fills `actor_id`; the *subject* column the
                     // filter reads is `account_id`, and the two are not the
                     // same field — an admin revoking somebody else's order
@@ -507,7 +516,7 @@ mod tests {
         assert_eq!(count(base.clone()).await, 4);
         assert_eq!(
             count(AuditQuery {
-                profile: Some("le".to_string()),
+                endpoint: Some("le".to_string()),
                 ..base.clone()
             })
             .await,
@@ -548,7 +557,7 @@ mod tests {
         // Combined, and an unknown value narrows to nothing rather than erroring.
         assert_eq!(
             count(AuditQuery {
-                profile: Some("le".to_string()),
+                endpoint: Some("le".to_string()),
                 outcome: Some("success".to_string()),
                 account_id: Some("acct-1".to_string()),
                 ..base.clone()
@@ -712,7 +721,7 @@ mod tests {
         let db = db().await;
         // A value no `AuditEvent` variant spells — accepted by the schema now.
         crate::sql::query(
-            "INSERT INTO audit_log (created_at, event, outcome, profile, actor_kind) \
+            "INSERT INTO audit_log (created_at, event, outcome, endpoint, actor_kind) \
              VALUES (0, 'certificate_renewed', 'success', 'le', 'acme');",
         )
         .execute(&db)
@@ -740,7 +749,7 @@ mod tests {
         let db = db().await;
         for (outcome, actor) in [("maybe", "acme"), ("success", "robot")] {
             let error = crate::sql::query(
-                "INSERT INTO audit_log (created_at, event, outcome, profile, actor_kind) \
+                "INSERT INTO audit_log (created_at, event, outcome, endpoint, actor_kind) \
                  VALUES (0, 'certificate_issued', ?, 'le', ?);",
             )
             .bind(outcome)
@@ -756,7 +765,7 @@ mod tests {
     }
 
     /// One cutoff function, so `audit cleanup --older-than` and the
-    /// `audit.retention_days` sweep delete the identical set.
+    /// `audit.retention` sweep delete the identical set.
     #[test]
     fn the_audit_cutoff_is_days_before_now_and_saturates_rather_than_overflowing() {
         let now = crate::nonce::now_secs();

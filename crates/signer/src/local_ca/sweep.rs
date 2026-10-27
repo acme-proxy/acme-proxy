@@ -22,7 +22,7 @@
 //! - But there is **one handler over every CA**, not one per CA. See
 //!   [`SignerBackend::crl_refresher`](crate::SignerBackend::crl_refresher):
 //!   [`JobRegistry::register`](acme_proxy_jobs::jobs::JobRegistry::register) refuses two
-//!   handlers for one `kind`, and two profiles with different
+//!   handlers for one `kind`, and two endpoints with different
 //!   `[signer.local_ca]` sections are two backends, so the alternative would
 //!   make a supported configuration a startup error.
 
@@ -45,8 +45,8 @@ pub const CRL_SWEEP_KIND: &str = "local_ca_crl_sweep";
 /// The one row's `dedup_key`. A constant, like the table sweeps': there is one
 /// occurrence, and it walks every CA rather than there being one row each.
 ///
-/// That is not only tidiness. A per-CA row would outlive the profile that named
-/// it — unmount a profile and its row keeps being claimed, by a handler that no
+/// That is not only tidiness. A per-CA row would outlive the endpoint that named
+/// it — unmount an endpoint and its row keeps being claimed, by a handler that no
 /// longer has anything to hand it.
 const SWEEP_KEY: &str = "all";
 

@@ -13,7 +13,7 @@ async fn test_relay_signer_bypass_order() {
             ),
             ("ACME_PROXY_SIGNER__RELAY__CHALLENGE_STRATEGY", "bypass"),
         ],
-        vec![("ACME_PROXY_PROFILES__DEFAULT__CA_TYPE", "local")],
+        vec![("ACME_PROXY_ENDPOINTS__DEFAULT__CA_TYPE", "local")],
     )
     .await;
 
@@ -103,8 +103,8 @@ async fn test_relay_signer_dns_01() {
                 "ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__TSIG_ALGORITHM",
                 "hmac-sha256",
             ),
-            ("ACME_PROXY_SIGNER__RELAY__POLL_INTERVAL_MS", "500"),
-            ("ACME_PROXY_SIGNER__RELAY__POLL_TIMEOUT_SECS", "60"),
+            ("ACME_PROXY_SIGNER__RELAY__POLL_INTERVAL", "500ms"),
+            ("ACME_PROXY_SIGNER__RELAY__POLL_TIMEOUT", "60s"),
         ],
         vec![
             ("ACME_PROXY_CHALLENGE__ENABLED", "dns-01"),
@@ -204,8 +204,8 @@ async fn test_relay_signer_dns_01_alias() {
                 "ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__TSIG_ALGORITHM",
                 "hmac-sha256",
             ),
-            ("ACME_PROXY_SIGNER__RELAY__POLL_INTERVAL_MS", "500"),
-            ("ACME_PROXY_SIGNER__RELAY__POLL_TIMEOUT_SECS", "60"),
+            ("ACME_PROXY_SIGNER__RELAY__POLL_INTERVAL", "500ms"),
+            ("ACME_PROXY_SIGNER__RELAY__POLL_TIMEOUT", "60s"),
         ],
         vec![
             ("ACME_PROXY_CHALLENGE__ENABLED", "dns-01"),
@@ -288,8 +288,8 @@ async fn test_relay_signer_http_01() {
                 "/tmp/upstream_account.key",
             ),
             ("ACME_PROXY_SIGNER__RELAY__CHALLENGE_STRATEGY", "http01"),
-            ("ACME_PROXY_SIGNER__RELAY__POLL_INTERVAL_MS", "500"),
-            ("ACME_PROXY_SIGNER__RELAY__POLL_TIMEOUT_SECS", "60"),
+            ("ACME_PROXY_SIGNER__RELAY__POLL_INTERVAL", "500ms"),
+            ("ACME_PROXY_SIGNER__RELAY__POLL_TIMEOUT", "60s"),
         ],
         vec![
             ("ACME_PROXY_CHALLENGE__ENABLED", "http-01"),

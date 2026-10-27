@@ -1,4 +1,4 @@
-//! The ACME resource paths, profile-relative, and the namespace every profile
+//! The ACME resource paths, endpoint-relative, and the namespace every endpoint
 //! is mounted under.
 //!
 //! One definition each, because they are written in three places that must
@@ -29,32 +29,32 @@ pub const KEY_CHANGE: &str = "/keyChange";
 pub const RENEWAL_INFO: &str = "/renewalInfo";
 /// The local CA's CRL, DER encoded. Not advertised in the directory.
 pub const CRL: &str = "/crl";
-/// The trust anchor a client installs to accept this profile's leaves.
+/// The trust anchor a client installs to accept this endpoint's leaves.
 /// Routed beside [`CRL`] and, like it, deliberately not advertised in the
 /// directory — both are CA infrastructure rather than ACME resources.
 pub const CA_CHAIN: &str = "/ca.pem";
 
-/// The URL namespace every ACME endpoint is mounted under: a profile named
-/// `le` serves `/profile/le/directory`.
+/// The URL namespace every ACME endpoint is mounted under: an endpoint named
+/// `le` serves `/endpoint/le/directory`.
 ///
 /// Reserved and fixed, which is the point — server-level routes live at the
-/// root and a profile can never collide with one, now or when the next one is
+/// root and an endpoint can never collide with one, now or when the next one is
 /// added.
-pub const PROFILE_PREFIX: &str = "/profile";
+pub const ENDPOINT_PREFIX: &str = "/endpoint";
 
-/// The path profile `name` is mounted at: `/profile/<name>`.
+/// The path endpoint `name` is mounted at: `/endpoint/<name>`.
 #[must_use]
-pub fn profile_path(name: &str) -> String {
-    format!("{PROFILE_PREFIX}/{name}")
+pub fn endpoint_path(name: &str) -> String {
+    format!("{ENDPOINT_PREFIX}/{name}")
 }
 
-/// The public base URL of profile `name` under the process's `base_url` —
+/// The public base URL of endpoint `name` under the process's `base_url` —
 /// what every URL a client is handed starts with. One derivation, shared by
-/// the router that serves the profile and the admin output that links to it,
+/// the router that serves the endpoint and the admin output that links to it,
 /// so the two cannot disagree on a trailing slash.
 #[must_use]
-pub fn profile_base_url(base_url: &str, name: &str) -> String {
-    format!("{}{}", base_url.trim_end_matches('/'), profile_path(name))
+pub fn endpoint_base_url(base_url: &str, name: &str) -> String {
+    format!("{}{}", base_url.trim_end_matches('/'), endpoint_path(name))
 }
 
 #[cfg(test)]
@@ -62,13 +62,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_profile_base_url_has_one_slash_whatever_the_base_ends_with() {
+    fn an_endpoint_base_url_has_one_slash_whatever_the_base_ends_with() {
         for base in ["https://acme.example", "https://acme.example/"] {
             assert_eq!(
-                profile_base_url(base, "le"),
-                "https://acme.example/profile/le"
+                endpoint_base_url(base, "le"),
+                "https://acme.example/endpoint/le"
             );
         }
-        assert_eq!(profile_path("le"), "/profile/le");
+        assert_eq!(endpoint_path("le"), "/endpoint/le");
     }
 }

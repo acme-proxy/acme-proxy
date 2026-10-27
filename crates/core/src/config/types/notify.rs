@@ -7,6 +7,8 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
+use super::ConfigDuration;
+
 use super::string_list;
 
 /// Notification-subsystem configuration: which backends are active, and each
@@ -19,7 +21,7 @@ pub struct NotifyConfig {
     #[serde(deserialize_with = "string_list")]
     pub enabled: Vec<String>,
     pub email: EmailNotifyConfig,
-    /// The periodic expiry digest — off until `lead_days` is non-zero.
+    /// The periodic expiry digest — off until `lead` is non-zero.
     pub expiry: ExpiryNotifyConfig,
     /// Which of `webhook`'s entries to POST to, and in what order, when
     /// `webhook` is listed in `enabled` — the same shape as `custom_enabled`
@@ -66,7 +68,7 @@ pub struct EmailNotifyConfig {
     /// operator writes `events = []` expecting "all".
     #[serde(deserialize_with = "string_list")]
     pub events: Vec<String>,
-    pub timeout_ms: u64,
+    pub timeout: ConfigDuration,
 }
 
 impl Default for EmailNotifyConfig {
@@ -80,15 +82,15 @@ impl Default for EmailNotifyConfig {
             from: String::new(),
             to: Vec::new(),
             events: all_notify_events(),
-            timeout_ms: 5000,
+            timeout: ConfigDuration::from_millis(5000),
         }
     }
 }
 /// `[notify.expiry]` — the periodic digest of certificates approaching expiry
 /// (see `notify::expiry`).
 ///
-/// One message per profile per `interval_days`, listing what lapses inside
-/// `lead_days`, and **not** one message per certificate: a renewal is a new
+/// One message per endpoint per `interval`, listing what lapses inside
+/// `lead`, and **not** one message per certificate: a renewal is a new
 /// order, so the certificate it replaced still expires on schedule and a
 /// per-certificate reminder would tell an operator about every certificate the
 /// CA has ever issued. The digest carries the superseded ones annotated
@@ -96,15 +98,15 @@ impl Default for EmailNotifyConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct ExpiryNotifyConfig {
-    /// How far ahead to look, in days. **`0` (the default) is off** — the job
-    /// is never registered at all, the shape `audit.retention_days` and
-    /// `jobs.retention_days` already use for "do not schedule this sweep".
-    pub lead_days: u64,
-    /// How often the digest is sent, in days. There is deliberately no
+    /// How far ahead to look. **`"0s"` (the default) is off** — the job
+    /// is never registered at all, the shape `audit.retention` and
+    /// `jobs.retention` already use for "do not schedule this sweep".
+    pub lead: ConfigDuration,
+    /// How often the digest is sent, floored at a day. There is deliberately no
     /// per-certificate rate limit beside it: the digest *is* the rate limit,
     /// which is what the per-certificate shape needed a stored "last reminded"
     /// timestamp for.
-    pub interval_days: u64,
+    pub interval: ConfigDuration,
     /// The most certificates one message lists. The count of matches is
     /// carried whole regardless, so a truncated digest still says how many it
     /// did not name — a per-certificate message was self-limiting and this is
@@ -128,8 +130,8 @@ pub struct ExpiryNotifyConfig {
 impl Default for ExpiryNotifyConfig {
     fn default() -> Self {
         Self {
-            lead_days: 0,
-            interval_days: 7,
+            lead: ConfigDuration::ZERO,
+            interval: ConfigDuration::from_days(7),
             max_entries: 50,
             contact: false,
             contact_domains: Vec::new(),
@@ -165,7 +167,7 @@ pub struct WebhookNotifyConfig {
     pub body: String,
     #[serde(deserialize_with = "string_list")]
     pub events: Vec<String>,
-    pub timeout_ms: u64,
+    pub timeout: ConfigDuration,
 }
 
 /// The default `body`: the `{"text": …}` payload Slack, Mattermost and
@@ -181,7 +183,7 @@ impl Default for WebhookNotifyConfig {
             headers: BTreeMap::new(),
             body: DEFAULT_WEBHOOK_BODY.to_string(),
             events: all_notify_events(),
-            timeout_ms: 5000,
+            timeout: ConfigDuration::from_millis(5000),
         }
     }
 }
@@ -191,7 +193,7 @@ impl Default for WebhookNotifyConfig {
 #[serde(default)]
 pub struct CustomNotifyConfig {
     pub script_path: String,
-    pub timeout_ms: u64,
+    pub timeout: ConfigDuration,
     #[serde(deserialize_with = "string_list")]
     pub args: Vec<String>,
     #[serde(deserialize_with = "string_list")]
@@ -202,7 +204,7 @@ impl Default for CustomNotifyConfig {
     fn default() -> Self {
         Self {
             script_path: String::new(),
-            timeout_ms: 5000,
+            timeout: ConfigDuration::from_millis(5000),
             args: Vec::new(),
             events: all_notify_events(),
         }
@@ -217,7 +219,7 @@ impl Default for CustomNotifyConfig {
 /// other six are things that just happened to one account, order or
 /// certificate, where it is a periodic digest about however many certificates
 /// are approaching expiry. It reaches a backend only once
-/// `notify.expiry.lead_days` is non-zero, so listing it here does not start
+/// `notify.expiry.lead` is non-zero, so listing it here does not start
 /// sending anything on its own.
 ///
 /// `account_certificates_expiring` is the same digest cut per account and
@@ -228,10 +230,10 @@ impl Default for CustomNotifyConfig {
 ///
 /// `admin_sign_in` and `admin_credential_changed` are the web-admin operator
 /// security events (ASVS V6.3.5 / V6.3.7). They fire only on the process-wide
-/// `[admin.notify]` dispatcher, never on a profile's, so listing either in a
-/// per-profile backend's `events` costs nothing.
+/// `[admin.notify]` dispatcher, never on an endpoint's, so listing either in a
+/// per-endpoint backend's `events` costs nothing.
 pub const ALL_NOTIFY_EVENTS: [&str; 10] = [
-    "profile_mounted",
+    "endpoint_mounted",
     "account_created",
     "account_deactivated",
     "certificate_issued",

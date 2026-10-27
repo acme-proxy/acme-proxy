@@ -117,6 +117,20 @@ pub struct Directory {
     pub revoke_cert: Option<String>,
     #[serde(rename = "renewalInfo")]
     pub renewal_info: Option<String>,
+    /// RFC 8555 §7.1.1's `meta`, of which only `profiles`
+    /// (draft-ietf-acme-profiles) is read: the profiles a client of this
+    /// proxy may name, relayed as the upstream describes them.
+    #[serde(default)]
+    pub meta: DirectoryMeta,
+}
+
+/// The part of a directory's `meta` this client reads.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct DirectoryMeta {
+    /// Profile name to description. Empty when the upstream advertises none,
+    /// which is every CA that predates the draft.
+    #[serde(default)]
+    pub profiles: std::collections::BTreeMap<String, String>,
 }
 
 /// One HTTP response, reduced to what the ACME flow reads off it.
@@ -464,11 +478,11 @@ async fn request_inner(
     url: &Url,
     body: Option<Bytes>,
 ) -> Result<AcmeResponse, UpstreamError> {
-    let endpoint =
-        acme_proxy_net::http_client::Endpoint::from_url(url).map_err(UpstreamError::Url)?;
+    let destination =
+        acme_proxy_net::http_client::Destination::from_url(url).map_err(UpstreamError::Url)?;
 
     let connection = outbound
-        .connect(&endpoint, tls)
+        .connect(&destination, tls)
         .await
         .map_err(UpstreamError::Transport)?;
 
@@ -477,7 +491,7 @@ async fn request_inner(
     let request = Request::builder()
         .method(method)
         .uri(connection.request_target(url))
-        .header(hyper::header::HOST, endpoint.authority())
+        .header(hyper::header::HOST, destination.authority())
         .header(hyper::header::USER_AGENT, "acme-proxy")
         .header(
             hyper::header::CONTENT_TYPE,
@@ -538,7 +552,7 @@ fn header_string(value: Option<&HeaderValue>) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// The shared resolver `server::profile::build_all` supplies at startup. These
+    /// The shared resolver `server::endpoint::build_all` supplies at startup. These
     /// tests reach loopback by IP literal, which `dns::connect` short-circuits.
     fn test_resolver() -> std::sync::Arc<dyn acme_proxy_net::dns::Resolver> {
         std::sync::Arc::new(acme_proxy_net::dns::HickoryResolver::from_system_uncached().unwrap())

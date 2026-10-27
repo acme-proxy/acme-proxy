@@ -46,7 +46,7 @@ turning a remote party away — and each is attributed to `actor_kind = "admin"`
 
 | Event | Written when |
 |---|---|
-| `account_deactivated` / `account_contact_updated` / `account_deleted` | an ACME account was deactivated, had its contact list rewritten, or was hard-deleted (the row names the account and its profile; `account_deleted` carries the cascade count) |
+| `account_deactivated` / `account_contact_updated` / `account_deleted` | an ACME account was deactivated, had its contact list rewritten, or was hard-deleted (the row names the account and its endpoint; `account_deleted` carries the cascade count) |
 | `order_deleted` | an order row was hard-deleted (names the order, account and identifiers) |
 | `eab_created` / `eab_revoked` / `eab_deleted` | an External Account Binding credential was minted, revoked or deleted (the `detail` names the `kid`; the secret is never recorded). `eab_deleted` also says whether its accounts were kept, deactivated or deleted, and each account changed gets its own `account_deactivated` or `account_deleted` row |
 | `operator_created` / `operator_deleted` | a web-admin operator was added or removed |
@@ -56,7 +56,7 @@ turning a remote party away — and each is attributed to `actor_kind = "admin"`
 | `session_revoked` | one session, all of an operator's sessions, or every session on the server was revoked (the `detail` says which) |
 | `job_cancelled` / `job_advanced` | a background job was cancelled or nudged/revived (`run-now`). A cancelled relay issuance instead writes `certificate_issue_failed` — it abandons a certificate order |
 | `nonce_cleanup_completed` / `audit_pruned` | the nonce table or the audit log itself was swept by hand (`audit_pruned` records its own action, so a manual prune always leaves the one row that says it happened) |
-| `profile_issuer_accepted` | a profile's CA was changed on purpose (`acme-proxy profile issuer accept`): the detail names the issuer recorded before and the one recorded now. A worker refuses any CA but the recorded one, so this row is where every change of CA a deployment has made is written down |
+| `endpoint_issuer_accepted` | an endpoint's CA was changed on purpose (`acme-proxy endpoint issuer accept`): the detail names the issuer recorded before and the one recorded now. A worker refuses any CA but the recorded one, so this row is where every change of CA a deployment has made is written down |
 | `database_transferred` | every row was copied into another backend (`acme-proxy transfer`). Written to the **source**, which is the database that holds the trail leading up to the move; the copy has already read past this row, so the target's own trail begins at the transfer it arrived in |
 
 The vocabulary is defined by `acme_proxy_core::audit::AuditEvent`, not by a
@@ -64,7 +64,7 @@ database constraint, so a newer server writing a name an older one does not know
 still loads on the older one — it simply shows the raw string. The web audit
 surface stays **read-only**: a stolen session that could erase the trail would
 make the trail prove nothing, so pruning is `audit cleanup` on the host or
-`audit.retention_days` and nothing else.
+`audit.retention` and nothing else.
 
 Two boundaries worth knowing:
 
@@ -91,7 +91,7 @@ acme-proxy audit show 4213
 
 | Command | Flags |
 | --- | --- |
-| `audit list` | `--profile`, `--account-id`, `--order-id`, `--cert-serial`, `--event`, `--outcome`, `--since-days <n>`, `--limit <n>`, `--offset <n>`, `--json` |
+| `audit list` | `--endpoint`, `--account-id`, `--order-id`, `--cert-serial`, `--event`, `--outcome`, `--since-days <n>`, `--limit <n>`, `--offset <n>`, `--json` |
 | `audit show <id>` | `--json` |
 | `audit cleanup` | `--older-than <days>` *(prompts)* |
 
@@ -123,7 +123,7 @@ id           4213
 created      2026-08-09T18:22:04Z
 event        certificate_issue_failed
 outcome      failure
-profile      prod
+endpoint     prod
 actor        acme:acct-9f2c
 account      acct-9f2c
 order        ord-71ab
@@ -152,7 +152,7 @@ happened.
 
 ## Retention
 
-`audit.retention_days = 0` — the default — keeps everything for ever, which is
+`audit.retention = "0s"` — the default — keeps everything for ever, which is
 the right default for a trail whose value is that it is complete. Setting it
 non-zero spawns a daily sweep running the identical `DELETE` as:
 
@@ -174,7 +174,7 @@ confirm-gated and its prompt names the number of rows it is about to remove. Use
 
 | Surface | |
 |---|---|
-| `GET /api/audit?profile=&accountId=&orderId=&certSerial=&event=&outcome=&limit=&offset=` | the paged envelope every list endpoint returns |
+| `GET /api/audit?endpoint=&accountId=&orderId=&certSerial=&event=&outcome=&limit=&offset=` | the paged envelope every list endpoint returns |
 | `GET /api/audit/{id}` | one row |
 | `/ui/audit` | the list, filterable, with a detail page per row |
 
@@ -204,5 +204,5 @@ setter and no `UPDATE` anywhere in the crate — and the primary key is
 ## Configuration
 
 See [`[audit]`](../configuration/reference.md#audit) for the three keys. The
-section is process-wide rather than per-profile: the trail describes the CA, not
-one of its endpoints.
+section is process-wide rather than per-endpoint: the trail describes the CA,
+not one of its endpoints.

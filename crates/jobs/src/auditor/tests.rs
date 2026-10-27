@@ -182,7 +182,7 @@ async fn from_config_builds_a_resolver_only_when_the_lookup_is_on() {
     let on = Auditor::from_config(
         &AuditConfig {
             reverse_dns: true,
-            reverse_dns_timeout_ms: 1,
+            reverse_dns_timeout: acme_proxy_core::config::ConfigDuration::from_millis(1),
             ..AuditConfig::default()
         },
         &acme_proxy_core::config::DnsConfig {
@@ -243,7 +243,7 @@ async fn from_config_counts_into_the_registry_it_was_given() {
     assert!(
         registry
             .render()
-            .contains("acme_proxy_certificates_issued_total{role=\"acme,admin,worker\",profile=\"default\"} 1\n"),
+            .contains("acme_proxy_certificates_issued_total{role=\"acme,admin,worker\",endpoint=\"default\"} 1\n"),
         "the audit write did not reach the registry:\n{}",
         registry.render()
     );

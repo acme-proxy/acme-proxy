@@ -21,7 +21,8 @@ pub struct CustomScriptNotifier {
 impl CustomScriptNotifier {
     /// Validates the configuration and creates the backend.
     pub fn from_config(cfg: &CustomNotifyConfig) -> anyhow::Result<Self> {
-        let Some(hook) = ScriptHook::new(&cfg.script_path, &cfg.args, cfg.timeout_ms) else {
+        let Some(hook) = ScriptHook::new(&cfg.script_path, &cfg.args, cfg.timeout.as_millis())
+        else {
             anyhow::bail!(
                 "notify.custom is enabled but notify.custom.script_path is empty; \
                  provide a path to an executable script or remove `custom` from \
@@ -33,7 +34,7 @@ impl CustomScriptNotifier {
             event = "notify_custom_loaded",
             outcome = "success",
             script_path = %hook.path().display(),
-            timeout_ms = cfg.timeout_ms,
+            timeout_ms = acme_proxy_core::logfields::millis(cfg.timeout.as_std()),
             args = ?cfg.args,
         );
 
@@ -85,12 +86,12 @@ impl NotifyBackend for CustomScriptNotifier {
         let order_id = event.order_id().unwrap_or_default();
         let cert_serial = event.cert_serial().unwrap_or_default();
         let identifiers = event.identifiers_joined();
-        let profile = event.profile();
+        let endpoint = event.endpoint();
         let kind = event.kind();
 
         let envs = [
             ("ACME_NOTIFY_HOOK", kind),
-            ("ACME_NOTIFY_PROFILE", profile),
+            ("ACME_NOTIFY_ENDPOINT", endpoint),
             ("ACME_NOTIFY_CLIENT_IP", client_ip),
             ("ACME_NOTIFY_ACCOUNT_ID", account_id),
             ("ACME_NOTIFY_ORDER_ID", order_id),
@@ -105,7 +106,7 @@ impl NotifyBackend for CustomScriptNotifier {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::notify::{CertificateIssuedData, ProfileMountedData};
+    use crate::notify::{CertificateIssuedData, EndpointMountedData};
     use acme_proxy_core::testutil::TempDir;
     use std::time::Duration;
 
@@ -119,9 +120,9 @@ mod tests {
         }
     }
 
-    fn profile_mounted() -> NotifyEvent {
-        NotifyEvent::ProfileMounted(ProfileMountedData {
-            profile: "default".to_string(),
+    fn endpoint_mounted() -> NotifyEvent {
+        NotifyEvent::EndpointMounted(EndpointMountedData {
+            endpoint: "default".to_string(),
         })
     }
 
@@ -148,7 +149,7 @@ mod tests {
 
         assert_eq!(backend.name(), "custom");
         let error = backend
-            .send(&profile_mounted())
+            .send(&endpoint_mounted())
             .await
             .expect_err("there is no such script");
         assert!(
@@ -167,7 +168,7 @@ mod tests {
         let backend = CustomScriptNotifier::from_config(&cfg).unwrap();
 
         let error = backend
-            .send(&profile_mounted())
+            .send(&endpoint_mounted())
             .await
             .expect_err("exit 3 is a failure");
         assert!(error.to_string().contains("exited with status"), "{error}");
@@ -178,7 +179,7 @@ mod tests {
         let dir = TempDir::new("notify-custom");
         let cfg = write_script(&dir, "pass.sh", "#!/bin/sh\ncat > /dev/null\nexit 0\n");
         let backend = CustomScriptNotifier::from_config(&cfg).unwrap();
-        assert!(backend.send(&profile_mounted()).await.is_ok());
+        assert!(backend.send(&endpoint_mounted()).await.is_ok());
     }
 
     #[tokio::test]
@@ -190,7 +191,7 @@ mod tests {
             "#!/bin/sh\ncat > /dev/null\necho \"webhook rejected\"\nexit 1\n",
         );
         let backend = CustomScriptNotifier::from_config(&cfg).unwrap();
-        let error = backend.send(&profile_mounted()).await.unwrap_err();
+        let error = backend.send(&endpoint_mounted()).await.unwrap_err();
         assert_eq!(error.to_string(), "webhook rejected");
     }
 
@@ -216,7 +217,7 @@ esac
         let backend = CustomScriptNotifier::from_config(&cfg).unwrap();
 
         let event = NotifyEvent::CertificateIssued(CertificateIssuedData {
-            profile: "default".to_string(),
+            endpoint: "default".to_string(),
             order_id: "ord-1".to_string(),
             account_id: "acc-1".to_string(),
             cert_serial: "AA:BB".to_string(),
@@ -254,7 +255,7 @@ exit 0
 "#,
         );
         let backend = CustomScriptNotifier::from_config(&cfg).unwrap();
-        assert!(backend.send(&profile_mounted()).await.is_ok());
+        assert!(backend.send(&endpoint_mounted()).await.is_ok());
     }
 
     /// `tokio::time::timeout` only abandons the future: without
@@ -265,7 +266,7 @@ exit 0
         let dir = TempDir::new("notify-custom");
         let marker = dir.path().join("survived");
         let cfg = CustomNotifyConfig {
-            timeout_ms: 50,
+            timeout: acme_proxy_core::config::ConfigDuration::from_millis(50),
             ..write_script(
                 &dir,
                 "slow.sh",
@@ -277,7 +278,7 @@ exit 0
         };
         let backend = CustomScriptNotifier::from_config(&cfg).unwrap();
 
-        let error = backend.send(&profile_mounted()).await.unwrap_err();
+        let error = backend.send(&endpoint_mounted()).await.unwrap_err();
         assert!(error.to_string().contains("timed out"));
 
         tokio::time::sleep(Duration::from_millis(1_800)).await;

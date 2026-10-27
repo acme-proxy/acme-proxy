@@ -16,7 +16,7 @@ backend = "custom"
 
 [signer.custom]
 script_path = "/usr/local/bin/legacy-pki-bridge.sh"
-timeout_ms = 15000
+timeout = "15s"
 args = []
 supports_crl = false
 supports_renewal_info = false
@@ -29,12 +29,12 @@ supports_renewal_info = false
 Path to the executable. An empty value is a **startup error** once this backend
 is selected.
 
-**`timeout_ms`** (`Integer`) — *Default: `5000` | Env: `ACME_PROXY_SIGNER__CUSTOM__TIMEOUT_MS`*
+**`timeout`** (`Duration`) — *Default: `"5s"` | Env: `ACME_PROXY_SIGNER__CUSTOM__TIMEOUT`*
 
 Budget for one invocation. `issue` and `revoke` run in the job queue, so there
 it bounds one attempt. The `crl` and `renewal_info` hooks answer a request
 inline, so while either is enabled this must stay below
-`server.request_timeout_ms` — the server refuses to start otherwise.
+`server.request_timeout` — the server refuses to start otherwise.
 
 **`args`** (`Array`) — *Default: `[]` | Env: `ACME_PROXY_SIGNER__CUSTOM__ARGS`*
 
@@ -93,7 +93,7 @@ Exit codes are the contract:
 The script runs in the `worker` role, in the `signer_issue` job `finalize`
 queues: the client is answered `processing` and polls until the certificate is
 there. It never runs inside a client's request, so it may take as long as its
-`timeout_ms` without holding one open.
+`timeout` without holding one open.
 
 > The order's requested `notBefore`/`notAfter` (RFC 8555 §7.4) are **not**
 > passed to the script — there is no contract for it, and inventing one would
@@ -137,8 +137,8 @@ no CRL rather than taking the endpoint down.
 | `ACME_SIGNER_IDENTIFIERS` | `issue` | Comma-joined identifier values |
 | `ACME_SIGNER_REASON` | `revoke` | RFC 5280 reason code, empty when none given |
 
-There is no `ACME_SIGNER_PROFILE`; the signer backend is never told which
-profile it is serving. (Backends are shared between profiles with identical
+There is no `ACME_SIGNER_ENDPOINT`; the signer backend is never told which
+endpoint it is serving. (Backends are shared between endpoints with identical
 `[signer]` configuration, so there would not always be one answer.)
 
 ## Security & process isolation

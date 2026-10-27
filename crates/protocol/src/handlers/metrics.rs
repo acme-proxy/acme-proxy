@@ -13,7 +13,7 @@ use acme_proxy_jobs::metrics::Metrics;
 
 /// The handler's own state.
 ///
-/// A newtype rather than `AppState`, which holds exactly one `Profile` — the
+/// A newtype rather than `AppState`, which holds exactly one `Endpoint` — the
 /// registry is the *process's*, and a scrape reporting one endpoint's requests
 /// would be a worse answer than no scrape at all.
 #[derive(Clone)]

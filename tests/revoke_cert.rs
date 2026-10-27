@@ -23,9 +23,9 @@ use common::{
 };
 use std::sync::Arc;
 
-const NEW_ACCOUNT_URL: &str = "http://localhost:3000/profile/default/newAccount";
-const NEW_ORDER_URL: &str = "http://localhost:3000/profile/default/newOrder";
-const REVOKE_URL: &str = "http://localhost:3000/profile/default/revokeCert";
+const NEW_ACCOUNT_URL: &str = "http://localhost:3000/endpoint/default/newAccount";
+const NEW_ORDER_URL: &str = "http://localhost:3000/endpoint/default/newOrder";
+const REVOKE_URL: &str = "http://localhost:3000/endpoint/default/revokeCert";
 
 async fn post(app: &Router, path: &str, body: String) -> Response {
     app.clone()

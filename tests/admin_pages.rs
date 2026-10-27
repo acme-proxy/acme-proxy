@@ -880,8 +880,8 @@ fn authenticated_pages() -> Vec<&'static str> {
         "/ui/eab",
         "/ui/eab/some-kid",
         "/ui/nonces",
-        "/ui/profiles",
-        "/ui/profiles/default/filter",
+        "/ui/endpoints",
+        "/ui/endpoints/default/filter",
         "/ui/account",
     ]
 }
@@ -1313,7 +1313,7 @@ async fn a_stored_script_tag_is_escaped_everywhere_it_is_rendered() {
         Method::POST,
         "/ui/eab",
         Some(&session),
-        Some(&[("label", HOSTILE), ("profile", "")]),
+        Some(&[("label", HOSTILE), ("endpoint", "")]),
     )
     .await;
     assert_eq!(created.status(), StatusCode::CREATED);
@@ -1342,7 +1342,7 @@ async fn a_hostile_reverse_name_is_escaped_on_both_account_surfaces() {
     const HOSTILE: &str = "<script>alert(1)</script>";
 
     let (account, _) = Account::find_or_create(
-        PROFILE,
+        ENDPOINT,
         &[7u8, 7],
         vec![],
         &ClientContext {
@@ -1375,12 +1375,12 @@ async fn a_hostile_reverse_name_is_escaped_on_both_account_surfaces() {
 async fn an_id_echoed_into_a_not_found_page_is_escaped() {
     let (app, _database, session) = test_admin_app_logged_in(admin_config()).await;
 
-    // Two shapes of caller-supplied path segment: an account id, and a profile
+    // Two shapes of caller-supplied path segment: an account id, and an endpoint
     // name. Both are interpolated into a message the `PageError` document
     // renders with no template, so both go through `escape_html` or neither.
     for path in [
         "/ui/accounts/%3Cscript%3Ealert(1)%3C%2Fscript%3E",
-        "/ui/profiles/%3Cscript%3Ealert(1)%3C%2Fscript%3E/filter",
+        "/ui/endpoints/%3Cscript%3Ealert(1)%3C%2Fscript%3E/filter",
     ] {
         let response = admin_page(&app, path, Some(&session), false).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
@@ -1450,7 +1450,7 @@ async fn the_overview_counts_every_resource() {
     assert!(body.contains("Overview"));
     // Three accounts and three orders, and the endpoint the harness mounts.
     assert!(body.contains(r#"<div class="value">3</div>"#));
-    assert!(body.contains(PROFILE));
+    assert!(body.contains(ENDPOINT));
 }
 
 /// The overview leads with what needs somebody, each number linking to the
@@ -1463,7 +1463,7 @@ async fn the_overview_leads_with_what_needs_attention() {
     AuditEntry::insert(
         AuditRecord::new(
             AuditEvent::CertificateRevokeFailed,
-            PROFILE,
+            ENDPOINT,
             Actor::system(),
         )
         .with_reason("unauthorized"),
@@ -1554,7 +1554,7 @@ async fn paging_an_accounts_orders_swaps_the_orders_table_and_not_the_card() {
 
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
     let (account, _) = Account::find_or_create(
-        PROFILE,
+        ENDPOINT,
         &[9u8, 9],
         vec![],
         &ClientContext::default(),
@@ -1564,7 +1564,7 @@ async fn paging_an_accounts_orders_swaps_the_orders_table_and_not_the_card() {
     .unwrap();
     for index in 0..3 {
         Order::create(
-            PROFILE,
+            ENDPOINT,
             account.id,
             vec![Identifier::dns(format!("page{index}.example.com"))],
             2_000_000_000,
@@ -1647,7 +1647,7 @@ async fn an_account_page_shows_an_address_that_never_resolved() {
 
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
     let (account, _) = Account::find_or_create(
-        PROFILE,
+        ENDPOINT,
         &[9u8, 9],
         vec![],
         &ClientContext {
@@ -1835,7 +1835,7 @@ async fn the_eab_list_pages_and_a_new_credential_lands_on_the_refreshed_page() {
         Method::POST,
         "/ui/eab",
         Some(&session),
-        Some(&[("label", "fresh"), ("profile", "")]),
+        Some(&[("label", "fresh"), ("endpoint", "")]),
     )
     .await;
     assert_eq!(created.status(), StatusCode::CREATED);
@@ -1862,7 +1862,7 @@ async fn an_eab_secret_is_shown_once_and_the_list_refreshes_out_of_band() {
         Method::POST,
         "/ui/eab",
         Some(&session),
-        Some(&[("label", "team-a"), ("profile", "")]),
+        Some(&[("label", "team-a"), ("endpoint", "")]),
     )
     .await;
     assert_eq!(created.status(), StatusCode::CREATED);
@@ -1904,7 +1904,7 @@ async fn an_eab_secret_is_shown_once_and_the_list_refreshes_out_of_band() {
 }
 
 #[tokio::test]
-async fn creating_an_eab_for_an_unmounted_profile_is_refused() {
+async fn creating_an_eab_for_an_unmounted_endpoint_is_refused() {
     let (app, _database, session) = test_admin_app_logged_in(admin_config()).await;
 
     let response = admin_form_request(
@@ -1912,11 +1912,11 @@ async fn creating_an_eab_for_an_unmounted_profile_is_refused() {
         Method::POST,
         "/ui/eab",
         Some(&session),
-        Some(&[("label", ""), ("profile", "not-mounted")]),
+        Some(&[("label", ""), ("endpoint", "not-mounted")]),
     )
     .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert!(html_body(response).await.contains("no profile named"));
+    assert!(html_body(response).await.contains("no endpoint named"));
 }
 
 /// The one test that genuinely issues, so the revoke path has a certificate to
@@ -1924,7 +1924,7 @@ async fn creating_an_eab_for_an_unmounted_profile_is_refused() {
 #[tokio::test]
 async fn revoking_an_issued_order_shows_a_banner_and_then_a_conflict() {
     use acme_proxy_core::identifier::Identifier;
-    use acme_proxy_signer::RequestedValidity;
+    use acme_proxy_signer::OrderRequest;
     use acme_proxy_store::account::Account;
     use acme_proxy_store::order::Order;
 
@@ -1933,7 +1933,7 @@ async fn revoking_an_issued_order_shows_a_banner_and_then_a_conflict() {
     let session = admin_login(&app, "alice", ADMIN_PASSWORD).await;
 
     let (account, _) = Account::find_or_create(
-        PROFILE,
+        ENDPOINT,
         &[7u8, 7],
         vec![],
         &ClientContext::default(),
@@ -1943,7 +1943,7 @@ async fn revoking_an_issued_order_shows_a_banner_and_then_a_conflict() {
     .unwrap();
     let identifier = Identifier::dns("revoke-me.example.com");
     let mut order = Order::create(
-        PROFILE,
+        ENDPOINT,
         account.id,
         vec![identifier.clone()],
         2_000_000_000,
@@ -1965,7 +1965,7 @@ async fn revoking_an_issued_order_shows_a_banner_and_then_a_conflict() {
             &order.id.to_string(),
             &csr_der,
             &[identifier],
-            RequestedValidity::default(),
+            OrderRequest::default(),
         )
         .await
         .expect("the in-memory CA must issue");
@@ -2052,9 +2052,9 @@ async fn an_issued_order_card_shows_the_chain_and_offers_it_for_download() {
         "and offer the download route"
     );
     // The dead string is gone. The ACME certificate URL lives under the
-    // profile prefix, so this is what it would have looked like.
+    // endpoint prefix, so this is what it would have looked like.
     assert!(
-        !body.contains("/profile/default/certificate/"),
+        !body.contains("/endpoint/default/certificate/"),
         "the ACME certificate URL is unreachable from a browser and must not \
          be presented as if it were a link"
     );
@@ -2215,10 +2215,10 @@ async fn revoking_covers_the_refusals_that_are_not_the_rows_state() {
     assert!(html_body(missing).await.contains("no such order"));
 }
 
-/// An order whose profile this process no longer mounts cannot be revoked
+/// An order whose endpoint this process no longer mounts cannot be revoked
 /// here, and saying so beats revoking against whatever backend came first.
 #[tokio::test]
-async fn revoking_an_order_from_an_unmounted_profile_is_a_banner() {
+async fn revoking_an_order_from_an_unmounted_endpoint_is_a_banner() {
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
     let ids = seed(&database, 1).await;
     let (orders, _) = acme_proxy_store::order::Order::search(
@@ -2232,8 +2232,8 @@ async fn revoking_an_order_from_an_unmounted_profile_is_a_banner() {
     .await
     .unwrap();
 
-    // Move the row to a profile the harness does not mount.
-    sqlx::query("UPDATE orders SET profile = 'gone' WHERE id = ?")
+    // Move the row to an endpoint the harness does not mount.
+    sqlx::query("UPDATE orders SET endpoint = 'gone' WHERE id = ?")
         .bind(orders[0].id)
         .execute(database.raw_pool())
         .await
@@ -2249,7 +2249,7 @@ async fn revoking_an_order_from_an_unmounted_profile_is_a_banner() {
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     let body = html_body(response).await;
-    assert!(body.contains("profile_not_mounted"));
+    assert!(body.contains("endpoint_not_mounted"));
     assert!(body.contains("order-card"));
 }
 
@@ -2371,28 +2371,28 @@ async fn sweeping_the_nonce_table_reports_what_it_removed() {
 }
 
 #[tokio::test]
-async fn the_profiles_page_warns_when_an_endpoint_bypasses_validation() {
+async fn the_endpoints_page_warns_when_an_endpoint_bypasses_validation() {
     let (app, _database, session) = test_admin_app_logged_in(admin_config()).await;
 
-    let body = html_body(admin_page(&app, "/ui/profiles", Some(&session), false).await).await;
-    assert!(body.contains(PROFILE));
+    let body = html_body(admin_page(&app, "/ui/endpoints", Some(&session), false).await).await;
+    assert!(body.contains(ENDPOINT));
     // The harness registry bypasses, which is what makes this assertable at
     // all -- and the warning is the whole point of the page.
     assert!(body.contains("challenge.bypass"));
     assert!(body.contains(r#"<span class="badge invalid">bypassed</span>"#));
     // The gap this page used to leave: it warns that `[filter]` is all such an
     // endpoint has, and now says where to read it.
-    assert!(body.contains(&format!(r#"href="/ui/profiles/{PROFILE}/filter""#)));
+    assert!(body.contains(&format!(r#"href="/ui/endpoints/{ENDPOINT}/filter""#)));
 }
 
-/// The answer to "and what does that policy say?", which `/ui/profiles` warns
+/// The answer to "and what does that policy say?", which `/ui/endpoints` warns
 /// about and used to leave to an SSH session.
 #[tokio::test]
 async fn the_filter_policy_page_shows_what_the_process_is_enforcing() {
     let (app, _database, session) =
         test_admin_app_logged_in_with_filter(admin_config(), test_filter_policy()).await;
 
-    let path = format!("/ui/profiles/{PROFILE}/filter");
+    let path = format!("/ui/endpoints/{ENDPOINT}/filter");
     let body = html_body(admin_page(&app, &path, Some(&session), false).await).await;
 
     assert!(body.starts_with("<!doctype html>"), "{body}");
@@ -2429,9 +2429,11 @@ async fn the_filter_policy_page_shows_what_the_process_is_enforcing() {
     assert!(!body.contains("<form"), "{body}");
     assert!(!body.contains("hx-target"), "{body}");
 
-    // A sub-page of Profiles, not a nav entry of its own.
+    // A sub-page of Endpoints, not a nav entry of its own.
     assert!(
-        body.contains(r#"<a href="/ui/profiles" class="active" aria-current="page">Profiles</a>"#),
+        body.contains(
+            r#"<a href="/ui/endpoints" class="active" aria-current="page">Endpoints</a>"#
+        ),
         "{body}"
     );
 
@@ -2442,7 +2444,7 @@ async fn the_filter_policy_page_shows_what_the_process_is_enforcing() {
 
     // An unmounted endpoint is a `404`, not an empty policy.
     assert_eq!(
-        admin_page(&app, "/ui/profiles/nope/filter", Some(&session), false)
+        admin_page(&app, "/ui/endpoints/nope/filter", Some(&session), false)
             .await
             .status(),
         StatusCode::NOT_FOUND
@@ -2471,7 +2473,7 @@ async fn the_filter_policy_page_says_plainly_when_nothing_is_configured() {
     let body = html_body(
         admin_page(
             &app,
-            &format!("/ui/profiles/{PROFILE}/filter"),
+            &format!("/ui/endpoints/{ENDPOINT}/filter"),
             Some(&session),
             false,
         )
@@ -2611,15 +2613,19 @@ async fn the_audit_page_lists_rows_escapes_them_and_offers_nothing_to_write() {
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
 
     let id = AuditEntry::insert(
-        AuditRecord::new(AuditEvent::CertificateIssued, PROFILE, Actor::admin("root"))
-            .with_account("acct-1")
-            .with_serial("0a0b")
-            .with_client(ClientContext {
-                ip: Some("203.0.113.7".to_string()),
-                ptr: Some("host.example.com".to_string()),
-                user_agent: Some("<script>alert(1)</script>".to_string()),
-                request_id: Some("req-1".to_string()),
-            }),
+        AuditRecord::new(
+            AuditEvent::CertificateIssued,
+            ENDPOINT,
+            Actor::admin("root"),
+        )
+        .with_account("acct-1")
+        .with_serial("0a0b")
+        .with_client(ClientContext {
+            ip: Some("203.0.113.7".to_string()),
+            ptr: Some("host.example.com".to_string()),
+            user_agent: Some("<script>alert(1)</script>".to_string()),
+            request_id: Some("req-1".to_string()),
+        }),
         &database,
     )
     .await
@@ -2627,7 +2633,7 @@ async fn the_audit_page_lists_rows_escapes_them_and_offers_nothing_to_write() {
     AuditEntry::insert(
         AuditRecord::new(
             AuditEvent::CertificateRevokeFailed,
-            PROFILE,
+            ENDPOINT,
             Actor::system(),
         )
         .with_reason("unauthorized"),
@@ -2697,16 +2703,24 @@ async fn the_audit_filters_survive_a_page_step_and_are_shown_in_the_form() {
 
     for _ in 0..3 {
         AuditEntry::insert(
-            AuditRecord::new(AuditEvent::CertificateIssued, PROFILE, Actor::admin("root"))
-                .with_serial("0a0b"),
+            AuditRecord::new(
+                AuditEvent::CertificateIssued,
+                ENDPOINT,
+                Actor::admin("root"),
+            )
+            .with_serial("0a0b"),
             &database,
         )
         .await
         .unwrap();
     }
     AuditEntry::insert(
-        AuditRecord::new(AuditEvent::CertificateIssued, PROFILE, Actor::admin("root"))
-            .with_serial("ffff"),
+        AuditRecord::new(
+            AuditEvent::CertificateIssued,
+            ENDPOINT,
+            Actor::admin("root"),
+        )
+        .with_serial("ffff"),
         &database,
     )
     .await
@@ -2759,7 +2773,7 @@ async fn seed_relay_job(
     use acme_proxy_store::upstream_order::UpstreamOrder;
 
     let (account, _) = Account::find_or_create(
-        PROFILE,
+        ENDPOINT,
         &[7u8, 7],
         Vec::new(),
         &acme_proxy_core::audit::ClientContext::default(),
@@ -2768,7 +2782,7 @@ async fn seed_relay_job(
     .await
     .unwrap();
     let order = Order::create(
-        PROFILE,
+        ENDPOINT,
         account.id,
         vec![Identifier::dns("relay.example.com")],
         now_secs() + 3600,
@@ -2793,7 +2807,7 @@ async fn seed_relay_job(
             id: job_id,
             kind: "signer_relay_issue",
             dedup_key: &order.id.to_string(),
-            payload: &serde_json::json!({ "order_id": order.id.to_string(), "profile": PROFILE }),
+            payload: &serde_json::json!({ "order_id": order.id.to_string(), "endpoint": ENDPOINT }),
             run_at: now_secs(),
             deadline: Some(order.expires),
             max_attempts: 5,
@@ -3161,7 +3175,7 @@ async fn expiring_row(
     use acme_proxy_store::order::Order;
 
     let mut order = Order::create(
-        PROFILE,
+        ENDPOINT,
         account,
         names.iter().map(|name| Identifier::dns(*name)).collect(),
         2_000_000_000,
@@ -3199,7 +3213,7 @@ async fn the_expiring_page_annotates_rows_escapes_them_and_offers_nothing_to_wri
 
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
     let (account, _) = Account::find_or_create(
-        PROFILE,
+        ENDPOINT,
         b"expiry-key",
         vec![],
         &ClientContext::default(),
@@ -3263,14 +3277,14 @@ async fn the_expiring_page_annotates_rows_escapes_them_and_offers_nothing_to_wri
     // The filter form is an `hx-get`, which is a read.
     assert!(body.contains(r#"hx-get="/ui/expiring""#), "{body}");
 
-    // ...and the form's "every profile" option submits `profile=`, not an
+    // ...and the form's "every endpoint" option submits `endpoint=`, not an
     // omitted key, so the exact URL htmx pushes must still list everything.
     // This is the reported bug: the page was right until an operator touched
     // the filter, and empty from then on.
     let blank = html_body(
         admin_page(
             &app,
-            "/ui/expiring?profile=&days=30&superseded=",
+            "/ui/expiring?endpoint=&days=30&superseded=",
             Some(&session),
             true,
         )
@@ -3361,7 +3375,7 @@ async fn an_unknown_audit_filter_is_refused_not_answered_empty() {
 /// front end that actually produces the shape.
 ///
 /// A `<select>` inside a submitted form always contributes its `name`, so the
-/// panel's "every profile" / "any status" options arrive as `profile=` and
+/// panel's "every endpoint" / "any status" options arrive as `endpoint=` and
 /// `status=` rather than as omitted keys — and every list emptied itself the
 /// moment an operator touched its filter form. `/ui/orders` was worse than
 /// empty: `status=` reached `OrderStatus::from_str`, which refuses an unknown
@@ -3374,19 +3388,19 @@ async fn a_blank_filter_leaves_every_list_page_unfiltered() {
     seed(&database, 3).await;
 
     for (path, blank) in [
-        ("/ui/accounts", "/ui/accounts?profile="),
+        ("/ui/accounts", "/ui/accounts?endpoint="),
         (
             "/ui/orders",
-            "/ui/orders?profile=&status=&accountId=&identifier=&identifierContains=&certSerial=",
+            "/ui/orders?endpoint=&status=&accountId=&identifier=&identifierContains=&certSerial=",
         ),
         (
             "/ui/audit",
-            "/ui/audit?profile=&event=&outcome=&accountId=&certSerial=",
+            "/ui/audit?endpoint=&event=&outcome=&accountId=&certSerial=",
         ),
         ("/ui/jobs", "/ui/jobs?kind=&status="),
         (
             "/ui/upstream-orders",
-            "/ui/upstream-orders?profile=&status=",
+            "/ui/upstream-orders?endpoint=&status=",
         ),
     ] {
         let response = admin_page(&app, blank, Some(&session), true).await;
@@ -3404,7 +3418,7 @@ async fn a_blank_filter_leaves_every_list_page_unfiltered() {
     let orders = html_body(
         admin_page(
             &app,
-            "/ui/orders?profile=&status=&accountId=",
+            "/ui/orders?endpoint=&status=&accountId=",
             Some(&session),
             true,
         )
@@ -3422,7 +3436,7 @@ async fn a_blank_filter_leaves_every_list_page_unfiltered() {
     let named = html_body(
         admin_page(
             &app,
-            "/ui/orders?profile=nothing-here",
+            "/ui/orders?endpoint=nothing-here",
             Some(&session),
             true,
         )
@@ -4408,7 +4422,7 @@ async fn every_shared_write_leaves_the_same_audit_rows_on_both_surfaces() {
         let key = next_key;
         async move {
             Account::find_or_create(
-                PROFILE,
+                ENDPOINT,
                 &[9u8, key],
                 vec![],
                 &ClientContext::default(),
@@ -4517,7 +4531,7 @@ async fn every_shared_write_leaves_the_same_audit_rows_on_both_surfaces() {
         let database = database.clone();
         async move {
             Order::create(
-                PROFILE,
+                ENDPOINT,
                 account_id,
                 vec![Identifier::dns("parity.example.com".to_string())],
                 2_000_000_000,

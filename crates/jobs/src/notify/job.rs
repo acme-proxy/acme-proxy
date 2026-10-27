@@ -19,9 +19,9 @@ pub const NOTIFY_JOB_KIND: &str = "notify_deliver";
 
 /// Delivers queued notifications.
 ///
-/// Holds the whole `profile name -> dispatcher` map rather than one dispatcher,
+/// Holds the whole `endpoint name -> dispatcher` map rather than one dispatcher,
 /// because there is exactly one handler for a kind and a job row names its own
-/// profile. That is also why nothing deduplicates it at registration the way the
+/// endpoint. That is also why nothing deduplicates it at registration the way the
 /// signer handlers are deduplicated: there is only ever one of these.
 ///
 /// The map arrives as a [`Notifiers`] handle rather than a plain `Arc` because
@@ -40,7 +40,7 @@ impl NotifyJob {
 
 /// What a claimed row says it wants delivered.
 struct Delivery {
-    profile: String,
+    endpoint: String,
     backend: String,
     event: NotifyEvent,
 }
@@ -49,10 +49,10 @@ impl Delivery {
     /// Reads a payload back. Every failure here is permanent by construction —
     /// the bytes are already written and re-reading them cannot change them.
     fn parse(payload: &Value) -> Result<Self, String> {
-        let profile = payload
-            .get("profile")
+        let endpoint = payload
+            .get("endpoint")
             .and_then(Value::as_str)
-            .ok_or("the job payload names no profile")?
+            .ok_or("the job payload names no endpoint")?
             .to_string();
         let backend = payload
             .get("backend")
@@ -65,7 +65,7 @@ impl Delivery {
         let event: NotifyEvent = serde_json::from_value(event.clone())
             .map_err(|error| format!("the job payload's event does not parse: {error}"))?;
         Ok(Self {
-            profile,
+            endpoint,
             backend,
             event,
         })
@@ -83,7 +83,7 @@ impl JobHandler for NotifyJob {
     /// Only a payload that does not parse retires the job at once: the bytes are
     /// written, and no number of attempts reads them differently.
     ///
-    /// A profile or a backend this process does not know is **retried** within
+    /// An endpoint or a backend this process does not know is **retried** within
     /// the row's own `max_attempts`, not retired. The configuration that queued
     /// the row need not be the one claiming it: during a reload rolled out
     /// across several processes over one database, a router already on the new
@@ -97,19 +97,19 @@ impl JobHandler for NotifyJob {
             Err(reason) => return JobOutcome::Failed(reason),
         };
 
-        let Some(dispatcher) = self.0.get(&delivery.profile) else {
+        let Some(dispatcher) = self.0.get(&delivery.endpoint) else {
             warn!(
                 event = "notify_delivery_target_missing",
                 outcome = "failure",
-                profile = %delivery.profile,
+                endpoint = %delivery.endpoint,
                 backend = %delivery.backend,
                 attempt = job.attempts,
-                "no dispatcher is mounted under this profile here; retrying in case the \
+                "no dispatcher is mounted under this endpoint here; retrying in case the \
                  configuration that queued the row has not reached this process yet"
             );
             return JobOutcome::Retry(format!(
-                "no profile `{}` is mounted, so its notification cannot be delivered",
-                delivery.profile
+                "no endpoint `{}` is mounted, so its notification cannot be delivered",
+                delivery.endpoint
             ));
         };
 
@@ -119,7 +119,7 @@ impl JobHandler for NotifyJob {
                 info!(
                     event = "notify_delivered",
                     outcome = "success",
-                    profile = %delivery.profile,
+                    endpoint = %delivery.endpoint,
                     backend = %delivery.backend,
                     kind,
                     attempt = job.attempts,
@@ -130,7 +130,7 @@ impl JobHandler for NotifyJob {
                 warn!(
                     event = "notify_delivery_failed",
                     outcome = "failure",
-                    profile = %delivery.profile,
+                    endpoint = %delivery.endpoint,
                     backend = %delivery.backend,
                     kind,
                     attempt = job.attempts,
@@ -147,15 +147,15 @@ impl JobHandler for NotifyJob {
                 warn!(
                     event = "notify_delivery_target_missing",
                     outcome = "failure",
-                    profile = %delivery.profile,
+                    endpoint = %delivery.endpoint,
                     backend = %delivery.backend,
                     attempt = job.attempts,
-                    "this profile has no such notify backend here; retrying in case the \
+                    "this endpoint has no such notify backend here; retrying in case the \
                      configuration that queued the row has not reached this process yet"
                 );
                 JobOutcome::Retry(format!(
-                    "profile `{}` has no notify backend `{}` configured",
-                    delivery.profile, delivery.backend
+                    "endpoint `{}` has no notify backend `{}` configured",
+                    delivery.endpoint, delivery.backend
                 ))
             }
         }
@@ -169,9 +169,9 @@ impl JobHandler for NotifyJob {
     /// failed. So this is a log line and nothing else — but it is the log line
     /// to alert on, because it is the moment a notification is genuinely lost.
     async fn abandon(&self, job: &Job, reason: &str) {
-        let (profile, backend, kind) = match Delivery::parse(&job.payload) {
+        let (endpoint, backend, kind) = match Delivery::parse(&job.payload) {
             Ok(delivery) => (
-                delivery.profile,
+                delivery.endpoint,
                 delivery.backend,
                 delivery.event.kind().to_string(),
             ),
@@ -182,7 +182,7 @@ impl JobHandler for NotifyJob {
         warn!(
             event = "notify_delivery_abandoned",
             outcome = "failure",
-            profile = %profile,
+            endpoint = %endpoint,
             backend = %backend,
             kind = %kind,
             attempts = job.attempts,
@@ -196,7 +196,7 @@ mod tests {
     use super::*;
     use crate::jobs::{JobQueue, JobSpec};
     use crate::notify::tests::RecordingNotifyBackend;
-    use crate::notify::{BackendSlot, NotifyDispatcher, NotifyError, ProfileMountedData};
+    use crate::notify::{BackendSlot, EndpointMountedData, NotifyDispatcher, NotifyError};
     use acme_proxy_core::config::ALL_NOTIFY_EVENTS;
     use acme_proxy_store::db::Database;
     use serde_json::json;
@@ -212,25 +212,25 @@ mod tests {
         ALL_NOTIFY_EVENTS.iter().map(|k| (*k).to_string()).collect()
     }
 
-    fn mounted(profile: &str) -> NotifyEvent {
-        NotifyEvent::ProfileMounted(ProfileMountedData {
-            profile: profile.to_string(),
+    fn mounted(endpoint: &str) -> NotifyEvent {
+        NotifyEvent::EndpointMounted(EndpointMountedData {
+            endpoint: endpoint.to_string(),
         })
     }
 
-    /// A handler over one profile whose single backend is `recorder`.
+    /// A handler over one endpoint whose single backend is `recorder`.
     fn handler(
-        profile: &str,
+        endpoint: &str,
         recorder: Arc<RecordingNotifyBackend>,
         queue: JobQueue,
     ) -> (NotifyJob, Arc<NotifyDispatcher>) {
         let dispatcher = Arc::new(NotifyDispatcher::new(
-            profile,
+            endpoint,
             vec![BackendSlot::new("recording", recorder, &every_kind())],
             queue,
         ));
         let mut map = HashMap::new();
-        map.insert(profile.to_string(), dispatcher.clone());
+        map.insert(endpoint.to_string(), dispatcher.clone());
         (NotifyJob::new(Arc::new(map)), dispatcher)
     }
 
@@ -255,8 +255,8 @@ mod tests {
         }
     }
 
-    fn delivery(profile: &str, backend: &str, event: &NotifyEvent) -> Value {
-        json!({ "profile": profile, "backend": backend, "event": event.payload() })
+    fn delivery(endpoint: &str, backend: &str, event: &NotifyEvent) -> Value {
+        json!({ "endpoint": endpoint, "backend": backend, "event": event.payload() })
     }
 
     #[tokio::test]
@@ -299,7 +299,7 @@ mod tests {
     /// the one claiming it, so both cases go back in the queue — bounded by the
     /// row's `max_attempts` — rather than losing the notification outright.
     #[tokio::test]
-    async fn an_unknown_profile_or_backend_is_retried_within_its_budget() {
+    async fn an_unknown_endpoint_or_backend_is_retried_within_its_budget() {
         let recorder = Arc::new(RecordingNotifyBackend::default());
         let (job, _d) = handler("le", recorder.clone(), queue().await);
 
@@ -335,9 +335,9 @@ mod tests {
 
         for payload in [
             json!({ "backend": "recording", "event": mounted("le").payload() }),
-            json!({ "profile": "le", "event": mounted("le").payload() }),
-            json!({ "profile": "le", "backend": "recording" }),
-            json!({ "profile": "le", "backend": "recording", "event": {"hook": "not_an_event"} }),
+            json!({ "endpoint": "le", "event": mounted("le").payload() }),
+            json!({ "endpoint": "le", "backend": "recording" }),
+            json!({ "endpoint": "le", "backend": "recording", "event": {"hook": "not_an_event"} }),
         ] {
             let outcome = job.run(&row(payload.clone())).await;
             assert!(
@@ -354,7 +354,7 @@ mod tests {
         let recorder = Arc::new(RecordingNotifyBackend::default());
         let (job, _d) = handler("le", recorder, queue().await);
 
-        job.abandon(&row(json!({})), "the payload names no profile")
+        job.abandon(&row(json!({})), "the payload names no endpoint")
             .await;
         job.abandon(
             &row(delivery("le", "recording", &mounted("le"))),

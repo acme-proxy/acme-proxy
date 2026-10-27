@@ -16,7 +16,7 @@
 //! believes in and the server ignores. [`build`] refuses one by name, and
 //! refuses the check types that have no meaning without an ACME order
 //! (`identifiers`, `eab`, `ipam`) before the engine gets to phrase the
-//! refusal in profile terms.
+//! refusal in endpoint terms.
 //!
 //! ## The client address
 //!

@@ -190,13 +190,13 @@ pub(crate) fn pages_router() -> Router<AdminState> {
         .route("/ui/eab/{kid}/revoke", post(eab::revoke_eab))
         .route("/ui/nonces", get(misc::get_nonces))
         .route("/ui/nonces/cleanup", post(misc::cleanup_nonces))
-        .route("/ui/profiles", get(misc::list_profiles))
+        .route("/ui/endpoints", get(misc::list_endpoints))
         // Read-only: a policy is configuration, and `filter explain` -- the
         // one that would need a form -- has no web surface at all. Absent from
         // `mutating_page_endpoints()` accordingly.
         .route(
-            "/ui/profiles/{name}/filter",
-            get(filter::get_profile_filter),
+            "/ui/endpoints/{name}/filter",
+            get(filter::get_endpoint_filter),
         )
 }
 
@@ -491,11 +491,11 @@ mod tests {
             page(10, 0),
             40,
             "/ui/orders",
-            &[("profile", "le"), ("status", ""), ("accountId", "a b&c")],
+            &[("endpoint", "le"), ("status", ""), ("accountId", "a b&c")],
             "#orders-table",
         );
         let next = value["next"].as_str().unwrap();
-        assert!(next.contains("profile=le"));
+        assert!(next.contains("endpoint=le"));
         // An empty filter is absent, not `status=`.
         assert!(!next.contains("status="));
         assert!(next.contains("accountId=a+b%26c"));

@@ -59,22 +59,22 @@
 //! The account digest differs twice over, and both differences are refusals
 //! to fall back. It **never** falls back to `notify.email.to`: a list that
 //! came out empty is a message for nobody, where the fallback would mail the
-//! customer's digest to the operator, who already has the per-profile one.
+//! customer's digest to the operator, who already has the per-endpoint one.
 //! And it reaches **only the `email` backend** ([`BackendSlot`]'s
 //! `delivers_to_contacts`): a webhook or a script has no addressee, so it
 //! could only repeat the customer's mail into the operator's own channel, one
 //! post per account per pass — and every backend's `events` defaults to all
 //! of them.
 //!
-//! ## Per-profile, like every other subsystem
+//! ## Per-endpoint, like every other subsystem
 //!
-//! [`build_registry`] builds one [`NotifyDispatcher`] per resolved profile
+//! [`build_registry`] builds one [`NotifyDispatcher`] per resolved endpoint
 //! (not deduplicated by configuration identity like signer backends are —
-//! dispatchers are stateless side-channels, so two profiles with identical
+//! dispatchers are stateless side-channels, so two endpoints with identical
 //! `[notify]` sections simply get two independent instances). The
 //! asynchronous `relay` signer backend, whose completion happens outside
-//! any HTTP handler, is handed the whole `profile name -> dispatcher` map so
-//! it can notify the right profile once an order settles — see
+//! any HTTP handler, is handed the whole `endpoint name -> dispatcher` map so
+//! it can notify the right endpoint once an order settles — see
 //! `signer::relay::flow::settle`.
 
 use std::collections::{HashMap, HashSet};
@@ -85,8 +85,8 @@ use tracing::info;
 
 use crate::jobs::{JobQueue, JobSpec};
 use acme_proxy_core::config::ALL_NOTIFY_EVENTS;
+use acme_proxy_core::config::EndpointConfig;
 use acme_proxy_core::config::NotifyConfig;
-use acme_proxy_core::config::ProfileConfig;
 use acme_proxy_store::expiring::SupersededBy;
 
 pub mod custom;
@@ -100,11 +100,11 @@ pub use job::{NOTIFY_JOB_KIND, NotifyJob};
 /// The key the process-wide web-admin security dispatcher is registered under
 /// in a [`DispatcherMap`].
 ///
-/// Not a profile: `[admin]` is process-wide and the web admin has no
-/// `Profile`. The underscores make it un-collidable with a real profile name
-/// (`^[a-z0-9-]+$`, `acme_proxy_core::routes::PROFILE_PREFIX`), so [`NotifyJob`] routes a
+/// Not an endpoint: `[admin]` is process-wide and the web admin has no
+/// `Endpoint`. The underscores make it un-collidable with a real endpoint name
+/// (`^[a-z0-9-]+$`, `acme_proxy_core::routes::ENDPOINT_PREFIX`), so [`NotifyJob`] routes a
 /// `notify_deliver` row naming it to this dispatcher with no special case, and
-/// a reload republishes it in the same map as every profile's.
+/// a reload republishes it in the same map as every endpoint's.
 pub const ADMIN_DISPATCHER_KEY: &str = "__admin__";
 
 /// A pluggable notification channel.
@@ -161,7 +161,7 @@ impl NotifyError {
     }
 }
 
-/// Context common to every event: the profile it happened on and the client
+/// Context common to every event: the endpoint it happened on and the client
 /// address, when a request was in scope.
 ///
 /// `client_ip` is `None` on the one firing site with no request in scope at
@@ -169,8 +169,8 @@ impl NotifyError {
 /// runs in a background task long after any handler returned. Templates must
 /// treat it as optional.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct ProfileMountedData {
-    pub profile: String,
+pub struct EndpointMountedData {
+    pub endpoint: String,
 }
 
 /// Payload of [`NotifyEvent::AccountCreated`]: a client registered a new
@@ -180,7 +180,7 @@ pub struct ProfileMountedData {
 /// RFC 8555 does not require one.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AccountCreatedData {
-    pub profile: String,
+    pub endpoint: String,
     pub account_id: String,
     pub contact: Vec<String>,
     pub client_ip: Option<String>,
@@ -192,7 +192,7 @@ pub struct AccountCreatedData {
 /// Deactivation is permanent, so this event has no counterpart.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AccountDeactivatedData {
-    pub profile: String,
+    pub endpoint: String,
     pub account_id: String,
     pub client_ip: Option<String>,
 }
@@ -204,7 +204,7 @@ pub struct AccountDeactivatedData {
 /// certificate covers.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CertificateIssuedData {
-    pub profile: String,
+    pub endpoint: String,
     pub order_id: String,
     pub account_id: String,
     pub cert_serial: String,
@@ -219,7 +219,7 @@ pub struct CertificateIssuedData {
 /// script only in the JSON on stdin, since it has no environment variable.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CertificateRevokedData {
-    pub profile: String,
+    pub endpoint: String,
     pub order_id: String,
     pub account_id: String,
     pub cert_serial: String,
@@ -236,7 +236,7 @@ pub struct CertificateRevokedData {
 /// `error` member carries back to the client.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ChallengeFailedData {
-    pub profile: String,
+    pub endpoint: String,
     pub order_id: String,
     pub account_id: String,
     pub authz_id: String,
@@ -273,7 +273,7 @@ pub struct ExpiringCertificate {
 }
 
 /// Payload of [`NotifyEvent::CertificatesExpiring`]: the periodic digest of
-/// what is about to lapse on one profile.
+/// what is about to lapse on one endpoint.
 ///
 /// The one event carrying a **list**, and the only one with no request, no
 /// account and no single certificate behind it — it is generated by
@@ -286,11 +286,11 @@ pub struct ExpiringCertificate {
 /// list is truncated, which is the whole reason it is a separate member.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CertificatesExpiringData {
-    pub profile: String,
+    pub endpoint: String,
     /// When the sweep ran, epoch seconds — the point `days_remaining` counts
     /// from, so a message read days later is still self-describing.
     pub generated_at: i64,
-    /// The window this digest covers, `notify.expiry.lead_days`.
+    /// The window this digest covers, `notify.expiry.lead`.
     pub lead_days: u64,
     /// How many certificates matched, before `max_entries` truncated the list.
     pub total: i64,
@@ -309,12 +309,12 @@ pub struct CertificatesExpiringData {
 /// empty when built by [`crate::notify::expiry`].
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AccountCertificatesExpiringData {
-    pub profile: String,
+    pub endpoint: String,
     pub account_id: String,
     pub recipients: Vec<String>,
     /// When the sweep ran, epoch seconds.
     pub generated_at: i64,
-    /// The window this digest covers, `notify.expiry.lead_days`.
+    /// The window this digest covers, `notify.expiry.lead`.
     pub lead_days: u64,
     /// How many of this account's certificates matched, before
     /// `max_entries` truncated the list.
@@ -350,9 +350,9 @@ pub enum AdminSignInOutcome {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AdminSignInData {
     /// Always [`ADMIN_DISPATCHER_KEY`]. Carried as a field like every other
-    /// `*Data` struct so `NotifyEvent::profile` stays a uniform `&data.profile`
-    /// and the queued payload's `"profile"` member is present the usual way.
-    pub profile: String,
+    /// `*Data` struct so `NotifyEvent::endpoint` stays a uniform `&data.endpoint`
+    /// and the queued payload's `"endpoint"` member is present the usual way.
+    pub endpoint: String,
     pub username: String,
     /// The operator's contact address, `None` when none is on file.
     pub recipient: Option<String>,
@@ -385,8 +385,8 @@ pub enum AdminCredentialChange {
 /// password, second factor or notification address was changed (ASVS V6.3.7).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AdminCredentialChangeData {
-    /// Always [`ADMIN_DISPATCHER_KEY`] — see [`AdminSignInData::profile`].
-    pub profile: String,
+    /// Always [`ADMIN_DISPATCHER_KEY`] — see [`AdminSignInData::endpoint`].
+    pub endpoint: String,
     pub username: String,
     /// The operator's contact address *after* the change.
     pub recipient: Option<String>,
@@ -420,7 +420,7 @@ impl AdminCredentialChangeData {
         previous_recipient: Option<String>,
     ) -> Self {
         Self {
-            profile: ADMIN_DISPATCHER_KEY.to_string(),
+            endpoint: ADMIN_DISPATCHER_KEY.to_string(),
             username: user.username.clone(),
             recipient: user.contact_email.clone(),
             previous_recipient,
@@ -446,7 +446,7 @@ impl AdminCredentialChangeData {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "hook", rename_all = "snake_case")]
 pub enum NotifyEvent {
-    ProfileMounted(ProfileMountedData),
+    EndpointMounted(EndpointMountedData),
     AccountCreated(AccountCreatedData),
     AccountDeactivated(AccountDeactivatedData),
     CertificateIssued(CertificateIssuedData),
@@ -473,7 +473,7 @@ impl NotifyEvent {
     /// file stem used to render it (e.g. `email/certificate_issued.body.j2`).
     pub fn kind(&self) -> &'static str {
         match self {
-            Self::ProfileMounted(_) => "profile_mounted",
+            Self::EndpointMounted(_) => "endpoint_mounted",
             Self::AccountCreated(_) => "account_created",
             Self::AccountDeactivated(_) => "account_deactivated",
             Self::CertificateIssued(_) => "certificate_issued",
@@ -486,26 +486,26 @@ impl NotifyEvent {
         }
     }
 
-    /// The profile this event happened on.
-    pub fn profile(&self) -> &str {
+    /// The endpoint this event happened on.
+    pub fn endpoint(&self) -> &str {
         match self {
-            Self::ProfileMounted(data) => &data.profile,
-            Self::AccountCreated(data) => &data.profile,
-            Self::AccountDeactivated(data) => &data.profile,
-            Self::CertificateIssued(data) => &data.profile,
-            Self::CertificateRevoked(data) => &data.profile,
-            Self::ChallengeFailed(data) => &data.profile,
-            Self::CertificatesExpiring(data) => &data.profile,
-            Self::AccountCertificatesExpiring(data) => &data.profile,
-            Self::AdminSignIn(data) => &data.profile,
-            Self::AdminCredentialChanged(data) => &data.profile,
+            Self::EndpointMounted(data) => &data.endpoint,
+            Self::AccountCreated(data) => &data.endpoint,
+            Self::AccountDeactivated(data) => &data.endpoint,
+            Self::CertificateIssued(data) => &data.endpoint,
+            Self::CertificateRevoked(data) => &data.endpoint,
+            Self::ChallengeFailed(data) => &data.endpoint,
+            Self::CertificatesExpiring(data) => &data.endpoint,
+            Self::AccountCertificatesExpiring(data) => &data.endpoint,
+            Self::AdminSignIn(data) => &data.endpoint,
+            Self::AdminCredentialChanged(data) => &data.endpoint,
         }
     }
 
     /// The template rendering context: this event's own data, serialized.
     pub(crate) fn context(&self) -> minijinja::Value {
         match self {
-            Self::ProfileMounted(data) => minijinja::Value::from_serialize(data),
+            Self::EndpointMounted(data) => minijinja::Value::from_serialize(data),
             Self::AccountCreated(data) => minijinja::Value::from_serialize(data),
             Self::AccountDeactivated(data) => minijinja::Value::from_serialize(data),
             Self::CertificateIssued(data) => minijinja::Value::from_serialize(data),
@@ -534,7 +534,7 @@ impl NotifyEvent {
     /// to fill `ACME_NOTIFY_CLIENT_IP`.
     fn client_ip(&self) -> Option<&str> {
         match self {
-            Self::ProfileMounted(_) => None,
+            Self::EndpointMounted(_) => None,
             Self::AccountCreated(data) => data.client_ip.as_deref(),
             Self::AccountDeactivated(data) => data.client_ip.as_deref(),
             Self::CertificateIssued(data) => data.client_ip.as_deref(),
@@ -562,7 +562,7 @@ impl NotifyEvent {
             })
         }
         match self {
-            Self::ProfileMounted(_)
+            Self::EndpointMounted(_)
             | Self::AccountCreated(_)
             | Self::AccountDeactivated(_)
             | Self::CertificateIssued(_)
@@ -596,7 +596,7 @@ impl NotifyEvent {
     /// to fill `ACME_NOTIFY_ACCOUNT_ID`.
     fn account_id(&self) -> Option<&str> {
         match self {
-            Self::ProfileMounted(_) => None,
+            Self::EndpointMounted(_) => None,
             Self::AccountCreated(data) => Some(&data.account_id),
             Self::AccountDeactivated(data) => Some(&data.account_id),
             Self::CertificateIssued(data) => Some(&data.account_id),
@@ -619,7 +619,7 @@ impl NotifyEvent {
         // ship, and write an empty `ACME_NOTIFY_ORDER_ID` — the exact silent
         // failure the accessor tests exist to make impossible.
         match self {
-            Self::ProfileMounted(_) => None,
+            Self::EndpointMounted(_) => None,
             Self::AccountCreated(_) => None,
             Self::AccountDeactivated(_) => None,
             Self::CertificateIssued(data) => Some(&data.order_id),
@@ -634,7 +634,7 @@ impl NotifyEvent {
     /// backend to fill `ACME_NOTIFY_CERT_SERIAL`.
     fn cert_serial(&self) -> Option<&str> {
         match self {
-            Self::ProfileMounted(_) => None,
+            Self::EndpointMounted(_) => None,
             Self::AccountCreated(_) => None,
             Self::AccountDeactivated(_) => None,
             Self::CertificateIssued(data) => Some(&data.cert_serial),
@@ -649,7 +649,7 @@ impl NotifyEvent {
     /// backend to fill `ACME_NOTIFY_IDENTIFIERS`.
     fn identifiers_joined(&self) -> String {
         match self {
-            Self::ProfileMounted(_) => String::new(),
+            Self::EndpointMounted(_) => String::new(),
             Self::AccountCreated(_) => String::new(),
             Self::AccountDeactivated(_) => String::new(),
             Self::CertificateIssued(data) => data.identifiers.join(","),
@@ -720,13 +720,13 @@ impl BackendSlot {
     }
 }
 
-/// The configured notify backends for one profile.
+/// The configured notify backends for one endpoint.
 ///
-/// Cheap to clone behind the `Arc` it is always held in (`Profile::notify`,
-/// and the `profile name -> dispatcher` map handed to the `relay` signer
+/// Cheap to clone behind the `Arc` it is always held in (`Endpoint::notify`,
+/// and the `endpoint name -> dispatcher` map handed to the `relay` signer
 /// backend and to [`NotifyJob`]).
 pub struct NotifyDispatcher {
-    profile: String,
+    endpoint: String,
     slots: Vec<BackendSlot>,
     jobs: JobQueue,
 }
@@ -737,7 +737,7 @@ impl std::fmt::Debug for NotifyDispatcher {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("NotifyDispatcher")
-            .field("profile", &self.profile)
+            .field("endpoint", &self.endpoint)
             .field(
                 "backends",
                 &self.slots.iter().map(BackendSlot::id).collect::<Vec<_>>(),
@@ -749,26 +749,26 @@ impl std::fmt::Debug for NotifyDispatcher {
 impl NotifyDispatcher {
     /// Builds a dispatcher over already-constructed slots.
     #[must_use]
-    pub fn new(profile: impl Into<String>, slots: Vec<BackendSlot>, jobs: JobQueue) -> Self {
+    pub fn new(endpoint: impl Into<String>, slots: Vec<BackendSlot>, jobs: JobQueue) -> Self {
         Self {
-            profile: profile.into(),
+            endpoint: endpoint.into(),
             slots,
             jobs,
         }
     }
 
     /// A dispatcher with no backends — every `dispatch` is a no-op. The shape a
-    /// profile with an empty `notify.enabled` gets, and what tests that do not
+    /// endpoint with an empty `notify.enabled` gets, and what tests that do not
     /// care about notifications want.
     #[must_use]
     pub fn disabled(jobs: JobQueue) -> Self {
         Self::new("default", Vec::new(), jobs)
     }
 
-    /// The profile whose `[notify]` section this dispatcher was built from.
+    /// The endpoint whose `[notify]` section this dispatcher was built from.
     #[must_use]
-    pub fn profile(&self) -> &str {
-        &self.profile
+    pub fn endpoint(&self) -> &str {
+        &self.endpoint
     }
 
     /// The backend registered under `id`, if it is still configured. `None`
@@ -803,7 +803,7 @@ impl NotifyDispatcher {
             }
             let spec = JobSpec::now(NOTIFY_JOB_KIND, format!("{delivery_id}:{}", slot.id))
                 .with_payload(serde_json::json!({
-                    "profile": self.profile,
+                    "endpoint": self.endpoint,
                     "backend": slot.id,
                     "event": payload,
                 }));
@@ -811,7 +811,7 @@ impl NotifyDispatcher {
                 info!(
                     event = "notify_delivery_queued",
                     outcome = "progress",
-                    profile = %self.profile,
+                    endpoint = %self.endpoint,
                     backend = %slot.id,
                     kind,
                     delivery_id = %delivery_id,
@@ -873,13 +873,13 @@ fn validate_expiry_contact(cfg: &NotifyConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Builds the configured notify dispatcher. Called once per profile at
+/// Builds the configured notify dispatcher. Called once per endpoint at
 /// startup (via [`build_registry`]), so it may fail fast.
 ///
 /// `jobs` is the enqueue side of the durable queue: every delivery is a row on
 /// it, so a dispatcher cannot be built without one.
 pub fn from_config(
-    profile: &str,
+    endpoint: &str,
     cfg: &NotifyConfig,
     outbound: acme_proxy_net::http_client::Outbound,
     jobs: &JobQueue,
@@ -893,9 +893,9 @@ pub fn from_config(
     // `admin_credential_changed`, whose payloads name their own recipient
     // (`NotifyEvent::recipients`), so its `notify.email.to` may legitimately be
     // empty -- an operator with a `contact_email` is still reached. Every
-    // per-profile dispatcher keeps the "notify.email.to is empty" startup
+    // per-endpoint dispatcher keeps the "notify.email.to is empty" startup
     // error, since its events carry no recipient.
-    let allow_empty_email_to = profile == ADMIN_DISPATCHER_KEY;
+    let allow_empty_email_to = endpoint == ADMIN_DISPATCHER_KEY;
 
     validate_expiry_contact(cfg)?;
 
@@ -948,7 +948,7 @@ pub fn from_config(
     }
 
     Ok(Arc::new(NotifyDispatcher::new(
-        profile,
+        endpoint,
         slots,
         jobs.clone(),
     )))
@@ -1016,7 +1016,7 @@ fn build_webhook_slots(
     .collect()
 }
 
-/// One generation's `profile name -> dispatcher` map.
+/// One generation's `endpoint name -> dispatcher` map.
 ///
 /// Named because it appears in four signatures and clippy is right that the
 /// spelled-out form is unreadable in all of them.
@@ -1025,7 +1025,7 @@ pub type DispatcherMap = HashMap<String, Arc<NotifyDispatcher>>;
 /// The writing half of a [`Notifiers`] handle.
 pub type NotifiersSender = tokio::sync::watch::Sender<Arc<DispatcherMap>>;
 
-/// The `profile name -> dispatcher` map, as a handle that survives a
+/// The `endpoint name -> dispatcher` map, as a handle that survives a
 /// configuration reload.
 ///
 /// The map itself is rebuilt whole on every generation, but two of its readers
@@ -1047,13 +1047,13 @@ pub type NotifiersSender = tokio::sync::watch::Sender<Arc<DispatcherMap>>;
 pub struct Notifiers(tokio::sync::watch::Receiver<Arc<DispatcherMap>>);
 
 impl Notifiers {
-    /// The dispatcher for `profile` in the current generation, if it is mounted.
+    /// The dispatcher for `endpoint` in the current generation, if it is mounted.
     #[must_use]
-    pub fn get(&self, profile: &str) -> Option<Arc<NotifyDispatcher>> {
+    pub fn get(&self, endpoint: &str) -> Option<Arc<NotifyDispatcher>> {
         // The `Ref` guard dies at the semicolon, so nothing holds the lock
         // across an await — which is the whole reason this returns an owned
         // `Arc` rather than lending one out.
-        self.0.borrow().get(profile).cloned()
+        self.0.borrow().get(endpoint).cloned()
     }
 }
 
@@ -1084,25 +1084,25 @@ pub fn notifiers_channel(initial: DispatcherMap) -> (NotifiersSender, Notifiers)
     (sender, Notifiers(receiver))
 }
 
-/// Builds one [`NotifyDispatcher`] per resolved profile, keyed by profile
+/// Builds one [`NotifyDispatcher`] per resolved endpoint, keyed by endpoint
 /// name — the map the `relay` signer backend needs to notify the right
-/// profile from its background completion task, where there is no
-/// `AppState`/`Profile` to reach through.
+/// endpoint from its background completion task, where there is no
+/// `AppState`/`Endpoint` to reach through.
 pub fn build_registry(
-    profiles: &[ProfileConfig],
+    endpoints: &[EndpointConfig],
     outbound: acme_proxy_net::http_client::Outbound,
     jobs: &JobQueue,
 ) -> anyhow::Result<HashMap<String, Arc<NotifyDispatcher>>> {
-    let mut registry = HashMap::with_capacity(profiles.len());
-    for profile in profiles {
+    let mut registry = HashMap::with_capacity(endpoints.len());
+    for endpoint in endpoints {
         let dispatcher = from_config(
-            &profile.name,
-            &profile.sections.notify,
+            &endpoint.name,
+            &endpoint.sections.notify,
             outbound.clone(),
             jobs,
         )
-        .map_err(|error| anyhow::anyhow!("profile `{}`: {error}", profile.name))?;
-        registry.insert(profile.name.clone(), dispatcher);
+        .map_err(|error| anyhow::anyhow!("endpoint `{}`: {error}", endpoint.name))?;
+        registry.insert(endpoint.name.clone(), dispatcher);
     }
     Ok(registry)
 }
@@ -1126,8 +1126,8 @@ macro_rules! embed {
 /// `"<backend>/<event>.j2"` for the webhook message.
 static EMBEDDED_TEMPLATES: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
     HashMap::from([
-        embed!("email/profile_mounted.subject.j2"),
-        embed!("email/profile_mounted.body.j2"),
+        embed!("email/endpoint_mounted.subject.j2"),
+        embed!("email/endpoint_mounted.body.j2"),
         embed!("email/account_created.subject.j2"),
         embed!("email/account_created.body.j2"),
         embed!("email/account_deactivated.subject.j2"),
@@ -1146,7 +1146,7 @@ static EMBEDDED_TEMPLATES: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         embed!("email/admin_sign_in.body.j2"),
         embed!("email/admin_credential_changed.subject.j2"),
         embed!("email/admin_credential_changed.body.j2"),
-        embed!("webhook/profile_mounted.j2"),
+        embed!("webhook/endpoint_mounted.j2"),
         embed!("webhook/account_created.j2"),
         embed!("webhook/account_deactivated.j2"),
         embed!("webhook/certificate_issued.j2"),
@@ -1206,7 +1206,7 @@ pub(crate) mod tests {
     use std::collections::BTreeMap;
     use std::sync::Mutex;
 
-    /// The shared resolver `server::profile::build_all` supplies at startup.
+    /// The shared resolver `server::endpoint::build_all` supplies at startup.
     fn test_resolver() -> Arc<dyn acme_proxy_net::dns::Resolver> {
         Arc::new(acme_proxy_net::dns::HickoryResolver::from_system_uncached().unwrap())
     }
@@ -1271,31 +1271,31 @@ pub(crate) mod tests {
         }
     }
 
-    fn profile_mounted(profile: &str) -> NotifyEvent {
-        NotifyEvent::ProfileMounted(ProfileMountedData {
-            profile: profile.to_string(),
+    fn endpoint_mounted(endpoint: &str) -> NotifyEvent {
+        NotifyEvent::EndpointMounted(EndpointMountedData {
+            endpoint: endpoint.to_string(),
         })
     }
 
-    /// One of every variant, all on the same profile — the input to the
+    /// One of every variant, all on the same endpoint — the input to the
     /// accessor sweep below, which is what the `custom` backend's environment
     /// and both templating backends' contexts are built from.
     fn every_event() -> Vec<NotifyEvent> {
         vec![
-            profile_mounted("p"),
+            endpoint_mounted("p"),
             NotifyEvent::AccountCreated(AccountCreatedData {
-                profile: "p".to_string(),
+                endpoint: "p".to_string(),
                 account_id: "acct-1".to_string(),
                 contact: vec!["mailto:a@example.com".to_string()],
                 client_ip: Some("203.0.113.5".to_string()),
             }),
             NotifyEvent::AccountDeactivated(AccountDeactivatedData {
-                profile: "p".to_string(),
+                endpoint: "p".to_string(),
                 account_id: "acct-1".to_string(),
                 client_ip: Some("203.0.113.5".to_string()),
             }),
             NotifyEvent::CertificateIssued(CertificateIssuedData {
-                profile: "p".to_string(),
+                endpoint: "p".to_string(),
                 order_id: "ord-1".to_string(),
                 account_id: "acct-1".to_string(),
                 cert_serial: "0a0b".to_string(),
@@ -1303,7 +1303,7 @@ pub(crate) mod tests {
                 client_ip: Some("203.0.113.5".to_string()),
             }),
             NotifyEvent::CertificateRevoked(CertificateRevokedData {
-                profile: "p".to_string(),
+                endpoint: "p".to_string(),
                 order_id: "ord-1".to_string(),
                 account_id: "acct-1".to_string(),
                 cert_serial: "0a0b".to_string(),
@@ -1311,7 +1311,7 @@ pub(crate) mod tests {
                 client_ip: None,
             }),
             NotifyEvent::ChallengeFailed(ChallengeFailedData {
-                profile: "p".to_string(),
+                endpoint: "p".to_string(),
                 order_id: "ord-1".to_string(),
                 account_id: "acct-1".to_string(),
                 authz_id: "authz-1".to_string(),
@@ -1322,7 +1322,7 @@ pub(crate) mod tests {
                 client_ip: Some("203.0.113.5".to_string()),
             }),
             NotifyEvent::CertificatesExpiring(CertificatesExpiringData {
-                profile: "p".to_string(),
+                endpoint: "p".to_string(),
                 generated_at: 1_700_000_000,
                 lead_days: 14,
                 total: 3,
@@ -1338,7 +1338,7 @@ pub(crate) mod tests {
             }),
             account_digest(&["alice@example.com", "ops@example.com"]),
             NotifyEvent::AdminSignIn(AdminSignInData {
-                profile: "p".to_string(),
+                endpoint: "p".to_string(),
                 username: "alice".to_string(),
                 recipient: Some("alice@example.com".to_string()),
                 outcome: AdminSignInOutcome::SucceededFromNewAddress,
@@ -1347,7 +1347,7 @@ pub(crate) mod tests {
                 at: 1_700_000_000,
             }),
             NotifyEvent::AdminCredentialChanged(AdminCredentialChangeData {
-                profile: "p".to_string(),
+                endpoint: "p".to_string(),
                 username: "alice".to_string(),
                 recipient: Some("alice@example.com".to_string()),
                 previous_recipient: None,
@@ -1360,10 +1360,10 @@ pub(crate) mod tests {
         ]
     }
 
-    /// A per-account expiry digest on profile `p`, addressed to `recipients`.
+    /// A per-account expiry digest on endpoint `p`, addressed to `recipients`.
     fn account_digest(recipients: &[&str]) -> NotifyEvent {
         NotifyEvent::AccountCertificatesExpiring(AccountCertificatesExpiringData {
-            profile: "p".to_string(),
+            endpoint: "p".to_string(),
             account_id: "acct-1".to_string(),
             recipients: recipients.iter().map(|r| (*r).to_string()).collect(),
             generated_at: 1_700_000_000,
@@ -1389,7 +1389,7 @@ pub(crate) mod tests {
     fn a_contact_change_is_delivered_to_the_address_it_replaced() {
         let data = |change, previous: Option<&str>| {
             NotifyEvent::AdminCredentialChanged(AdminCredentialChangeData {
-                profile: "p".to_string(),
+                endpoint: "p".to_string(),
                 username: "alice".to_string(),
                 recipient: Some("new@example.com".to_string()),
                 previous_recipient: previous.map(str::to_string),
@@ -1425,7 +1425,7 @@ pub(crate) mod tests {
         // A job queued before the member existed still parses.
         let old: NotifyEvent = serde_json::from_value(serde_json::json!({
             "hook": "admin_credential_changed",
-            "profile": "p",
+            "endpoint": "p",
             "username": "alice",
             "recipient": "alice@example.com",
             "change": "password",
@@ -1454,7 +1454,7 @@ pub(crate) mod tests {
         );
 
         for event in &events {
-            assert_eq!(event.profile(), "p");
+            assert_eq!(event.endpoint(), "p");
             assert!(
                 ALL_NOTIFY_EVENTS.contains(&event.kind()),
                 "{}",
@@ -1470,12 +1470,12 @@ pub(crate) mod tests {
                 Some(event.kind()),
                 "the payload must name its own hook"
             );
-            assert_eq!(payload.get("profile").and_then(|v| v.as_str()), Some("p"));
+            assert_eq!(payload.get("endpoint").and_then(|v| v.as_str()), Some("p"));
         }
 
         // The events fall into three shapes, and the ranged assertions below
         // rest on the order in `every_event()`:
-        //   [0]      profile_mounted     — no subject at all (startup, no request)
+        //   [0]      endpoint_mounted     — no subject at all (startup, no request)
         //   [1..=5]  the per-ACME-subject events (account/order/certificate)
         //   [6]      certificates_expiring — a list digest, no scalar subject
         //   [7]      account_certificates_expiring — one account's digest,
@@ -1623,7 +1623,7 @@ pub(crate) mod tests {
         sender.send_replace(Arc::new(next));
 
         assert!(notifiers.get("le").is_some());
-        // A profile the new generation does not mount is absent, not stale.
+        // An endpoint the new generation does not mount is absent, not stale.
         assert!(notifiers.get("staging").is_none());
 
         // And a swap back is seen too: this is a cell, not a latch.
@@ -1678,7 +1678,7 @@ pub(crate) mod tests {
     async fn dispatch_queues_a_row_rather_than_delivering() {
         let (dispatcher, recorder, queue) = recording_dispatcher(&every_kind()).await;
 
-        dispatcher.dispatch(profile_mounted("le")).await;
+        dispatcher.dispatch(endpoint_mounted("le")).await;
 
         assert!(
             recorder.events.lock().unwrap().is_empty(),
@@ -1697,7 +1697,7 @@ pub(crate) mod tests {
         let (dispatcher, _recorder, queue) =
             recording_dispatcher(&["certificate_issued".to_string()]).await;
 
-        dispatcher.dispatch(profile_mounted("le")).await;
+        dispatcher.dispatch(endpoint_mounted("le")).await;
 
         assert_eq!(
             Job::count_live(NOTIFY_JOB_KIND, queue.database())
@@ -1734,7 +1734,7 @@ pub(crate) mod tests {
             queue.clone(),
         );
 
-        dispatcher.dispatch(profile_mounted("le")).await;
+        dispatcher.dispatch(endpoint_mounted("le")).await;
 
         assert_eq!(
             Job::count_live(NOTIFY_JOB_KIND, queue.database())
@@ -1752,8 +1752,8 @@ pub(crate) mod tests {
     async fn the_same_event_dispatched_twice_queues_twice() {
         let (dispatcher, _recorder, queue) = recording_dispatcher(&every_kind()).await;
 
-        dispatcher.dispatch(profile_mounted("le")).await;
-        dispatcher.dispatch(profile_mounted("le")).await;
+        dispatcher.dispatch(endpoint_mounted("le")).await;
+        dispatcher.dispatch(endpoint_mounted("le")).await;
 
         assert_eq!(
             Job::count_live(NOTIFY_JOB_KIND, queue.database())
@@ -1770,7 +1770,7 @@ pub(crate) mod tests {
         let queue = test_queue().await;
         let dispatcher = NotifyDispatcher::disabled(queue.clone());
 
-        dispatcher.dispatch(profile_mounted("le")).await;
+        dispatcher.dispatch(endpoint_mounted("le")).await;
 
         assert_eq!(
             Job::count_live(NOTIFY_JOB_KIND, queue.database())
@@ -1787,7 +1787,7 @@ pub(crate) mod tests {
         let (dispatcher, _recorder, queue) = recording_dispatcher(&every_kind()).await;
         queue.database().close().await;
 
-        dispatcher.dispatch(profile_mounted("le")).await;
+        dispatcher.dispatch(endpoint_mounted("le")).await;
     }
 
     /// `deliver` is the seam the job handler runs through, and the answer for an
@@ -1798,14 +1798,14 @@ pub(crate) mod tests {
         let (dispatcher, recorder, _queue) = recording_dispatcher(&every_kind()).await;
 
         let outcome = dispatcher
-            .deliver("recording", &profile_mounted("le"))
+            .deliver("recording", &endpoint_mounted("le"))
             .await;
         assert!(matches!(outcome, Some(Ok(()))));
         assert_eq!(recorder.events.lock().unwrap().len(), 1);
 
         assert!(
             dispatcher
-                .deliver("carrier-pigeon", &profile_mounted("le"))
+                .deliver("carrier-pigeon", &endpoint_mounted("le"))
                 .await
                 .is_none()
         );
@@ -2162,7 +2162,7 @@ pub(crate) mod tests {
             .map_err(|error| error.to_string())
         };
         let expiry = |domains: &[&str]| acme_proxy_core::config::ExpiryNotifyConfig {
-            lead_days: 14,
+            lead: acme_proxy_core::config::ConfigDuration::from_days(14),
             contact: true,
             contact_domains: domains.iter().map(|d| (*d).to_string()).collect(),
             ..acme_proxy_core::config::ExpiryNotifyConfig::default()
@@ -2236,12 +2236,12 @@ pub(crate) mod tests {
             &["certificate_issued".to_string()],
         );
 
-        assert!(wide.wants(&profile_mounted("default")));
-        assert!(!narrow.wants(&profile_mounted("default")));
+        assert!(wide.wants(&endpoint_mounted("default")));
+        assert!(!narrow.wants(&endpoint_mounted("default")));
 
         let queue = test_queue().await;
         let dispatcher = NotifyDispatcher::new("le", vec![wide, narrow], queue.clone());
-        dispatcher.dispatch(profile_mounted("default")).await;
+        dispatcher.dispatch(endpoint_mounted("default")).await;
 
         assert_eq!(
             Job::count_live(NOTIFY_JOB_KIND, queue.database())
@@ -2271,13 +2271,13 @@ pub(crate) mod tests {
 
         assert!(matches!(
             dispatcher
-                .deliver("failing", &profile_mounted("default"))
+                .deliver("failing", &endpoint_mounted("default"))
                 .await,
             Some(Err(_))
         ));
         assert!(matches!(
             dispatcher
-                .deliver("healthy", &profile_mounted("default"))
+                .deliver("healthy", &endpoint_mounted("default"))
                 .await,
             Some(Ok(()))
         ));
@@ -2287,26 +2287,26 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn build_registry_builds_one_dispatcher_per_profile() {
-        let profiles = vec![
-            ProfileConfig {
+    async fn build_registry_builds_one_dispatcher_per_endpoint() {
+        let endpoints = vec![
+            EndpointConfig {
                 name: "a".to_string(),
-                sections: acme_proxy_core::config::ProfileSections::default(),
+                sections: acme_proxy_core::config::EndpointSections::default(),
             },
-            ProfileConfig {
+            EndpointConfig {
                 name: "b".to_string(),
-                sections: acme_proxy_core::config::ProfileSections::default(),
+                sections: acme_proxy_core::config::EndpointSections::default(),
             },
         ];
         let registry = build_registry(
-            &profiles,
+            &endpoints,
             acme_proxy_net::testutil::outbound_with(test_resolver()),
             &test_queue().await,
         )
         .unwrap();
         assert_eq!(registry.len(), 2);
-        assert_eq!(registry["a"].profile(), "a");
-        assert_eq!(registry["b"].profile(), "b");
+        assert_eq!(registry["a"].endpoint(), "a");
+        assert_eq!(registry["b"].endpoint(), "b");
     }
 
     /// Two `custom` entries are two backends, and a job row has to be able to
@@ -2355,7 +2355,7 @@ pub(crate) mod tests {
             let decoded: NotifyEvent = serde_json::from_value(encoded.clone())
                 .unwrap_or_else(|error| panic!("{} must decode: {error}", event.kind()));
             assert_eq!(decoded.kind(), event.kind());
-            assert_eq!(decoded.profile(), event.profile());
+            assert_eq!(decoded.endpoint(), event.endpoint());
             assert_eq!(decoded.payload(), encoded, "re-encoding must be stable");
         }
     }
@@ -2367,7 +2367,7 @@ pub(crate) mod tests {
     #[test]
     fn payload_is_tagged_with_its_own_hook() {
         let event = NotifyEvent::CertificateIssued(CertificateIssuedData {
-            profile: "le".to_string(),
+            endpoint: "le".to_string(),
             order_id: "ord-1".to_string(),
             account_id: "acct-1".to_string(),
             cert_serial: "0a0b".to_string(),
@@ -2379,7 +2379,7 @@ pub(crate) mod tests {
             event.payload(),
             serde_json::json!({
                 "hook": "certificate_issued",
-                "profile": "le",
+                "endpoint": "le",
                 "order_id": "ord-1",
                 "account_id": "acct-1",
                 "cert_serial": "0a0b",
@@ -2394,16 +2394,16 @@ pub(crate) mod tests {
         let dir = acme_proxy_core::testutil::TempDir::new("notify");
         std::fs::create_dir_all(dir.join("email")).unwrap();
         std::fs::write(
-            dir.join("email/profile_mounted.subject.j2"),
-            "override: {{ profile }}",
+            dir.join("email/endpoint_mounted.subject.j2"),
+            "override: {{ endpoint }}",
         )
         .unwrap();
 
         let env = build_environment(dir.path().to_str().unwrap());
         let rendered = render(
             &env,
-            "email/profile_mounted.subject.j2",
-            &profile_mounted("default"),
+            "email/endpoint_mounted.subject.j2",
+            &endpoint_mounted("default"),
         )
         .unwrap();
         assert_eq!(rendered, "override: default");
@@ -2412,8 +2412,8 @@ pub(crate) mod tests {
         // compiled-in default rather than failing outright.
         let rendered = render(
             &env,
-            "email/profile_mounted.body.j2",
-            &profile_mounted("default"),
+            "email/endpoint_mounted.body.j2",
+            &endpoint_mounted("default"),
         )
         .unwrap();
         assert!(rendered.contains("default"));
@@ -2425,18 +2425,18 @@ pub(crate) mod tests {
     fn a_template_failure_is_permanent() {
         let env = build_environment("");
 
-        let missing = render(&env, "email/no_such_event.body.j2", &profile_mounted("le"))
+        let missing = render(&env, "email/no_such_event.body.j2", &endpoint_mounted("le"))
             .expect_err("there is no such template");
         assert!(!missing.retryable(), "{missing}");
 
         let dir = acme_proxy_core::testutil::TempDir::new("notify-broken");
         std::fs::create_dir_all(dir.join("email")).unwrap();
-        std::fs::write(dir.join("email/profile_mounted.body.j2"), "{{ unclosed").unwrap();
+        std::fs::write(dir.join("email/endpoint_mounted.body.j2"), "{{ unclosed").unwrap();
         let env = build_environment(dir.path().to_str().unwrap());
         let broken = render(
             &env,
-            "email/profile_mounted.body.j2",
-            &profile_mounted("le"),
+            "email/endpoint_mounted.body.j2",
+            &endpoint_mounted("le"),
         )
         .expect_err("the template does not compile");
         assert!(!broken.retryable(), "{broken}");
@@ -2446,7 +2446,7 @@ pub(crate) mod tests {
     fn embedded_defaults_render_with_no_template_dir() {
         let env = build_environment("");
         let event = NotifyEvent::CertificateIssued(CertificateIssuedData {
-            profile: "le".to_string(),
+            endpoint: "le".to_string(),
             order_id: "ord-1".to_string(),
             account_id: "acc-1".to_string(),
             cert_serial: "AA:BB".to_string(),
@@ -2476,7 +2476,7 @@ pub(crate) mod tests {
     fn the_digest_templates_render_both_kinds_of_entry() {
         let env = build_environment("");
         let event = NotifyEvent::CertificatesExpiring(CertificatesExpiringData {
-            profile: "le".to_string(),
+            endpoint: "le".to_string(),
             generated_at: 1_700_000_000,
             lead_days: 14,
             total: 7,

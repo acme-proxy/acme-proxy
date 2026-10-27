@@ -13,6 +13,8 @@
 use std::collections::BTreeMap;
 
 use serde::Deserialize;
+
+use super::ConfigDuration;
 use serde::de::IgnoredAny;
 
 use super::string_list;
@@ -25,7 +27,7 @@ pub struct FilterConfig {
     ///
     /// Empty is the default and means no filtering at all. An array rather
     /// than a map because order *is* the policy: first match wins, so a
-    /// profile overriding this means to replace the sequence, which is exactly
+    /// endpoint overriding this means to replace the sequence, which is exactly
     /// what wholesale array inheritance does.
     #[serde(deserialize_with = "string_list")]
     pub rules: Vec<String>,
@@ -44,15 +46,15 @@ pub struct FilterConfig {
     pub forwarded_header: String,
     /// The named rules, selected and ordered by `rules`.
     ///
-    /// A map rather than an array of tables so a profile can override one
-    /// field of one rule — `[profiles.le.filter.rule.inventory] mode = "warn"`
+    /// A map rather than an array of tables so an endpoint can override one
+    /// field of one rule — `[endpoints.le.filter.rule.inventory] mode = "warn"`
     /// — and inherit the rest. An array would have to be restated whole.
     pub rule: BTreeMap<String, RuleConfig>,
     /// The named checks a rule's condition refers to.
     ///
     /// A check defined but named by no selected rule is never constructed, so
     /// it costs nothing: that is what lets a global section carry a library of
-    /// checks and each profile pick a subset.
+    /// checks and each endpoint pick a subset.
     pub check: BTreeMap<String, CheckConfig>,
 
     /// Removed when `[filter]` became a policy engine. Kept as a field for one
@@ -194,7 +196,7 @@ pub struct CheckConfig {
     /// address back. Defaults to `true`.
     pub require_forward_confirm: Option<bool>,
     /// `reverse_dns` (2000) and `custom` (5000): the budget for one attempt.
-    pub timeout_ms: Option<u64>,
+    pub timeout: Option<ConfigDuration>,
     /// `custom`: path to the executable.
     pub script_path: String,
     /// `custom`: pipe the JSON context to the script's stdin. Defaults to

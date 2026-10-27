@@ -118,7 +118,7 @@ const COMMON_PASSWORDS: &str = include_str!("corpus/common-passwords.txt");
 /// * **A CA already on disk is not described here.**
 ///   `[signer.local_ca.subject]` is read only when this server *generates* a
 ///   CA, so an adopted `ca.pem` carries a subject configuration never sees.
-///   Reading it back would mean parsing every mounted profile's certificate on
+///   Reading it back would mean parsing every mounted endpoint's certificate on
 ///   a CLI path that has not otherwise opened one. When `common_name` is unset
 ///   the built-in default is `acme-proxy local CA`, whose only words worth
 ///   barring are already in [`UNIVERSAL_CONTEXT_WORDS`].
@@ -144,9 +144,9 @@ impl PasswordContext {
     /// Derives the list from the deployment's own configuration and the
     /// operator's own name.
     ///
-    /// **Cannot fail.** A `[profiles]` table that will not resolve contributes
+    /// **Cannot fail.** An `[endpoints]` table that will not resolve contributes
     /// nothing and the global `[signer]` still does: refusing a password change
-    /// because an unrelated profile is misconfigured would be a lockout caused
+    /// because an unrelated endpoint is misconfigured would be a lockout caused
     /// by the control that exists to prevent one.
     #[must_use]
     pub fn from_config(config: &Config, username: &str) -> Self {
@@ -160,12 +160,12 @@ impl PasswordContext {
         push_host(&mut words, &config.admin.base_url);
         push_subject(&mut words, &config.signer.local_ca.subject);
 
-        // The profile name is in every `kid` and order URL this endpoint ever
+        // The endpoint name is in every `kid` and order URL this endpoint ever
         // issued, which makes it public and memorable -- exactly the shape of
         // word this list is for.
-        for profile in config.resolve_profiles().unwrap_or_default() {
-            push_tokens(&mut words, &profile.name);
-            push_subject(&mut words, &profile.sections.signer.local_ca.subject);
+        for endpoint in config.resolve_endpoints().unwrap_or_default() {
+            push_tokens(&mut words, &endpoint.name);
+            push_subject(&mut words, &endpoint.sections.signer.local_ca.subject);
         }
 
         Self {
@@ -886,10 +886,10 @@ mod tests {
 
     // ---- the context list (ASVS V6.1.2 / V6.2.11) ------------------------
 
-    /// Loads a `Config` the way the server does, so `resolve_profiles` has the
+    /// Loads a `Config` the way the server does, so `resolve_endpoints` has the
     /// raw sources per-key inheritance needs -- the `cli::filter` helper
     /// verbatim, and for the same reason: a `Config` deserialized directly
-    /// carries no raw layer and resolves no profiles at all.
+    /// carries no raw layer and resolves no endpoints at all.
     fn load(body: &str) -> Config {
         let _lock = acme_proxy_core::config::ENV_LOCK
             .lock()
@@ -1025,15 +1025,15 @@ mod tests {
         assert!(error.contains("names this deployment"), "got: {error}");
     }
 
-    /// A profile contributes its name -- which is in every `kid` and order URL
+    /// An endpoint contributes its name -- which is in every `kid` and order URL
     /// that endpoint ever issued -- and its own resolved CA subject, not just
     /// the global one.
     #[test]
-    fn profiles_contribute_their_names_and_their_own_ca_subjects() {
+    fn endpoints_contribute_their_names_and_their_own_ca_subjects() {
         let config = load(
             r#"
-            [profiles.staging]
-            [profiles.staging.signer.local_ca.subject]
+            [endpoints.staging]
+            [endpoints.staging.signer.local_ca.subject]
             common_name = "Contoso Staging Root"
         "#,
         );
@@ -1050,18 +1050,18 @@ mod tests {
         assert!(!words.iter().any(|word| word == "op"));
     }
 
-    /// **A configuration resolving no profiles must still yield a word list**,
+    /// **A configuration resolving no endpoints must still yield a word list**,
     /// and this is the common case rather than a corner one: a bare
     /// `Config::default()` resolves none, and the CLI legitimately runs
     /// `admin user create` against a configuration the server would refuse to
     /// start on. Refusing a password change because an unrelated section is
     /// missing would be a lockout caused by the control meant to prevent one.
     #[test]
-    fn a_configuration_with_no_resolvable_profiles_still_yields_words() {
+    fn a_configuration_with_no_resolvable_endpoints_still_yields_words() {
         let config = Config::default();
         assert!(
-            config.resolve_profiles().is_err(),
-            "a default configuration resolves no profiles -- if that ever changes, \
+            config.resolve_endpoints().is_err(),
+            "a default configuration resolves no endpoints -- if that ever changes, \
              this test stops proving the fallback works"
         );
 

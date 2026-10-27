@@ -7,13 +7,13 @@ server, and web-admin operators on security events on their own account.
 
 | Event | Fired when |
 | --- | --- |
-| `profile_mounted` | A profile is initialized at startup. |
+| `endpoint_mounted` | An endpoint is initialized at startup. |
 | `account_created` | A client registers a new account. |
 | `account_deactivated` | An account is deactivated. |
 | `certificate_issued` | An order is finalized and a certificate is minted. |
 | `certificate_revoked` | A certificate is revoked, via the ACME API or the admin CLI. |
 | `challenge_failed` | A domain-control validation attempt fails. |
-| `certificates_expiring` | The periodic expiry digest, one per profile. |
+| `certificates_expiring` | The periodic expiry digest, one per endpoint. |
 | `account_certificates_expiring` | The same digest cut per account, mailed to that account's own `contact`. Email only. |
 | `admin_sign_in` | A web-admin sign-in from an unfamiliar address, a refused second factor after a correct password, or a lockout. |
 | `admin_credential_changed` | A web-admin operator's password or second factor changed. |
@@ -24,9 +24,9 @@ ignored entry.
 
 `certificates_expiring` is the one that is not a thing that just happened.
 Every other event describes a single subject at the moment it changed; this one
-is a digest sent on a schedule, listing the certificates on one profile that
+is a digest sent on a schedule, listing the certificates on one endpoint that
 expire inside a configured window. It sends nothing until
-[`notify.expiry.lead_days`](#expiry-digest) is set, so leaving it in an
+[`notify.expiry.lead`](#expiry-digest) is set, so leaving it in an
 `events` list costs nothing.
 
 `account_certificates_expiring` is that digest addressed to an account rather
@@ -39,8 +39,8 @@ channel.
 `admin_sign_in` and `admin_credential_changed` are the [web-admin
 operator](../operations/webadmin.md#security-notifications) security events
 (ASVS V6.3.5 / V6.3.7). They fire **only** on the process-wide `[admin.notify]`
-dispatcher — never on a profile's `[notify]` — so listing either in a
-per-profile backend's `events` costs nothing. Their email goes to the affected
+dispatcher — never on an endpoint's `[notify]` — so listing either in a
+per-endpoint backend's `events` costs nothing. Their email goes to the affected
 operator's own address rather than to `notify.email.to`.
 
 ## Backends
@@ -100,7 +100,7 @@ Directory searched for template overrides. Lookup is **per file**, so overriding
 one message (say `email/certificate_issued.body.j2`) leaves every other message
 at its compiled-in default. Empty means defaults only.
 
-Each backend additionally takes its own `events` list and `timeout_ms`; see the
+Each backend additionally takes its own `events` list and `timeout`; see the
 backend pages.
 
 ### Expiry digest
@@ -108,7 +108,7 @@ backend pages.
 A certificate approaching its notAfter is the one thing the events above cannot
 report: nothing *happens* when a certificate is a fortnight from expiring. The
 `[notify.expiry]` table adds a periodic sweep that looks, and sends **one
-message per profile** listing what it found.
+message per endpoint** listing what it found.
 
 Deliberately not one message per certificate. A renewal is a *new* order, so
 the certificate it replaced still reaches its own expiry on schedule — a
@@ -125,14 +125,19 @@ account** covering **all** of the same names. Both are deliberately narrow. A
 certificate wrongly marked as already renewed is one an operator skips over
 while it lapses; one wrongly left unmarked is a line of noise.
 
-**`expiry.lead_days`** (`Integer`) — *Default: `0` | Env: `ACME_PROXY_NOTIFY__EXPIRY__LEAD_DAYS`*
+**`expiry.lead`** (`Duration`) — *Default: `"0s"` | Env: `ACME_PROXY_NOTIFY__EXPIRY__LEAD`*
 
-How far ahead to look. **`0` is off** — the sweep is never scheduled at all,
-the same shape `audit.retention_days` and `jobs.retention_days` use.
+How far ahead to look. **`"0s"` is off** — the sweep is never scheduled at all,
+the same shape `audit.retention` and `jobs.retention` use. Keep it well under
+the certificates' lifetime: with [short-lived
+certificates](../signers/local_ca.md#short-lived-certificates) a lead of days
+lists every live one. The message counts in whole days, rounded up, so `"12h"`
+reads "within 1 day".
 
-**`expiry.interval_days`** (`Integer`) — *Default: `7` | Env: `ACME_PROXY_NOTIFY__EXPIRY__INTERVAL_DAYS`*
+**`expiry.interval`** (`Duration`) — *Default: `"7d"` | Env: `ACME_PROXY_NOTIFY__EXPIRY__INTERVAL`*
 
-How often the digest is sent. There is deliberately no per-certificate rate
+How often the digest is sent, at most once a day (a shorter value is raised to
+`"1d"`). There is deliberately no per-certificate rate
 limit beside it: the digest is the rate limit. A digest with nothing to report
 is not sent, so the absence of a message is what "everything is renewed" looks
 like.
@@ -143,7 +148,7 @@ The most certificates one message lists. The number that matched is carried
 whole regardless, so a truncated digest still says how many it did not name.
 
 The schedule is a row in the durable job queue rather than a timer, so it
-survives a restart: a server restarting more often than `interval_days` still
+survives a restart: a server restarting more often than `interval` still
 sends its digest on time instead of resetting the clock each start.
 
 #### Addressed to the account
@@ -168,7 +173,7 @@ with three differences:
 
 Mail each account its own digest. It needs `email` in `notify.enabled`. Setting
 it without `email` is a startup error, because nothing else can deliver the
-mail. It also does nothing while `expiry.lead_days` is `0`.
+mail. It also does nothing while `expiry.lead` is `0`.
 
 **`expiry.contact_domains`** (`List of Strings`) — *Default: `[]` | Env: `ACME_PROXY_NOTIFY__EXPIRY__CONTACT_DOMAINS`*
 

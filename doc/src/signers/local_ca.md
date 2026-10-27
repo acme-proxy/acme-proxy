@@ -39,7 +39,7 @@ When processing a Certificate Signing Request (CSR) from a client, the
 
 ## Certificate validity
 
-Leaves are valid for `leaf_validity_days`, starting one hour in the past to
+Leaves are valid for `leaf_validity`, starting one hour in the past to
 absorb clock skew between the CA and its clients.
 
 A client may narrow that window using the order's `notBefore`/`notAfter` (RFC
@@ -48,6 +48,61 @@ A client may narrow that window using the order's `notBefore`/`notAfter` (RFC
 the default end. A request whose clamped window would be empty or inverted is
 discarded whole, the policy default is used, and a
 `local_ca_requested_validity_discarded` warning is logged.
+
+### Short-lived certificates
+
+`leaf_validity` is a ceiling no client can raise, so it is also how a CA issues
+**only** short-lived certificates, whatever its clients ask for:
+
+```toml
+[signer.local_ca]
+leaf_validity = "160h"   # what Let's Encrypt's short-lived profile issues
+```
+
+It takes any [duration](../configuration/reference.md#durations) from `"1h"`
+up, and refuses anything shorter at startup: the one-hour backdate is added on
+top of the lifetime, so a `"1h"` leaf is valid for two hours, and below that the
+backdate would be most of what a verifier sees.
+
+[Renewal information](../features/renewal_info.md) needs no setting of its
+own: the suggested window is a fraction of each certificate's own lifetime, and
+the `Retry-After` the server sends shrinks with it, so an ARI-aware client polls
+often enough not to miss a window measured in hours. Two other settings deserve
+a look on a CA issuing short-lived certificates:
+
+- **The expiry digest** (`notify.expiry.lead`): a lead of days would list every
+  live certificate. Keep it well under the lifetime, e.g. `"1d"` for 160 h.
+- **`order.retention`** is unaffected — it ages orders from their own expiry,
+  not their certificate's.
+
+### ACME profiles
+
+A local CA can also offer several lifetimes and let each client choose, as
+[ACME profiles](../features/acme_profiles.md): each
+`[signer.local_ca.profiles.<name>]` is a lifetime in place of `leaf_validity`,
+listed in the directory with its description.
+
+```toml
+[signer.local_ca]
+leaf_validity = "90d"            # an order naming no profile, with no default
+default_profile = "classic"      # an order naming no profile
+
+[signer.local_ca.profiles.classic]
+description = "90-day certificates"
+leaf_validity = "90d"
+
+[signer.local_ca.profiles.shortlived]
+description = "160-hour certificates"
+leaf_validity = "160h"
+```
+
+There is no "forced" profile here: you write the list, so offering only
+`shortlived`, as the default, is how a local CA forces it — a client naming
+another is refused with `invalidProfile`. Each profile's lifetime is bounded
+like `leaf_validity` (`"1h"` to a century), a client's `notAfter` still only
+shortens it, and a profile name follows the rule every operator-named table key
+does (lowercase letters, digits and `-`). Two endpoints sharing one CA each
+offer their own profiles.
 
 ## Configuration
 
@@ -60,7 +115,7 @@ cert_path = "ca.pem"
 key_path = "ca.key"
 key_type = "ecdsa-p256"
 crl_path = "ca.crl"
-leaf_validity_days = 90
+leaf_validity = "90d"
 ```
 
 ### Reference
@@ -102,8 +157,8 @@ nothing about revocation until you set this.
 Nothing derives it, deliberately. The URL is frozen into every certificate
 signed while it is set, so a value read from `server.base_url` would silently
 break certificates already issued the day that changed. And this server's own
-copy is served at `{base_url}/profile/<name>/crl`, *inside* the profile router
-and therefore behind that profile's filter policy — an address-based rule would
+copy is served at `{base_url}/endpoint/<name>/crl`, *inside* the endpoint router
+and therefore behind that endpoint's filter policy — an address-based rule would
 refuse it to exactly the relying parties the extension exists for. Name a URL
 you know is publicly reachable; a webroot or CDN copy of `crl_path` is the usual
 answer.
@@ -116,10 +171,10 @@ scheme, and any value the URL parser would normalize (a missing trailing `/`, a
 leading space from an environment-variable list) are each a startup error naming
 the key and the value.
 
-Note that two profiles sharing one CA share this list too: they share one
+Note that two endpoints sharing one CA share this list too: they share one
 `[signer]` section, one set of revocations and one CRL, so there is one place
 that CRL is published. Giving them different URLs while they share `ca.key` is
-refused at startup — see [Profiles & Routing](../core/profiles.md).
+refused at startup — see [Endpoints & Routing](../core/endpoints.md).
 
 **`ca_issuer_urls`** (`Array<String>`) — *Default: `[]` | Env: `ACME_PROXY_SIGNER__LOCAL_CA__CA_ISSUER_URLS`*
 
@@ -131,11 +186,26 @@ same validation and the same startup errors as `crl_distribution_points` above.
 The sibling access method, `id-ad-ocsp`, is never written: this server runs no
 OCSP responder, and a pointer at one that does not exist is worse than none.
 
-**`leaf_validity_days`** (`Integer`) — *Default: `90` | Env: `ACME_PROXY_SIGNER__LOCAL_CA__LEAF_VALIDITY_DAYS`*
+**`leaf_validity`** (`Duration`) — *Default: `"90d"` | Env: `ACME_PROXY_SIGNER__LOCAL_CA__LEAF_VALIDITY`*
 
-The validity period (in days) for issued leaf certificates. Distinct from
-`order.validity_seconds`, which bounds the ACME *order object*, not the
+The validity period for issued leaf certificates. Distinct from
+`order.validity`, which bounds the ACME *order object*, not the
 certificate.
+
+**`default_profile`** (`String`) — *Default: `""` | Env: `ACME_PROXY_SIGNER__LOCAL_CA__DEFAULT_PROFILE`*
+
+The [ACME profile](#acme-profiles) an order naming none is issued under, and
+reports. Empty issues such an order under `leaf_validity`, with no profile.
+Naming a profile not defined below is a startup error.
+
+**`profiles.<name>.description`** (`String`) — *Default: `""` | Env: `ACME_PROXY_SIGNER__LOCAL_CA__PROFILES__<NAME>__DESCRIPTION`*
+
+What the directory's `meta.profiles` says about the profile, for the client's
+operator to read.
+
+**`profiles.<name>.leaf_validity`** (`Duration`) — *Default: `"90d"` | Env: `ACME_PROXY_SIGNER__LOCAL_CA__PROFILES__<NAME>__LEAF_VALIDITY`*
+
+The lifetime of a leaf issued under the profile, bounded as `leaf_validity` is.
 
 **`key_source`** (`String`) — *Default: `"file"` | Env: `ACME_PROXY_SIGNER__LOCAL_CA__KEY_SOURCE`*
 
@@ -189,25 +259,25 @@ organization = "Example Corp"
 country      = "US"
 ```
 
-## One CA per profile
+## One CA per endpoint
 
-The database records the CA each `local_ca` profile issues from, by the
+The database records the CA each `local_ca` endpoint issues from, by the
 SHA-256 of its public key (the `issuer` id the CRL uses), and **a worker checks
 its CA against that record before it signs anything**:
 
 - **The first run records it.** `acme-proxy init`, or the first worker, records
   whatever CA it loads or generates. A deployment upgraded from an earlier
   release records its existing CA the first time a worker starts.
-- **A worker with another CA refuses to start**, naming the profile, both
+- **A worker with another CA refuses to start**, naming the endpoint, both
   issuer ids and the command below. Two hosts that each ran `init` would
-  otherwise issue for one profile from two CAs, each trusted only by the
+  otherwise issue for one endpoint from two CAs, each trusted only by the
   clients that installed it.
 - **A worker with no CA refuses rather than generating one**, once an issuer is
   recorded. Copy `ca.pem` and `ca.key` from an existing worker (or attach the
   same token) instead.
 
-To change a profile's CA on purpose, replace its files, then run
-[`acme-proxy profile issuer accept <name>`](../operations/cli.md#profiles)
+To change an endpoint's CA on purpose, replace its files, then run
+[`acme-proxy endpoint issuer accept <name>`](../operations/cli.md#endpoints)
 before restarting the workers. A reload that would load another CA is refused
 the same way, with the running configuration left serving.
 

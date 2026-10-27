@@ -173,7 +173,7 @@ fn the_cli_never_builds_a_signer() {
 
 /// No request-serving code names a signing backend (PLAN.md §9.3).
 ///
-/// A request is served from a [`Profile`], whose signer is its read side —
+/// A request is served from an [`Endpoint`], whose signer is its read side —
 /// `SignerInfo`, built from public material — and the compiler already keeps
 /// the backend off it. What it cannot keep out is a handler reaching for a
 /// backend some other way: taking a `SignerBackend` from state, building one,
@@ -183,7 +183,7 @@ fn the_cli_never_builds_a_signer() {
 /// (`crates/protocol/src/acme/issue.rs`, `crates/protocol/src/acme/revoke.rs`'s
 /// `SignerRevokeJob`), in the `worker` role.
 ///
-/// [`Profile`]: acme_proxy_protocol::profile::Profile
+/// [`Endpoint`]: acme_proxy_protocol::endpoint::Endpoint
 #[test]
 fn the_request_path_never_holds_a_signer() {
     const REQUEST_PATH: &[&str] = &[
@@ -193,7 +193,7 @@ fn the_request_path_never_holds_a_signer() {
         "crates/admin/src/webadmin",
         "crates/admin/src/admin",
         "crates/protocol/src/router.rs",
-        "crates/protocol/src/profile.rs",
+        "crates/protocol/src/endpoint.rs",
     ];
     const FORBIDDEN: &[&str] = &[
         "SignerBackend",

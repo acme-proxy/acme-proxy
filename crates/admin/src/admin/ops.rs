@@ -133,8 +133,8 @@ pub fn eab_live_certificates_refusal(kid: &str, accounts: u64, certificates: u64
     )
 }
 
-/// The refusal for an EAB credential scoped to a profile nothing mounts, if it
-/// is one — `None` when the profile is mounted, or when the credential is for
+/// The refusal for an EAB credential scoped to an endpoint nothing mounts, if it
+/// is one — `None` when the endpoint is mounted, or when the credential is for
 /// every endpoint.
 ///
 /// Every surface that mints a credential makes this check, and they must not
@@ -144,17 +144,17 @@ pub fn eab_live_certificates_refusal(kid: &str, accounts: u64, certificates: u64
 /// caller omits a field, someone at a form leaves an input blank, someone at a
 /// terminal drops a flag.
 #[must_use]
-pub fn unmounted_profile_refusal(
+pub fn unmounted_endpoint_refusal(
     mounted: impl Fn(&str) -> bool,
-    profile: Option<&str>,
+    endpoint: Option<&str>,
     hint: &str,
 ) -> Option<String> {
-    let name = profile?;
+    let name = endpoint?;
     if mounted(name) {
         return None;
     }
     Some(format!(
-        "no profile named `{name}` is mounted; {hint} for a credential valid at every endpoint"
+        "no endpoint named `{name}` is mounted; {hint} for a credential valid at every endpoint"
     ))
 }
 
@@ -191,13 +191,13 @@ pub fn order_already_revoked_refusal(id: &str) -> String {
     format!("order {id}'s certificate is already revoked")
 }
 
-/// [`order_not_issued_refusal`], for an order whose profile this process does
-/// not serve: revocation is per-profile, so it needs the endpoint that signed
+/// [`order_not_issued_refusal`], for an order whose endpoint this process does
+/// not serve: revocation is per-endpoint, so it needs the endpoint that signed
 /// the certificate.
 #[must_use]
-pub fn order_profile_unmounted_refusal(id: &str, profile: &str) -> String {
+pub fn order_endpoint_unmounted_refusal(id: &str, endpoint: &str) -> String {
     format!(
-        "order {id} belongs to profile `{profile}`, which this configuration does not mount — \
+        "order {id} belongs to endpoint `{endpoint}`, which this configuration does not mount — \
          revoking it needs the endpoint that signed it"
     )
 }
@@ -302,7 +302,7 @@ pub async fn confirm_delete_account(
 
 /// The delete both account forms end in, and its row.
 ///
-/// `account` was read **before** the delete: the row names its profile and id,
+/// `account` was read **before** the delete: the row names its endpoint and id,
 /// and is gone once the delete returns. `cascaded` likewise — counted
 /// afterwards it counts the orders the `ON DELETE CASCADE` already removed,
 /// which is zero every time.
@@ -476,23 +476,23 @@ pub async fn confirm_delete_eab(
     Ok(delete_eab(kid, accounts, database, trail).await?.into())
 }
 
-/// Mints an EAB credential and records `eab_created`. Whether `profile` is
-/// mounted is the caller's to check first, with [`unmounted_profile_refusal`]:
+/// Mints an EAB credential and records `eab_created`. Whether `endpoint` is
+/// mounted is the caller's to check first, with [`unmounted_endpoint_refusal`]:
 /// only a front end knows what this process mounts.
 pub async fn create_eab(
     label: Option<String>,
-    profile: Option<String>,
+    endpoint: Option<String>,
     database: Arc<Database>,
     trail: &impl ActionTrail,
 ) -> Result<Eab, sqlx::Error> {
-    let eab = Eab::create(label, profile, &database).await?;
+    let eab = Eab::create(label, endpoint, &database).await?;
     trail
         .record(|actor, client| {
             audit_admin::eab_created(
                 actor,
                 client,
                 &eab.kid.to_string(),
-                eab.profile.as_deref(),
+                eab.endpoint.as_deref(),
                 eab.label.as_deref(),
             )
         })
@@ -518,7 +518,7 @@ pub async fn revoke_eab(
     if let Some(eab) = subject.filter(|eab| eab.status == "active") {
         trail
             .record(|actor, client| {
-                audit_admin::eab_revoked(actor, client, kid, eab.profile.as_deref())
+                audit_admin::eab_revoked(actor, client, kid, eab.endpoint.as_deref())
             })
             .await;
     }
@@ -586,7 +586,7 @@ pub async fn update_account_contact(
 }
 
 /// Deactivates an account, and queues `account_deactivated` through its
-/// profile's dispatcher — `notifier` looks one up by profile name, `None` where
+/// endpoint's dispatcher — `notifier` looks one up by endpoint name, `None` where
 /// this process has none — naming `client_ip` as whoever asked.
 ///
 /// The same [`acme_proxy_protocol::acme::account::deactivate`] the account's own request runs,
@@ -601,7 +601,7 @@ pub async fn deactivate_account(
     let Some(mut account) = Account::find_any_by_id(id, &database).await? else {
         return Ok(None);
     };
-    let dispatcher = notifier(&account.profile);
+    let dispatcher = notifier(&account.endpoint);
     acme_proxy_protocol::acme::account::deactivate(
         &mut account,
         &database,
@@ -624,7 +624,7 @@ pub async fn deactivate_account(
 /// agnostic — it is the same reason the destructive operations come in a bare
 /// and a `confirm_*` form.
 ///
-/// `revocations` carries the database, the auditor, the order's profile's
+/// `revocations` carries the database, the auditor, the order's endpoint's
 /// dispatcher and the revoker. The revoker is what withdraws the trust — for
 /// every front end,
 /// [`Revoker::for_route`](acme_proxy_protocol::acme::revoke::Revoker::for_route):
@@ -971,7 +971,7 @@ pub async fn cancel_job(
         // An in-flight relay job: abandon the order it was driving. Its
         // `dedup_key` is the local order id.
         //
-        // The order row may be gone — `order.retention_days` sweeps expired
+        // The order row may be gone — `order.retention` sweeps expired
         // orders — and then there is nothing to abandon and nothing to say
         // about one. That case falls through to the plain administrative row
         // below rather than reporting an abandonment that did not happen.
@@ -1086,7 +1086,7 @@ pub async fn confirm_cancel_job(
 /// attempt (`attempts` set to `max_attempts - 1`). Refused on
 /// `running`/`done`/`cancelled`.
 ///
-/// The runner picks the change up within `jobs.poll_interval_ms`: this writes
+/// The runner picks the change up within `jobs.poll_interval`: this writes
 /// the row and does not wake anything. Nudging the queue would be the panel's
 /// `JobQueue` to do, and this layer is below it — the CLI, which has no runner
 /// at all, calls the same function.
@@ -1918,7 +1918,7 @@ mod tests {
                 order.id.to_string().as_str(),
                 csr.der(),
                 &order.identifiers,
-                acme_proxy_signer::RequestedValidity::default(),
+                acme_proxy_signer::OrderRequest::default(),
             )
             .await
             .unwrap()
@@ -2210,7 +2210,7 @@ mod tests {
         let updated = deactivate_account(
             acct.to_string().as_str(),
             db.clone(),
-            |profile| (profile == "default").then(|| dispatcher.clone()),
+            |endpoint| (endpoint == "default").then(|| dispatcher.clone()),
             Some("203.0.113.7".to_string()),
             &Recorded::default(),
         )
@@ -2309,7 +2309,7 @@ mod tests {
                 id,
                 kind: RELAY_JOB_KIND,
                 dedup_key: &order.id.to_string(),
-                payload: &serde_json::json!({ "order_id": order.id.to_string(), "profile": "default" }),
+                payload: &serde_json::json!({ "order_id": order.id.to_string(), "endpoint": "default" }),
                 run_at: now_secs(),
                 deadline: Some(order.expires),
                 max_attempts: 5,
@@ -2804,6 +2804,9 @@ mod tests {
 
         let signer_bad_csr: RevokeError = SignerError::BadCsr.into();
         assert!(format!("{signer_bad_csr}").contains("unexpected badCsr"));
+
+        let signer_profile: RevokeError = SignerError::InvalidProfile("p".to_string()).into();
+        assert!(format!("{signer_profile}").contains("unexpected invalidProfile"));
 
         let internal = RevokeError::Internal("detail".to_string());
         assert!(format!("{internal}").contains("internal error: detail"));

@@ -18,11 +18,11 @@
         <input type="text" id="label" name="label" placeholder="team-a">
       </div>
       <div class="field">
-        <label for="profile">Profile</label>
-        <select id="profile" name="profile">
-          <option value="">every profile</option>
-          {% for profile in profiles %}
-            <option value="{{ profile.name }}">{{ profile.name }}</option>
+        <label for="endpoint">Endpoint</label>
+        <select id="endpoint" name="endpoint">
+          <option value="">every endpoint</option>
+          {% for endpoint in endpoints %}
+            <option value="{{ endpoint.name }}">{{ endpoint.name }}</option>
           {% endfor %}
         </select>
       </div>

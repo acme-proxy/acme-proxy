@@ -13,7 +13,7 @@ state, and queued background work keeps its place. What changes is what the
 server does with the *next* request — and, if you moved a listener, on which
 port it answers it.
 
-A reload is a rebuild and a swap, not a patch. Both routers, every profile's
+A reload is a rebuild and a swap, not a patch. Both routers, every endpoint's
 filter chain and challenge registry, the notification backends, the job
 registry and both TLS acceptors are constructed fresh from the file on disk —
 and only once every one of them has succeeded is any of it published.
@@ -60,8 +60,8 @@ restart to apply it
 
 Everything else reloads. That was not always true, and the four keys that came
 off this table most recently are worth knowing about because they are the ones
-an operator is most likely to remember as frozen: the set of enabled profiles,
-each profile's `[signer]` section, `dns.resolver` and `[proxy]`. See
+an operator is most likely to remember as frozen: the set of enabled endpoints,
+each endpoint's `[signer]` section, `dns.resolver` and `[proxy]`. See
 [Adding and removing endpoints](#adding-and-removing-endpoints) below.
 
 ## What a reload does change
@@ -83,7 +83,7 @@ Everything else, including the things operators reach for most:
 - **The listeners themselves** — see below.
 - **The panel's templates** — `admin.template_dir` is recompiled. A template
   that does not parse fails the *reload*, so a mistake never reaches a browser.
-- **Retention** — `audit.retention_days` and `jobs.retention_days`. A sweep
+- **Retention** — `audit.retention` and `jobs.retention`. A sweep
   already scheduled keeps its current time and picks the new cutoff up on its
   next run.
 - **Background work** — every `[jobs]` key, so slowing a retry storm, widening a
@@ -100,11 +100,12 @@ reference](../configuration/reference.md).
 
 ## Adding and removing endpoints
 
-Add a `[profiles.<name>]` section and signal, and that endpoint starts serving:
+Add an `[endpoints.<name>]` section and signal, and that endpoint starts
+serving:
 
 ```text
-server_config_reloaded generation=2 profiles=["le", "staging"]
-profile_mounted profile=staging directory=https://ca.example/profile/staging/directory
+server_config_reloaded generation=2 endpoints=["le", "staging"]
+endpoint_mounted endpoint=staging directory=https://ca.example/endpoint/staging/directory
 ```
 
 Remove it and signal again, and it stops. Endpoints that were already running
@@ -114,7 +115,7 @@ restart.
 
 Three things to know.
 
-**`profile_mounted` fires only for an endpoint that was not there before.** It
+**`endpoint_mounted` fires only for an endpoint that was not there before.** It
 is a lifecycle event, delivered to whichever `[notify]` backends are configured,
 so re-firing it for every endpoint on every `SIGHUP` would make the notification
 surface noisiest in exactly the config-managed deployments that would least want
@@ -122,10 +123,10 @@ it.
 
 **Unmounting keeps the data.** The accounts and orders belonging to that
 endpoint stay in the database and come back exactly as they were if you mount it
-again — the profile name is what they are keyed on. Setting `enabled = false` is
-the same thing as removing the section.
+again — the endpoint name is what they are keyed on. Setting `enabled = false`
+is the same thing as removing the section.
 
-**Drain a `relay` endpoint before removing it.** Unmounting the last profile a
+**Drain a `relay` endpoint before removing it.** Unmounting the last endpoint a
 relaying backend serves takes its job handler with it, so any issuance still
 waiting on the upstream has nothing left to finish it. Those rows sit in the
 queue until the endpoint is mounted again, and the orders behind them expire.
@@ -133,7 +134,7 @@ Nothing else is affected, and no other backend has background work to lose.
 
 ## Editing a signer
 
-A profile's `[signer]` section reloads, including the one an endpoint is
+An endpoint's `[signer]` section reloads, including the one an endpoint is
 actively issuing with. The obvious worry — that a rebuilt local CA would forget
 what it had revoked — does not arise: revocations and the CRL live in the
 database, which the running CA and its replacement both read, so a revocation
@@ -206,7 +207,7 @@ The runner does not restart; it picks the new values up on its next pass and
 says so:
 
 ```text
-job_runner_retuned poll_interval_ms=250 lease_seconds=120 max_concurrent=16
+job_runner_retuned poll_interval="250ms" lease="2m" max_concurrent=16
 ```
 
 That line is the confirmation worth grepping for. `server_config_reloaded` means
@@ -217,19 +218,19 @@ sections stay quiet.
 Each key lands at its own grain, and the differences are all in the same
 direction — nothing already in flight is disturbed:
 
-- **`poll_interval_ms`** takes effect immediately, without waiting out the old
+- **`poll_interval`** takes effect immediately, without waiting out the old
   interval first.
 - **`max_concurrent`** widens at once when raised. Lowered, it takes back the
   slots that are free and reaches the new figure as running jobs finish; no job
   is cancelled to get there sooner.
-- **`lease_seconds`, `retry_base_seconds` and `retry_max_seconds`** apply to the
+- **`lease`, `retry_base` and `retry_max`** apply to the
   next job claimed. One already running keeps the budget and the backoff it
   started under.
 - **`max_attempts`** is frozen onto each job when it is queued, so a change
   applies to work queued from then on. Raising it is *not* a way to rescue a
   backlog that is about to give up — those rows keep the budget they were queued
   with.
-- **`retention_days`** rebuilds the sweep, including registering it when it goes
+- **`retention`** rebuilds the sweep, including registering it when it goes
   from `0` to a real value.
 
 ## Systemd
@@ -252,7 +253,7 @@ configuration it just applied — `challenge_validation_bypassed`,
 `filter_disabled`, `tls_disabled` and the rest. That is deliberate: they are
 written to stay visible for as long as the condition holds.
 
-**`profile_mounted` does not repeat.** It is a lifecycle notification meaning
+**`endpoint_mounted` does not repeat.** It is a lifecycle notification meaning
 "this endpoint came up", delivered to whichever `[notify]` backends are
 configured. Firing it on every reload would make the notification surface
 noisiest in exactly the config-managed deployments that would least want it.

@@ -9,8 +9,8 @@
 //!   hands the socket on. It is the whole of `acme-proxy serve`.
 //! - [`serve_on`] validates the admin configuration and binds that socket too,
 //!   when `[admin]` is enabled.
-//! - [`serve_on_with`] does everything else — profile resolution, deduplicated
-//!   signer backends, per-profile filters and validators, TLS, the job registry
+//! - [`serve_on_with`] does everything else — endpoint resolution, deduplicated
+//!   signer backends, per-endpoint filters and validators, TLS, the job registry
 //!   (every signer's handlers, notification delivery and the six table sweeps,
 //!   built by `generation::job_registry_for`), the runner draining it, and
 //!   `axum::serve` with connect info attached.
@@ -21,8 +21,8 @@
 //! may change, and what it refuses by name, is [`crate::reload`]'s to say;
 //! [`serve_on_with_reloads`] is where the two meet.
 //!
-//! - [`profile`] — how a generation builds each ACME endpoint.
-//! - [`assembly`] — what a generation hands its profiles, and what outlives it.
+//! - [`endpoint`] — how a generation builds each ACME endpoint.
+//! - [`assembly`] — what a generation hands its endpoints, and what outlives it.
 //! - [`generation`] — one generation built, then published: the reload policy.
 //! - [`supervisor`] — the task that serialises reloads.
 //! - [`sockets`] — the three listeners' binds, plans and announcements.
@@ -30,7 +30,7 @@
 //! - [`logging`] — the subscriber `serve` installs, and its reloadable filter.
 //!
 //! What it serves sits below it: the endpoint itself is
-//! [`acme_proxy_protocol::profile::Profile`], and the routers each listener serves, with
+//! [`acme_proxy_protocol::endpoint::Endpoint`], and the routers each listener serves, with
 //! their shared layers, are [`acme_proxy_protocol::router`].
 //!
 //! [`reload`] beside it is what a reload may change and what it refuses by
@@ -47,9 +47,9 @@ use acme_proxy_core::config::Config;
 use acme_proxy_store::db::Database;
 
 pub mod assembly;
+pub mod endpoint;
 pub mod generation;
 pub mod logging;
-pub mod profile;
 pub mod reload;
 pub mod roles;
 pub mod sockets;
@@ -62,7 +62,7 @@ pub use roles::{ProcessRole, RoleSet};
 
 pub use sockets::check_metrics_config;
 
-use generation::{Generation, announce_profile, build_generation};
+use generation::{Generation, announce_endpoint, build_generation};
 use sockets::{
     Sockets, announce_admin_listener, announce_metrics_listener, bind_admin, bind_metrics,
     bound_address,
@@ -101,7 +101,7 @@ pub async fn run(
 
     // Installed here, before anything slow: `SIGHUP`'s default disposition is
     // *terminate*, so until the handler exists a reload signal kills the
-    // process. `serve_on_with_reloads` does profile assembly and the relay's
+    // process. `serve_on_with_reloads` does endpoint assembly and the relay's
     // first upstream contact before it binds anything, which is exactly the
     // window an operator's `systemctl reload` could land in.
     let (reload_handle, reloads) = crate::reload::channel();
@@ -173,7 +173,7 @@ async fn watch_for_hangup(_handle: crate::reload::ReloadHandle) {
 ///
 /// Split from [`run`] on the socket boundary: a caller supplying its own
 /// listener and its own `shutdown` future can drive the whole startup path —
-/// profile assembly, TLS, backend resume, the nonce reaper, both `axum::serve`
+/// endpoint assembly, TLS, backend resume, the nonce reaper, both `axum::serve`
 /// arms — without owning a fixed port or a process signal.
 ///
 /// Binds the web admin socket itself when `[admin]` is enabled. The signature
@@ -271,7 +271,7 @@ pub async fn serve_on_with_reloads(
 
     // One `shutdown` future, several consumers: both listeners and the job
     // runner. Created here rather than beside `axum::serve` below so a signal
-    // arriving *during* startup is not ignored — profile assembly and the
+    // arriving *during* startup is not ignored — endpoint assembly and the
     // relay's first upstream contact both happen before anything binds. The
     // relay task is held under `AbortOnDrop` so an error path below does not
     // leak a task parked on a signal that will never arrive.
@@ -281,15 +281,15 @@ pub async fn serve_on_with_reloads(
         let _ = shutdown_tx.send(true);
     }));
 
-    // The enqueue side of the durable queue. Built before the profiles because
+    // The enqueue side of the durable queue. Built before the endpoints because
     // a signer backend that defers issuance is handed one at construction, and
     // process-wide for the reason `[audit]` is: one table, one runner, and a
     // per-endpoint retry budget would make a job's pacing depend on which
-    // profile happened to queue it.
+    // endpoint happened to queue it.
     let job_queue = acme_proxy_jobs::jobs::JobQueue::new(database.clone(), &config.jobs);
 
-    let resolved = config.resolve_profiles().inspect_err(|error| {
-        error!(event = "profile_init_failed", outcome = "failure", error = %error);
+    let resolved = config.resolve_endpoints().inspect_err(|error| {
+        error!(event = "endpoint_init_failed", outcome = "failure", error = %error);
     })?;
     // A worker's CA must be the one this deployment issues from: checked
     // before the backends are built, so a worker with no key files refuses
@@ -309,7 +309,7 @@ pub async fn serve_on_with_reloads(
         &config,
     )
     .inspect_err(|error| {
-        error!(event = "profile_init_failed", outcome = "failure", error = %error);
+        error!(event = "endpoint_init_failed", outcome = "failure", error = %error);
     })?;
     let assembly = Arc::new(assembly);
     if roles.has(ProcessRole::Worker) {
@@ -319,18 +319,18 @@ pub async fn serve_on_with_reloads(
 
     let generation =
         build_generation(roles, &config, &resolved, &assembly, &parts).inspect_err(|error| {
-            error!(event = "profile_init_failed", outcome = "failure", error = %error);
+            error!(event = "endpoint_init_failed", outcome = "failure", error = %error);
         })?;
 
     // Every endpoint in the first generation came up, so every one is announced.
     // A reload announces only the endpoints it *added* — see
     // `supervise_reloads`, which shares this function for exactly that reason.
-    for profile in &generation.profiles {
-        announce_profile(profile).await;
+    for endpoint in &generation.endpoints {
+        announce_endpoint(endpoint).await;
     }
 
     let Generation {
-        profiles: _,
+        endpoints: _,
         acme_app,
         admin_app,
         job_registry,
@@ -517,13 +517,13 @@ const RUNNER_SHUTDOWN_BUDGET: std::time::Duration = std::time::Duration::from_se
 /// worker. A failure is logged where it happened
 /// (`local_ca_crl_initialization_failed`) and the sweep's first pass tries
 /// again, so it never stops the process.
-/// Once per CA, not once per profile: two profiles over one `[signer]` section
+/// Once per CA, not once per endpoint: two endpoints over one `[signer]` section
 /// share a backend, and a third naming the same CA by another path is still
 /// the same issuer. Refreshing twice would sign the same CRL twice and export
 /// it twice.
 pub(crate) async fn store_first_crls(signers: &acme_proxy_signer::SignerSet) {
     let mut done: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for (_, backend) in signers.by_profile() {
+    for (_, backend) in signers.by_endpoint() {
         if let Some(refresher) = backend.crl_refresher()
             && done.insert(refresher.issuer().to_string())
         {

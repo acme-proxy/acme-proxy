@@ -3,8 +3,9 @@
 This page is about how the pieces fit, and about the handful of decisions that
 are load-bearing enough that changing them would break something non-obvious.
 The organising ideas are three: RFC 8555's checks are hoisted into an extractor
-so no route can forget them, an ACME endpoint is a profile, and signing,
-filtering and notifying are each a trait with several implementations.
+so no route can forget them, each ACME endpoint is a named configuration table,
+and signing, filtering and notifying are each a trait with several
+implementations.
 
 ## The workspace
 
@@ -117,10 +118,10 @@ also the *only* frozen surface before 1.0.0
 
 ### Schema details
 
-The tables, their constraints and the reasoning behind each — profile isolation,
-the `CHECK`ed state machines, the audit trail's deliberate lack of foreign keys,
-and the three different ways a secret is stored — have their own page:
-[Database Schema](database.md).
+The tables, their constraints and the reasoning behind each — endpoint
+isolation, the `CHECK`ed state machines, the audit trail's deliberate lack of
+foreign keys, and the three different ways a secret is stored — have their own
+page: [Database Schema](database.md).
 
 Revocation is the one piece worth naming here, because it constrains the request
 path rather than the schema: it writes a reason and a timestamp and deliberately
@@ -165,11 +166,11 @@ Two consequences worth knowing:
   layer.
 
 The admin listener is assembled by `webadmin::build_admin_app`, which takes
-`&[Arc<Profile>]` as a **slice** — `build_app` consumes the `Vec`, so the admin
+`&[Arc<Endpoint>]` as a **slice** — `build_app` consumes the `Vec`, so the admin
 side must be built first, and the signature is where that ordering is stated
 rather than a borrow error to rediscover. Its state is `AdminState`, not
-`AppState`: the latter holds exactly one `Profile`, and this listener is
-cross-profile by nature (revoking an order needs *that order's own* profile's
+`AppState`: the latter holds exactly one `Endpoint`, and this listener is
+cross-endpoint by nature (revoking an order needs *that order's own* endpoint's
 revocation route, which may name a different CA from any default).
 
 ## Order lifecycle

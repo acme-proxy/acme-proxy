@@ -6,13 +6,13 @@
       <thead>
         <tr>
           <th>Order</th>
-          <th>Profile</th>
+          <th>Endpoint</th>
           <th>Status</th>
           <th>Identifiers</th>
           <th>Created</th>
           <th>Expires</th>
           {#- The leaf's own notAfter, not the order object's `expires` beside
-              it (housekeeping, see `order.validity_seconds`): the date an
+              it (housekeeping, see `order.validity`): the date an
               operator actually scans a list of orders for. -#}
           <th>Certificate expires</th>
         </tr>
@@ -21,7 +21,7 @@
         {% for order in page.items %}
           <tr>
             <td class="id-cell"><a href="/ui/orders/{{ order.id }}" title="{{ order.id }}"><code>{{ order.id }}</code></a></td>
-            <td><code>{{ order.profile }}</code></td>
+            <td><code>{{ order.endpoint }}</code></td>
             <td>
               <span class="badge {{ order.status }}">{{ order.status }}</span>
               {#- Revocation is orthogonal to the order state machine: RFC 8555

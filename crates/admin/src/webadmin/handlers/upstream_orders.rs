@@ -30,7 +30,7 @@ use acme_proxy_store::upstream_order::UpstreamOrderQuery;
 #[derive(Debug, Deserialize, Default)]
 pub struct UpstreamOrderListParams {
     #[serde(default, deserialize_with = "empty_is_absent")]
-    pub profile: Option<String>,
+    pub endpoint: Option<String>,
     #[serde(default, deserialize_with = "empty_is_absent")]
     pub status: Option<String>,
     pub limit: Option<i64>,
@@ -51,14 +51,14 @@ pub(crate) fn upstream_order_query(
     page: crate::webadmin::handlers::paging::Page,
 ) -> Result<UpstreamOrderQuery, AdminError> {
     Ok(UpstreamOrderQuery {
-        profile: params.profile.clone(),
+        endpoint: params.endpoint.clone(),
         status: params.parsed_status().map_err(bad_status)?,
         limit: page.limit,
         offset: page.offset,
     })
 }
 
-/// `GET /api/upstream-orders?profile=&status=&limit=&offset=`
+/// `GET /api/upstream-orders?endpoint=&status=&limit=&offset=`
 pub async fn list_upstream_orders(
     State(state): State<AdminState>,
     Query(params): Query<UpstreamOrderListParams>,

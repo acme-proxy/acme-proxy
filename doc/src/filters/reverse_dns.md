@@ -27,7 +27,7 @@ When a client connects, the filter performs the following:
 ## Timeout budget
 DNS queries happen on the hot path — this is a connection-level filter, so it
 runs on **every** request whose rules reach it, `newNonce` included. The filter
-operates with a strict `timeout_ms` budget across all DNS queries so slow
+operates with a strict `timeout` budget across all DNS queries so slow
 nameservers cannot tie up the ACME server.
 
 To keep that affordable, `reverse_dns` builds its **own, caching** resolver —
@@ -51,7 +51,7 @@ require_forward_confirm = true
 allow = ["*.corp.example.com"]
 # Deny the guest network infrastructure
 deny = ["*.guest.example.com"]
-timeout_ms = 2000
+timeout = "2s"
 
 [filter.rule.known-hosts]
 when = "has-ptr"

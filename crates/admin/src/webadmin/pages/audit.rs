@@ -20,7 +20,7 @@ use crate::webadmin::pages::{ListFilters, chrome, page_value, pager, respond};
 use acme_proxy_core::audit::ALL_AUDIT_EVENTS;
 use acme_proxy_store::audit::AuditEntry;
 
-/// `GET /ui/audit?profile=&accountId=&orderId=&certSerial=&event=&outcome=&limit=&offset=`
+/// `GET /ui/audit?endpoint=&accountId=&orderId=&certSerial=&event=&outcome=&limit=&offset=`
 pub async fn list_audit(
     State(state): State<AdminState>,
     Query(params): Query<AuditListParams>,
@@ -30,7 +30,7 @@ pub async fn list_audit(
     // Every filter the query below applies, and no other: a filter missing here
     // is dropped by the next page step and by the next change to the form.
     let filters = ListFilters::new()
-        .with("profile", params.profile.as_deref())
+        .with("endpoint", params.endpoint.as_deref())
         .with("event", params.event.as_deref())
         .with("outcome", params.outcome.as_deref())
         .with("accountId", params.account_id.as_deref())
@@ -59,8 +59,8 @@ pub async fn list_audit(
         ),
     );
     context.insert(
-        "profiles".to_string(),
-        Value::Array(crate::webadmin::handlers::misc::profile_rows(&state)),
+        "endpoints".to_string(),
+        Value::Array(crate::webadmin::handlers::misc::endpoint_rows(&state)),
     );
 
     respond(

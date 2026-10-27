@@ -23,10 +23,10 @@
 //! ## Why a string and not nested TOML
 //!
 //! An `all`/`any`/`none` table would need no parser, but
-//! [`Config::merged_sections`](acme_proxy_core::config::Config) merges a profile's
+//! [`Config::merged_sections`](acme_proxy_core::config::Config) merges an endpoint's
 //! configuration onto the global one **per key** for tables and *wholesale* for
-//! everything else. A global `all = [...]` and a profile's `any = [...]` would
-//! therefore merge into one table carrying both keys, and the profile would have
+//! everything else. A global `all = [...]` and an endpoint's `any = [...]` would
+//! therefore merge into one table carrying both keys, and the endpoint would have
 //! meant to replace the condition rather than add to it. A string is a scalar,
 //! so it replaces — the only sane inheritance for a policy expression.
 //!

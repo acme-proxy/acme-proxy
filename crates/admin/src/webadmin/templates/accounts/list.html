@@ -8,13 +8,13 @@
     <form class="row" hx-get="/ui/accounts" hx-target="#accounts-table"
           hx-push-url="true" hx-trigger="change">
       <div class="field">
-        <label for="profile">Profile</label>
-        <select id="profile" name="profile">
-          <option value="">every profile</option>
-          {% for profile in profiles %}
-            <option value="{{ profile.name }}"
-                    {% if filters.profile == profile.name %}selected{% endif %}>
-              {{ profile.name }}
+        <label for="endpoint">Endpoint</label>
+        <select id="endpoint" name="endpoint">
+          <option value="">every endpoint</option>
+          {% for endpoint in endpoints %}
+            <option value="{{ endpoint.name }}"
+                    {% if filters.endpoint == endpoint.name %}selected{% endif %}>
+              {{ endpoint.name }}
             </option>
           {% endfor %}
         </select>

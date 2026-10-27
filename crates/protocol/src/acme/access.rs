@@ -26,16 +26,16 @@ use acme_proxy_store::order::Order;
 use acme_proxy_store::status::OrderStatus;
 
 /// Resolves the account that signed the request, within the endpoint it
-/// reached: an account registered at another profile is simply unknown here.
+/// reached: an account registered at another endpoint is simply unknown here.
 pub(crate) async fn signer_account(
     cached: Option<Account>,
-    profile: &str,
+    endpoint: &str,
     pubkey: &[u8],
     database: &Arc<Database>,
 ) -> Result<Account, Problem> {
     let account = match cached {
         Some(account) => account,
-        None => Account::find_by_pubkey(profile, pubkey, database)
+        None => Account::find_by_pubkey(endpoint, pubkey, database)
             .await
             .map_err(|error| {
                 error!(event = "account_lookup_failed", outcome = "failure", error = %error);
@@ -80,13 +80,13 @@ async fn owned_order(
     // An order belongs to the endpoint it was placed at, and to the account
     // that placed it. Either mismatch is answered as *unknown*, exactly like an
     // id that does not exist (see the module doc).
-    if order.profile != account.profile {
+    if order.endpoint != account.endpoint {
         warn!(
-            event = "order_profile_mismatch",
+            event = "order_endpoint_mismatch",
             outcome = "failure",
             order_id = %id,
-            order_profile = %order.profile,
-            request_profile = %account.profile
+            order_endpoint = %order.endpoint,
+            request_endpoint = %account.endpoint
         );
         return Err(Problem::malformed(unknown));
     }

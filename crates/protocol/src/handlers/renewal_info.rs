@@ -24,16 +24,33 @@ use acme_proxy_store::order::Order;
 /// is shifted into the past.
 const ONE_DAY_SECONDS: i64 = 86_400;
 
-/// `Retry-After` for an ordinary certificate: six hours, RFC 9773 §4.2's own
-/// example value. §4.3.1 leaves the choice to the server, trading client
-/// responsiveness against load; six hours is what a client would also fall back
-/// to on a long-term error (§4.3.3).
-const DEFAULT_RETRY_AFTER: &str = "21600";
+/// The longest `Retry-After`: six hours, RFC 9773 §4.2's own example value.
+/// §4.3.1 leaves the choice to the server, trading client responsiveness
+/// against load; six hours is what a client would also fall back to on a
+/// long-term error (§4.3.3). A 90-day certificate's window is days wide, so it
+/// gets exactly this.
+const MAX_RETRY_AFTER_SECONDS: i64 = 6 * 60 * 60;
 
-/// `Retry-After` for a revoked certificate: one minute, §4.3.2's own floor
-/// ("values under one minute could be treated as if they were one minute").
-/// The window is already in the past, so there is nothing to wait for.
-const REVOKED_RETRY_AFTER: &str = "60";
+/// The shortest `Retry-After`: §4.3.2's own floor ("values under one minute
+/// could be treated as if they were one minute").
+const MIN_RETRY_AFTER_SECONDS: i64 = 60;
+
+/// How long to tell a client to wait before asking again, given the window it
+/// is about to be sent.
+///
+/// Half the window, so a client polling at this pace checks at least twice
+/// inside it — what keeps a short-lived certificate renewable at all: a 24-hour
+/// one has a window of an hour and a half, which a fixed six-hour pace would
+/// step over entirely. Clamped to [`MIN_RETRY_AFTER_SECONDS`] and
+/// [`MAX_RETRY_AFTER_SECONDS`]. A revoked certificate's window is a day wide but
+/// already past, so it gets the floor: there is nothing to wait for.
+#[must_use]
+pub fn retry_after_seconds(window: &RenewalWindow, is_revoked: bool) -> i64 {
+    if is_revoked {
+        return MIN_RETRY_AFTER_SECONDS;
+    }
+    ((window.end - window.start) / 2).clamp(MIN_RETRY_AFTER_SECONDS, MAX_RETRY_AFTER_SECONDS)
+}
 
 /// The suggested renewal window for a certificate, in epoch seconds (RFC 9773 §4.2).
 ///
@@ -84,7 +101,7 @@ pub async fn get_renewal_info(
     })?;
     let serial_hex = cert_id.serial_hex();
 
-    let order = Order::find_by_cert_serial(&state.profile.name, &serial_hex, &state.database)
+    let order = Order::find_by_cert_serial(&state.endpoint.name, &serial_hex, &state.database)
         .await
         .map_err(|error| {
             warn!(event = "renewal_info_lookup_error", outcome = "failure", error = %error);
@@ -152,7 +169,7 @@ pub async fn get_renewal_info(
         // rate limits and planned revocations. `local_ca` keeps the trait's default
         // "no opinion", and an upstream that is unreachable or has none must not
         // fail the request, so both fall through to the local computation.
-        match state.profile.signer_info.renewal_info(&leaf_der).await {
+        match state.endpoint.signer_info.renewal_info(&leaf_der).await {
             Ok(Some(window)) => window,
             Ok(None) => calculate_suggested_window(not_before, not_after, false, now),
             Err(error) => {
@@ -180,6 +197,9 @@ pub async fn get_renewal_info(
         ));
     }
 
+    // Before the body takes the explanation URL out of the window.
+    let retry_after = retry_after_seconds(&window, revoked);
+
     let mut suggested = serde_json::Map::new();
     suggested.insert(
         "start".to_string(),
@@ -201,17 +221,11 @@ pub async fn get_renewal_info(
     let mut response = Json(Value::Object(body)).into_response();
 
     // RFC 9773 §4.3: this is "the desired (i.e., both requested minimum and
-    // maximum) amount of time to wait", not merely a floor. A revoked
-    // certificate's window is already in the past, so telling that client to
-    // sleep a day before looking again would be actively unhelpful.
-    let retry_after = if revoked {
-        REVOKED_RETRY_AFTER
-    } else {
-        DEFAULT_RETRY_AFTER
-    };
+    // maximum) amount of time to wait", not merely a floor — so it follows the
+    // window rather than a constant (see `retry_after_seconds`).
     response
         .headers_mut()
-        .insert(header::RETRY_AFTER, HeaderValue::from_static(retry_after));
+        .insert(header::RETRY_AFTER, HeaderValue::from(retry_after));
 
     Ok(response)
 }
@@ -230,6 +244,30 @@ mod tests {
             window.explanation_url.is_none(),
             "a locally computed window has nothing to explain"
         );
+    }
+
+    /// Half the window, so a client polling at that pace checks twice inside
+    /// it: the six-hour cap for a long certificate, minutes for a short one.
+    #[test]
+    fn retry_after_follows_the_window_between_a_minute_and_six_hours() {
+        let day = 24 * 60 * 60;
+        let paced = |lifetime: i64| {
+            retry_after_seconds(&calculate_suggested_window(0, lifetime, false, 0), false)
+        };
+        assert_eq!(paced(90 * day), MAX_RETRY_AFTER_SECONDS, "90 days");
+        // 160 h: a window of 13 h 20 min, so 6 h 40 min, capped.
+        assert_eq!(paced(160 * 3600), MAX_RETRY_AFTER_SECONDS, "160 hours");
+        // 24 h: a window of 2 h (16 h to 18 h), so an hour.
+        assert_eq!(paced(day), 3600, "24 hours");
+        // 1 h: a window of 5 minutes, so 150 s.
+        assert_eq!(paced(3600), 150, "1 hour");
+        assert_eq!(paced(240), MIN_RETRY_AFTER_SECONDS, "never under a minute");
+    }
+
+    #[test]
+    fn a_revoked_certificate_is_asked_back_within_a_minute() {
+        let window = calculate_suggested_window(0, 90 * 24 * 60 * 60, true, 1000);
+        assert_eq!(retry_after_seconds(&window, true), MIN_RETRY_AFTER_SECONDS);
     }
 
     #[test]

@@ -33,7 +33,7 @@ for the subject line and body.
     └── challenge_failed.j2
 ```
 
-*(Available event names: `profile_mounted`, `account_created`,
+*(Available event names: `endpoint_mounted`, `account_created`,
 `account_deactivated`, `certificate_issued`, `certificate_revoked`,
 `challenge_failed`, `certificates_expiring`, `admin_sign_in`,
 `admin_credential_changed`).*
@@ -47,13 +47,13 @@ file here restyles the text for every webhook target at once, and an entry's
 ## Context variables
 
 When rendering a template, `acme-proxy` passes a context object containing the
-event's data. All events include `profile` (the name of the profile triggered)
+event's data. All events include `endpoint` (the name of the endpoint triggered)
 and most include `client_ip` (the IP address of the ACME client that initiated
 the request).
 
 ### `certificate_issued`
 Triggered when an order is finalized and the signer mints a certificate.
-- `profile` (String)
+- `endpoint` (String)
 - `order_id` (String)
 - `account_id` (String)
 - `cert_serial` (String) - Hex-encoded serial number
@@ -62,7 +62,7 @@ Triggered when an order is finalized and the signer mints a certificate.
 
 **Example (`webhook/certificate_issued.j2`)**:
 ```jinja
-✅ **Certificate Issued** on profile `{{ profile }}`
+✅ **Certificate Issued** on endpoint `{{ endpoint }}`
 **Domains:** {{ identifiers | join(", ") }}
 **Serial:** `{{ cert_serial }}`
 **Requested By IP:** `{{ client_ip | default("system") }}`
@@ -70,7 +70,7 @@ Triggered when an order is finalized and the signer mints a certificate.
 
 ### `challenge_failed`
 Triggered when an HTTP-01 or DNS-01 validation attempt fails.
-- `profile` (String)
+- `endpoint` (String)
 - `order_id` (String)
 - `account_id` (String)
 - `authz_id` (String)
@@ -82,7 +82,7 @@ Triggered when an HTTP-01 or DNS-01 validation attempt fails.
 
 ### `account_created` / `account_deactivated`
 Triggered on account lifecycle events.
-- `profile` (String)
+- `endpoint` (String)
 - `account_id` (String)
 - `contact` (List of Strings) - e.g. `["mailto:admin@example.com"]` *(only on
   created)*
@@ -90,25 +90,25 @@ Triggered on account lifecycle events.
 
 ### `certificate_revoked`
 Triggered via the ACME API or Admin CLI.
-- `profile` (String)
+- `endpoint` (String)
 - `order_id` (String)
 - `account_id` (String)
 - `cert_serial` (String)
 - `reason` (Option&lt;Integer&gt;) - RFC 5280 revocation reason code
 - `client_ip` (Option&lt;String&gt;)
 
-### `profile_mounted`
-Triggered during server startup when a profile is successfully initialized.
-- `profile` (String)
+### `endpoint_mounted`
+Triggered during server startup when an endpoint is successfully initialized.
+- `endpoint` (String)
 
 ### `certificates_expiring`
 The periodic [expiry digest](index.md#expiry-digest) — the one event whose
 subject is a **list**, so a template here loops where every other one
 interpolates.
-- `profile` (String)
+- `endpoint` (String)
 - `generated_at` (Integer) - Epoch seconds; the point `days_remaining` counts
   from, so a message read days later is still self-describing
-- `lead_days` (Integer) - The window this digest covers
+- `lead` (Integer) - The window this digest covers
 - `total` (Integer) - How many certificates matched, which may be **more** than
   `certificates` holds: `notify.expiry.max_entries` bounds the list, and the
   count is what lets a truncated message say how many it did not name
@@ -128,11 +128,11 @@ One account's cut of the digest, mailed to that account's own `contact` when
 [`notify.expiry.contact`](index.md#addressed-to-the-account) is set. Its reader
 is the account holder, not the operator. Only the email backend sends it, so it
 has `email/` templates and no `webhook/` one.
-- `profile` (String)
+- `endpoint` (String)
 - `account_id` (String)
 - `recipients` (List of Strings) - the bare addresses it goes to, `mailto:`
   stripped and `notify.expiry.contact_domains` already applied
-- `generated_at`, `lead_days` - as `certificates_expiring`
+- `generated_at`, `lead` - as `certificates_expiring`
 - `total` (Integer) - how many of **this account's** certificates matched,
   before `max_entries` truncated the list
 - `certificates` (List) - this account's alone, each entry shaped as in
@@ -140,7 +140,7 @@ has `email/` templates and no `webhook/` one.
 
 **Example (`webhook/certificates_expiring.j2`)**:
 ```jinja
-⏰ **{{ total }} expiring** on `{{ profile }}`
+⏰ **{{ total }} expiring** on `{{ endpoint }}`
 {%- for cert in certificates %}
 {{ cert.identifiers | join(", ") }} — {{ cert.days_remaining }}d
 {{- " (already replaced)" if cert.superseded_by }}
@@ -154,7 +154,7 @@ that nobody has renewed among the many that are already taken care of.
 ### `admin_sign_in`
 A [web-admin operator](../operations/webadmin.md#security-notifications)
 sign-in worth flagging.
-- `profile` (String) — always `__admin__`
+- `endpoint` (String) — always `__admin__`
 - `username` (String) — the operator
 - `recipient` (Option) — the operator's own contact address; the `email`
   backend sends there rather than to `notify.email.to`
@@ -165,7 +165,7 @@ sign-in worth flagging.
 
 ### `admin_credential_changed`
 A web-admin operator's password or second factor changed.
-- `profile` (String) — always `__admin__`
+- `endpoint` (String) — always `__admin__`
 - `username`, `recipient` — as above
 - `change` (String) — `password`, `second_factor_enabled`,
   `second_factor_disabled` or `recovery_codes_regenerated`

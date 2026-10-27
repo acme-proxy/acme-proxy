@@ -13,8 +13,8 @@ committed one. Upgrading is therefore just starting the new binary
 against the existing database — there is no dump/restore step, and no upgrade
 procedure beyond replacing the binary.
 
-Everything else may change in any release: configuration keys, profile names and
-the ACME URLs derived from them, the admin JSON API, log event names, and the
+Everything else may change in any release: configuration keys, endpoint names
+and the ACME URLs derived from them, the admin JSON API, log event names, and the
 CLI. That is deliberate — it is what lets the design keep improving instead of
 carrying a compatibility layer for every shape it has ever had. In exchange:
 
@@ -31,6 +31,105 @@ Read this section before an upgrade, and `acme-proxy filter show` builds a
 migrated configuration before restarting.
 
 ## [Unreleased]
+
+### Breaking
+
+- **Every length of time in the configuration is a duration with its unit**,
+  and the keys lost the unit from their names: `timeout_ms = 5000` is now
+  `timeout = "5s"`. Units are `ms`, `s`, `m`, `h`, `d`, `w` and `y` (fixed
+  lengths), and they add up (`"1h30m"`). A bare number is refused, from a file
+  and from the environment; zero is `"0s"`. Every old key is refused at startup
+  by name — at the top level, inside an `[endpoints.<name>]` overlay and inside
+  a named entry — with the converted line in the message. The renames, each
+  also under its environment variable (`…_TIMEOUT_MS` → `…_TIMEOUT`):
+
+  | Was | Now |
+  |---|---|
+  | `server.admission_wait_ms`, `server.request_timeout_ms` | `server.admission_wait`, `server.request_timeout` |
+  | `server.tls.handshake_timeout_ms`, `admin.tls.handshake_timeout_ms` | `….handshake_timeout` |
+  | `admin.session_ttl_seconds`, `admin.session_idle_timeout_seconds`, `admin.login_window_seconds` | `admin.session_ttl`, `admin.session_idle_timeout`, `admin.login_window` |
+  | `admin.auth.oidc.<name>.timeout_ms`, `admin.auth.ldap.<name>.timeout_ms` | `….timeout` |
+  | `nonce.ttl_seconds` | `nonce.ttl` |
+  | `order.validity_seconds`, `order.retention_days` | `order.validity`, `order.retention` |
+  | `audit.reverse_dns_timeout_ms`, `audit.retention_days` | `audit.reverse_dns_timeout`, `audit.retention` |
+  | `jobs.poll_interval_ms`, `jobs.retry_base_seconds`, `jobs.retry_max_seconds`, `jobs.lease_seconds`, `jobs.retention_days` | `jobs.poll_interval`, `jobs.retry_base`, `jobs.retry_max`, `jobs.lease`, `jobs.retention` |
+  | `challenge.timeout_ms`, `ipam.timeout_ms` | `challenge.timeout`, `ipam.timeout` |
+  | `filter.check.<name>.timeout_ms` (`reverse_dns`, `custom`) | `….timeout` |
+  | `signer.custom.timeout_ms` | `signer.custom.timeout` |
+  | `signer.local_ca.leaf_validity_days` | `signer.local_ca.leaf_validity` |
+  | `signer.relay.poll_interval_ms`, `signer.relay.poll_timeout_secs`, `signer.relay.dns01.propagation.delay_secs` | `signer.relay.poll_interval`, `signer.relay.poll_timeout`, `signer.relay.dns01.propagation.delay` |
+  | `notify.email.timeout_ms`, `notify.webhook.<name>.timeout_ms`, `notify.custom.<name>.timeout_ms` | `….timeout` |
+  | `notify.expiry.lead_days`, `notify.expiry.interval_days` | `notify.expiry.lead`, `notify.expiry.interval` |
+
+  The `audit_loaded` log event carries `retention_seconds` (was
+  `retention_days`). Log fields keep their unit suffixes (`timeout_ms`, …).
+- **`signer.local_ca.leaf_validity` below one hour is refused at startup.**
+  Every leaf is backdated by an hour on top of its lifetime; a shorter lifetime
+  (and `0`, which signed a leaf valid only before it was issued) is a mistake.
+
+- **A configured ACME endpoint is called an endpoint everywhere, no longer a
+  "profile"** — the word is left for ACME profiles (draft-ietf-acme-profiles).
+  Every operator-facing spelling moved, with no alias:
+  - Configuration: `[profiles.<name>]` → `[endpoints.<name>]`, and
+    `ACME_PROXY_PROFILES__<NAME>__…` → `ACME_PROXY_ENDPOINTS__<NAME>__…`. The
+    old table is refused by name at startup.
+  - **ACME URLs**: `/profile/<name>/…` → `/endpoint/<name>/…`. **Every
+    client's directory URL must be updated**. The account a client saved holds
+    a `kid` under the old URL, which no longer answers; a `newAccount` with the
+    same key returns the existing account at its new URL (RFC 8555 §7.3.1).
+  - CLI: `acme-proxy profile list|issuer|accept` → `acme-proxy endpoint …`,
+    and every `--profile` flag → `--endpoint`.
+  - Admin API and web admin: `/api/profiles` and `/api/profiles/{name}/filter`
+    → `/api/endpoints…`, `/ui/profiles…` → `/ui/endpoints…`, the `profile`
+    member of every JSON object and the `?profile=` filter → `endpoint`.
+  - Notifications: the `profile_mounted` hook → `endpoint_mounted` (rename it
+    in `events` lists and override templates, e.g.
+    `email/endpoint_mounted.subject.j2`), and the `profile` member and template
+    variable → `endpoint` in every event body, webhook template and `custom`
+    notifier input.
+  - `acme-proxy filter show|explain --json`: `profile` → `endpoint`.
+  - Metrics: the `profile` label → `endpoint` on every series. Dashboards and
+    alerts that select on it must be edited; the bundled Grafana dashboard is.
+  - Logs: the `profile` field → `endpoint` on every event, and the events
+    `profile_mounted`, `profile_unmounted`, `profile_init_failed` and
+    `order_profile_mismatch` → `endpoint_mounted`, `endpoint_unmounted`,
+    `endpoint_init_failed` and `order_endpoint_mismatch`.
+  - Audit: `profile_issuer_accepted` → `endpoint_issuer_accepted`.
+
+  The database follows, through an ordinary migration applied on upgrade:
+  every `profile` column is now `endpoint`, `profile_issuers` is
+  `endpoint_issuers`, and queued jobs and audit rows written by the previous
+  release are rewritten to the new names, so work in flight at the upgrade
+  still runs.
+
+### Added
+
+- **Short-lived certificates from `local_ca`** (#54): `leaf_validity` takes
+  any duration from `"1h"`, so `leaf_validity = "160h"` issues only 160-hour
+  certificates whatever a client asks for — a client's `notAfter` can still only
+  shorten one.
+- **ACME profiles** (draft-ietf-acme-profiles, #54). The directory lists the
+  profiles an endpoint's signer offers in `meta.profiles`, `newOrder` takes a
+  `profile` (an unknown one is refused with `invalidProfile`), and the order
+  object, `acme-proxy order show` and the web admin report it.
+  - `local_ca` offers the `[signer.local_ca.profiles.<name>]` you define, each
+    a `description` and a `leaf_validity`, with `default_profile` for an order
+    naming none. Offering only `shortlived`, as the default, issues nothing
+    else.
+  - `relay` passes the upstream CA's profiles through, and relays each order's
+    choice in the upstream `newOrder`. `signer.relay.profile` forces one
+    instead — e.g. Let's Encrypt's `shortlived` — and the worker refuses to
+    start if the upstream does not advertise it.
+  - Orders record their profile in a new nullable `orders.profile` column
+    (migration `20261027120000_order_acme_profile`).
+
+### Changed
+
+- **ARI's `Retry-After` follows the window it is sent with** (#54): half the
+  suggested window, between one minute and six hours, instead of a fixed six
+  hours. A 90-day certificate still gets six hours; a 24-hour one gets about an
+  hour, so a client polling at that pace lands inside a window that a six-hour
+  pace would have stepped over.
 
 ## [0.7.0] — 2026-10-25
 

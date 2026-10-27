@@ -19,7 +19,7 @@ use ipnet::IpNet;
 use tracing::info;
 use url::Url;
 
-use crate::http_client::Endpoint;
+use crate::http_client::Destination;
 use acme_proxy_core::client::canonical;
 use acme_proxy_core::client::parse_net;
 use acme_proxy_core::config::ProxyConfig;
@@ -30,7 +30,7 @@ use acme_proxy_core::config::ProxyConfig;
 /// an `https://` URL before one of these is ever built.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ProxyTarget {
-    endpoint: Endpoint,
+    destination: Destination,
     /// The finished `Basic …` header value, built once from the URL's userinfo.
     /// `None` when the URL carried no credentials.
     authorization: Option<String>,
@@ -40,8 +40,8 @@ pub struct ProxyTarget {
 }
 
 impl ProxyTarget {
-    pub(crate) fn endpoint(&self) -> &Endpoint {
-        &self.endpoint
+    pub(crate) fn destination(&self) -> &Destination {
+        &self.destination
     }
 
     pub(crate) fn authorization(&self) -> Option<&str> {
@@ -180,7 +180,7 @@ impl OutboundProxies {
         self.http.is_some() || self.https.is_some()
     }
 
-    /// Which proxy, if any, `endpoint` goes through.
+    /// Which proxy, if any, `destination` goes through.
     ///
     /// Loopback and `localhost` bypass unconditionally, before `no_proxy` is
     /// consulted and whatever it says. The reason is the environment fallback:
@@ -192,13 +192,13 @@ impl OutboundProxies {
     /// address literal. Resolving a name to test one would mean a DNS lookup
     /// per outbound request, and a lookup whose answer the connect path is then
     /// free to disagree with.
-    pub(crate) fn select(&self, endpoint: &Endpoint) -> Option<&ProxyTarget> {
-        let proxy = match endpoint.https {
+    pub(crate) fn select(&self, destination: &Destination) -> Option<&ProxyTarget> {
+        let proxy = match destination.https {
             true => self.https.as_ref(),
             false => self.http.as_ref(),
         }?;
 
-        let host = normalize_host(endpoint.host_for_lookup());
+        let host = normalize_host(destination.host_for_lookup());
         let address = host.parse::<IpAddr>().ok().map(canonical);
         if host == "localhost" || address.is_some_and(|ip| ip.is_loopback()) {
             return None;
@@ -216,7 +216,7 @@ impl OutboundProxies {
         }
     }
 
-    /// A proxy every endpoint goes through, loopback included — the only way a
+    /// A proxy every destination goes through, loopback included — the only way a
     /// test can drive the transport against a proxy on `127.0.0.1`.
     #[cfg(test)]
     pub(crate) fn always(target: ProxyTarget) -> Self {
@@ -266,7 +266,7 @@ impl ProxyTarget {
             ),
         }
 
-        let endpoint = Endpoint::from_url(&parsed)
+        let destination = Destination::from_url(&parsed)
             .map_err(|error| anyhow::anyhow!("{setting}: {url}: {error}"))?;
 
         let user = percent_decode(parsed.username())
@@ -288,7 +288,7 @@ impl ProxyTarget {
 
         Ok(Self {
             redacted: redact(&parsed),
-            endpoint,
+            destination,
             authorization,
         })
     }
@@ -423,8 +423,8 @@ mod tests {
         EnvGuard::new(&[])
     }
 
-    fn endpoint(host: &str, https: bool) -> Endpoint {
-        Endpoint {
+    fn destination(host: &str, https: bool) -> Destination {
+        Destination {
             host: host.to_string(),
             port: if https { 443 } else { 80 },
             https,
@@ -441,14 +441,14 @@ mod tests {
         ))
         .unwrap();
 
-        let http = proxies.select(&endpoint("example.com", false)).unwrap();
-        assert_eq!(http.endpoint().host, "p1.example");
-        assert_eq!(http.endpoint().port, 3128);
-        assert!(!http.endpoint().https);
+        let http = proxies.select(&destination("example.com", false)).unwrap();
+        assert_eq!(http.destination().host, "p1.example");
+        assert_eq!(http.destination().port, 3128);
+        assert!(!http.destination().https);
 
-        let https = proxies.select(&endpoint("example.com", true)).unwrap();
-        assert_eq!(https.endpoint().host, "p2.example");
-        assert_eq!(https.endpoint().port, 80);
+        let https = proxies.select(&destination("example.com", true)).unwrap();
+        assert_eq!(https.destination().host, "p2.example");
+        assert_eq!(https.destination().port, 80);
     }
 
     /// A bare `host:port` is what operators write, and `Url::parse` would read
@@ -457,9 +457,9 @@ mod tests {
     fn a_bare_authority_is_read_as_http() {
         let _guard = without_env();
         let proxies = OutboundProxies::from_config(&config("proxy.example:3128", "", &[])).unwrap();
-        let target = proxies.select(&endpoint("example.com", false)).unwrap();
-        assert_eq!(target.endpoint().host, "proxy.example");
-        assert_eq!(target.endpoint().port, 3128);
+        let target = proxies.select(&destination("example.com", false)).unwrap();
+        assert_eq!(target.destination().host, "proxy.example");
+        assert_eq!(target.destination().port, 3128);
     }
 
     /// The two keys are independent: setting only `http_url` must leave https
@@ -469,8 +469,8 @@ mod tests {
     fn the_two_keys_are_not_interchangeable() {
         let _guard = without_env();
         let proxies = OutboundProxies::from_config(&config("http://p.example", "", &[])).unwrap();
-        assert!(proxies.select(&endpoint("example.com", false)).is_some());
-        assert!(proxies.select(&endpoint("example.com", true)).is_none());
+        assert!(proxies.select(&destination("example.com", false)).is_some());
+        assert!(proxies.select(&destination("example.com", true)).is_none());
     }
 
     #[test]
@@ -478,7 +478,7 @@ mod tests {
         let _guard = without_env();
         let proxies = OutboundProxies::from_config(&ProxyConfig::default()).unwrap();
         assert!(!proxies.is_configured());
-        assert!(proxies.select(&endpoint("example.com", true)).is_none());
+        assert!(proxies.select(&destination("example.com", true)).is_none());
         assert!(!OutboundProxies::direct().is_configured());
     }
 
@@ -487,7 +487,7 @@ mod tests {
         let _guard = without_env();
         let proxies =
             OutboundProxies::from_config(&config("http://user:pass@p.example", "", &[])).unwrap();
-        let target = proxies.select(&endpoint("example.com", false)).unwrap();
+        let target = proxies.select(&destination("example.com", false)).unwrap();
         // RFC 7617's worked shape: base64("user:pass").
         assert_eq!(target.authorization(), Some("Basic dXNlcjpwYXNz"));
     }
@@ -501,7 +501,7 @@ mod tests {
         let proxies =
             OutboundProxies::from_config(&config("http://user%40corp:p%3Ass@p.example", "", &[]))
                 .unwrap();
-        let target = proxies.select(&endpoint("example.com", false)).unwrap();
+        let target = proxies.select(&destination("example.com", false)).unwrap();
         assert_eq!(
             target.authorization(),
             Some(format!("Basic {}", BASE64_STANDARD.encode("user@corp:p:ss")).as_str())
@@ -514,7 +514,7 @@ mod tests {
         let proxies = OutboundProxies::from_config(&config("http://p.example", "", &[])).unwrap();
         assert!(
             proxies
-                .select(&endpoint("example.com", false))
+                .select(&destination("example.com", false))
                 .unwrap()
                 .authorization()
                 .is_none()
@@ -529,7 +529,7 @@ mod tests {
         let proxies =
             OutboundProxies::from_config(&config("http://user:hunter2@p.example", "", &[]))
                 .unwrap();
-        let target = proxies.select(&endpoint("example.com", false)).unwrap();
+        let target = proxies.select(&destination("example.com", false)).unwrap();
         assert!(
             !target.redacted().contains("hunter2"),
             "{}",
@@ -621,7 +621,7 @@ mod tests {
             let proxies =
                 OutboundProxies::from_config(&config("http://p.example", "", rules)).unwrap();
             assert_eq!(
-                proxies.select(&endpoint(host, false)).is_none(),
+                proxies.select(&destination(host, false)).is_none(),
                 *bypassed,
                 "{rules:?} against {host}"
             );
@@ -638,14 +638,14 @@ mod tests {
                 .unwrap();
         for host in ["localhost", "LocalHost", "127.0.0.1", "[::1]", "127.9.9.9"] {
             assert!(
-                proxies.select(&endpoint(host, false)).is_none(),
+                proxies.select(&destination(host, false)).is_none(),
                 "{host} must bypass"
             );
         }
         // …and a non-loopback address still goes through, so the rule is not
         // just "everything bypasses".
         let proxies = OutboundProxies::from_config(&config("http://p.example", "", &[])).unwrap();
-        assert!(proxies.select(&endpoint("203.0.113.7", false)).is_some());
+        assert!(proxies.select(&destination("203.0.113.7", false)).is_some());
     }
 
     #[test]
@@ -658,22 +658,26 @@ mod tests {
         let proxies = OutboundProxies::from_config(&ProxyConfig::default()).unwrap();
         assert_eq!(
             proxies
-                .select(&endpoint("example.com", false))
+                .select(&destination("example.com", false))
                 .unwrap()
-                .endpoint()
+                .destination()
                 .host,
             "env-http.example"
         );
         assert_eq!(
             proxies
-                .select(&endpoint("example.com", true))
+                .select(&destination("example.com", true))
                 .unwrap()
-                .endpoint()
+                .destination()
                 .host,
             "env-https.example"
         );
-        assert!(proxies.select(&endpoint("one.example", false)).is_none());
-        assert!(proxies.select(&endpoint("a.two.example", false)).is_none());
+        assert!(proxies.select(&destination("one.example", false)).is_none());
+        assert!(
+            proxies
+                .select(&destination("a.two.example", false))
+                .is_none()
+        );
     }
 
     #[test]
@@ -687,18 +691,18 @@ mod tests {
                 .unwrap();
         assert_eq!(
             proxies
-                .select(&endpoint("example.com", false))
+                .select(&destination("example.com", false))
                 .unwrap()
-                .endpoint()
+                .destination()
                 .host,
             "file.example"
         );
         // The configured no_proxy replaced the environment's wholesale rather
         // than merging with it — arrays never append here.
-        assert!(proxies.select(&endpoint("env.example", false)).is_some());
+        assert!(proxies.select(&destination("env.example", false)).is_some());
         assert!(
             proxies
-                .select(&endpoint("file.example.com", false))
+                .select(&destination("file.example.com", false))
                 .is_none()
         );
     }
@@ -712,12 +716,12 @@ mod tests {
             ("HTTPS_PROXY", "http://upper.example:3128"),
         ]);
         let proxies = OutboundProxies::from_config(&ProxyConfig::default()).unwrap();
-        assert!(proxies.select(&endpoint("example.com", false)).is_none());
+        assert!(proxies.select(&destination("example.com", false)).is_none());
         assert_eq!(
             proxies
-                .select(&endpoint("example.com", true))
+                .select(&destination("example.com", true))
                 .unwrap()
-                .endpoint()
+                .destination()
                 .host,
             "upper.example"
         );

@@ -32,7 +32,7 @@ use acme_proxy_store::status::UnknownStatus;
 #[derive(Debug, Deserialize, Default)]
 pub struct OrderListParams {
     #[serde(default, deserialize_with = "empty_is_absent")]
-    pub profile: Option<String>,
+    pub endpoint: Option<String>,
     #[serde(rename = "accountId", default, deserialize_with = "empty_is_absent")]
     pub account_id: Option<String>,
     #[serde(default, deserialize_with = "empty_is_absent")]
@@ -117,7 +117,7 @@ pub(crate) fn order_query(
         .check_identifier_filters()
         .map_err(bad_identifier_filters)?;
     Ok(OrderQuery {
-        profile: params.profile,
+        endpoint: params.endpoint,
         account_id: params.account_id,
         status,
         identifier: params.identifier,
@@ -128,7 +128,7 @@ pub(crate) fn order_query(
     })
 }
 
-/// `GET /api/orders?profile=&accountId=&status=&identifier=&identifierContains=&certSerial=&limit=&offset=`
+/// `GET /api/orders?endpoint=&accountId=&status=&identifier=&identifierContains=&certSerial=&limit=&offset=`
 pub async fn list_orders(
     State(state): State<AdminState>,
     Query(params): Query<OrderListParams>,
@@ -159,8 +159,8 @@ pub async fn get_order(
 
 /// `POST /api/orders/{id}/revoke`
 ///
-/// The signer comes from **the order's own profile**, not from any ambient
-/// default: two profiles can hold two different CAs, and revoking against the
+/// The signer comes from **the order's own endpoint**, not from any ambient
+/// default: two endpoints can hold two different CAs, and revoking against the
 /// wrong one would record nothing useful and leave the real CRL untouched.
 ///
 /// No backend is built here, and none is held: the panel runs in the `admin`
@@ -205,12 +205,12 @@ pub(crate) enum Revoked {
     Queued(Uuid),
 }
 
-/// Revokes an order's certificate against **its own profile's** revocation
+/// Revokes an order's certificate against **its own endpoint's** revocation
 /// route, attributed to the operator rather than the certificate's owner. The
 /// audit row is written by [`admin::revoke_order`]; this adds the refusals'
 /// wording and the log line.
 ///
-/// `404` for no such order or an unmounted profile, `409 order_not_issued` and
+/// `404` for no such order or an unmounted endpoint, `409 order_not_issued` and
 /// `409 already_revoked` for an order whose state does not allow it.
 pub(crate) async fn apply_revoke_order(
     state: &AdminState,
@@ -218,15 +218,15 @@ pub(crate) async fn apply_revoke_order(
     id: &str,
     reason: Option<u32>,
 ) -> Result<Revoked, AdminError> {
-    // Resolve the profile before doing anything: an order belonging to a
-    // profile this process no longer mounts cannot be revoked here, and saying
+    // Resolve the endpoint before doing anything: an order belonging to a
+    // endpoint this process no longer mounts cannot be revoked here, and saying
     // so plainly beats revoking against whatever backend happened to be first.
-    let profile = resolve_order_profile(state, id).await?;
+    let endpoint = resolve_order_endpoint(state, id).await?;
 
     // The operator's username, not the order's account: this revocation was an
     // administrative act, and a row attributing it to the certificate's owner
     // would say the opposite of what happened.
-    let route = profile.signer_info.revocation_route();
+    let route = endpoint.signer_info.revocation_route();
     let outcome = admin::revoke_order(
         id,
         reason,
@@ -235,7 +235,7 @@ pub(crate) async fn apply_revoke_order(
         acme_proxy_protocol::acme::revoke::Revocations {
             database: &state.database,
             audit: &state.audit,
-            notify: Some(&profile.notify),
+            notify: Some(&endpoint.notify),
             revoker: revoker(state, &route),
         },
     )
@@ -257,7 +257,7 @@ pub(crate) async fn apply_revoke_order(
                            outcome = "success",
                            surface = caller.surface,
                            order_id = %id,
-                           profile = %order.profile,
+                           endpoint = %order.endpoint,
                            reason = ?reason,
                            username = %caller.username());
             Ok(Revoked::Now(order))
@@ -274,7 +274,7 @@ pub(crate) async fn apply_revoke_order(
     }
 }
 
-/// How a request on this listener revokes for a profile whose read side
+/// How a request on this listener revokes for an endpoint whose read side
 /// answered `route`: a local CA's ledger, or the queue — never a backend, which
 /// only the `worker` role holds. Waits as long as an ACME request would.
 pub(crate) fn revoker<'a>(
@@ -284,7 +284,9 @@ pub(crate) fn revoker<'a>(
     acme_proxy_protocol::acme::revoke::Revoker::for_route(
         route,
         &state.jobs,
-        acme_proxy_protocol::acme::revoke::request_wait(state.config.server.request_timeout_ms),
+        acme_proxy_protocol::acme::revoke::request_wait(
+            state.config.server.request_timeout.as_millis(),
+        ),
     )
 }
 
@@ -371,31 +373,31 @@ pub(crate) fn revoke_error(error: RevokeError) -> AdminError {
     }
 }
 
-/// The profile that issued `id`'s certificate — its signer and its notifier —
+/// The endpoint that issued `id`'s certificate — its signer and its notifier —
 /// or the refusal saying why not.
 ///
-/// Revocation is per-profile: another profile's backend holds a different CA,
-/// or none at all, so an order belonging to a profile this process no longer
+/// Revocation is per-endpoint: another endpoint's backend holds a different CA,
+/// or none at all, so an order belonging to an endpoint this process no longer
 /// mounts cannot be revoked here — and saying so plainly beats revoking against
 /// whichever backend happened to be first.
 ///
 /// Shared with `pages::orders`, which had the same nine lines and the same
 /// error string character for character. `render_orders` and `revoke_error`
 /// were already shared between the two; this was the one that was not.
-pub(crate) async fn resolve_order_profile(
+pub(crate) async fn resolve_order_endpoint(
     state: &AdminState,
     id: &str,
-) -> Result<std::sync::Arc<acme_proxy_protocol::profile::Profile>, AdminError> {
+) -> Result<std::sync::Arc<acme_proxy_protocol::endpoint::Endpoint>, AdminError> {
     let order = Order::find_by_id(id, &state.database)
         .await?
         .ok_or_else(|| not_found(id))?;
-    let profile = state.profiles.get(&order.profile).ok_or_else(|| {
+    let endpoint = state.endpoints.get(&order.endpoint).ok_or_else(|| {
         AdminError::conflict(
-            "profile_not_mounted",
-            admin::order_profile_unmounted_refusal(id, &order.profile),
+            "endpoint_not_mounted",
+            admin::order_endpoint_unmounted_refusal(id, &order.endpoint),
         )
     })?;
-    Ok(profile.clone())
+    Ok(endpoint.clone())
 }
 
 fn not_found(id: &str) -> AdminError {

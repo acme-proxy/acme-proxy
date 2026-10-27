@@ -23,7 +23,7 @@
 //! 3. **`CKA_EC_POINT` is DER-wrapped.** rcgen wants the bare uncompressed
 //!    point `0x04 ‖ X ‖ Y`; PKCS#11 v2.40+ wraps it in an `OCTET STRING`.
 //!    Some tokens do not. See [`unwrap_ec_point`].
-//! 4. **`C_Initialize` runs once per module per process.** Two profiles using
+//! 4. **`C_Initialize` runs once per module per process.** Two endpoints using
 //!    two different keys on one module must share one context, or the second
 //!    gets `CKR_CRYPTOKI_ALREADY_INITIALIZED`. See [`context_for`].
 
@@ -55,7 +55,7 @@ const OID_P384: &[u8] = &[0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x22];
 ///
 /// `Pkcs11::new` + `initialize` is `C_Initialize`, which a PKCS#11 module
 /// accepts exactly once per process; a second call returns
-/// `CKR_CRYPTOKI_ALREADY_INITIALIZED`. Two profiles pointing at two different
+/// `CKR_CRYPTOKI_ALREADY_INITIALIZED`. Two endpoints pointing at two different
 /// keys on the same module are a legitimate configuration that
 /// `signer::build_backends` will not deduplicate (their signer configs differ),
 /// so without this registry the second one would fail to start.
@@ -105,7 +105,7 @@ fn context_for(module_path: &str) -> anyhow::Result<Arc<Pkcs11>> {
 /// the session: once any session on a slot has logged in, every other session
 /// on that slot is logged in too, and `C_Login` answers
 /// `CKR_USER_ALREADY_LOGGED_IN`. That is not a failure, and it is not exotic —
-/// it is what two profiles sharing one token, or a reconnect racing a sibling,
+/// it is what two endpoints sharing one token, or a reconnect racing a sibling,
 /// both hit. Treating it as an error made the second `Pkcs11SigningKey` on a
 /// token refuse to start.
 fn login_as_user(session: &Session, pin: &AuthPin) -> Result<(), CryptokiError> {
@@ -1105,7 +1105,7 @@ mod softhsm {
                 "ord-hsm",
                 &make_csr_der("example.com"),
                 &[acme_proxy_core::identifier::Identifier::dns("example.com")],
-                crate::RequestedValidity::default(),
+                crate::OrderRequest::default(),
             )
             .await
             .expect("issuance through the token must succeed");
@@ -1140,7 +1140,7 @@ mod softhsm {
                 &[acme_proxy_core::identifier::Identifier::dns(
                     "revoke.example",
                 )],
-                crate::RequestedValidity::default(),
+                crate::OrderRequest::default(),
             )
             .await
             .unwrap();
@@ -1245,7 +1245,7 @@ mod softhsm {
                 "ord-file",
                 &make_csr_der("example.com"),
                 &[acme_proxy_core::identifier::Identifier::dns("example.com")],
-                crate::RequestedValidity::default(),
+                crate::OrderRequest::default(),
             )
             .await
             .unwrap();

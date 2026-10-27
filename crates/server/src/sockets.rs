@@ -2,7 +2,6 @@
 //! a reload, and announcing one that has come up.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
@@ -107,7 +106,7 @@ pub(super) async fn bind_metrics(config: &Arc<Config>) -> anyhow::Result<Option<
 /// The three sockets a process may be handed, already bound.
 ///
 /// A struct rather than three positional `Option<TcpListener>` parameters, the
-/// `ProfileParts` and `tests/reload.rs::Sockets` convention: they are the same
+/// `EndpointParts` and `tests/reload.rs::Sockets` convention: they are the same
 /// shape, so a caller swapping two would still compile, in a function whose
 /// whole subject is which socket answers what.
 ///
@@ -374,7 +373,7 @@ pub(super) async fn announce_admin_listener(
 
     // Swept once now, then on an interval: sessions outlive a restart, so a
     // startup-only sweep would leak every one an operator never signed out of.
-    let idle = Duration::from_secs(config.admin.session_idle_timeout_seconds);
+    let idle = config.admin.session_idle_timeout.as_std();
     if let Err(error) = acme_proxy_store::admin_session::AdminSession::cleanup(idle, database).await
     {
         error!(event = "admin_session_cleanup_failed", outcome = "failure", error = %error);

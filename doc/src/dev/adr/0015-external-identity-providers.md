@@ -45,7 +45,7 @@ Three things in the tree pushed against doing that naively:
   specification is what ADR 0009 asks to hand-roll, and this is not that page.
 - **A sign-in may make its provider round trip inline.** The provider is chosen
   by the operator, not by the caller; the call is on the admin listener only,
-  behind the login limiter, bounded by the provider's `timeout_ms`; and the
+  behind the login limiter, bounded by the provider's `timeout`; and the
   person is waiting for exactly that answer. It is the shape of
   `signer.custom`'s inline read hooks, not of a challenge validation.
 - **An identity is `(auth_provider, external_id)`**, the provider's stable name

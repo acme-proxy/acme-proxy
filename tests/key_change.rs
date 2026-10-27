@@ -20,8 +20,8 @@ mod common;
 use common::{EcSigner, RsaSigner, TestSigner, body_json, fetch_nonce, p, test_app};
 
 const BASE: &str = common::BASE;
-const NEW_ACCOUNT_URL: &str = "http://localhost:3000/profile/default/newAccount";
-const KEY_CHANGE_URL: &str = "http://localhost:3000/profile/default/keyChange";
+const NEW_ACCOUNT_URL: &str = "http://localhost:3000/endpoint/default/newAccount";
+const KEY_CHANGE_URL: &str = "http://localhost:3000/endpoint/default/keyChange";
 
 async fn post(app: &Router, path: &str, body: String) -> Response {
     app.clone()
@@ -394,7 +394,7 @@ async fn key_change_unknown_nonce_is_bad_nonce() {
 /// where the conflict check sees the other account and refuses. This is the
 /// interleaving it cannot reach: both requests run that check before either
 /// `UPDATE` lands, both are told the key is free, and the loser then trips
-/// `UNIQUE (profile, pubkey)` inside `update_pubkey`. Until the handler learned
+/// `UNIQUE (endpoint, pubkey)` inside `update_pubkey`. Until the handler learned
 /// to recognise that violation it became `serverInternal` — the same answer the
 /// server gives when it has no idea what happened, for a case the RFC gives a
 /// status *and* a `Location` for.

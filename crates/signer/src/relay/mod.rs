@@ -42,8 +42,8 @@ use serde_json::json;
 use tracing::{debug, info, warn};
 
 use crate::{
-    IssueOutcome, RenewalWindow, RequestedValidity, RevocationRoute, SignerBackend, SignerError,
-    SignerInfo,
+    AcmeProfiles, IssueOutcome, OrderRequest, RenewalWindow, RevocationRoute, SignerBackend,
+    SignerError, SignerInfo,
 };
 use acme_proxy_core::config::RelayConfig;
 use acme_proxy_core::identifier::Identifier;
@@ -122,11 +122,11 @@ struct Inner {
     /// reason as `dns01_propagation`.
     dns01_alias: Option<String>,
     poll: PollConfig,
-    /// The whole `profile name -> dispatcher` map, not merely the profiles this
+    /// The whole `endpoint name -> dispatcher` map, not merely the endpoints this
     /// backend relays for: a cheap clone either way, and it sidesteps keeping a
     /// second, filtered copy in sync. `settle()` looks up the right one by
-    /// `Order.profile` once an issuance resolves — the only place this backend
-    /// has no `AppState`/`Profile` to reach a notifier through at all.
+    /// `Order.endpoint` once an issuance resolves — the only place this backend
+    /// has no `AppState`/`Endpoint` to reach a notifier through at all.
     ///
     /// A [`Notifiers`] handle rather than the map itself, because this backend
     /// outlives a configuration generation: it is carried across a reload while
@@ -206,8 +206,8 @@ impl RelaySigner {
         }
 
         let poll = PollConfig {
-            interval: Duration::from_millis(cfg.poll_interval_ms),
-            timeout: Duration::from_secs(cfg.poll_timeout_secs),
+            interval: cfg.poll_interval.as_std(),
+            timeout: cfg.poll_timeout.as_std(),
         };
 
         // Before provisioning, which may reach the upstream: a wait that cannot
@@ -249,11 +249,14 @@ impl RelaySigner {
                 .unwrap_or_else(|_| Err(anyhow::anyhow!("upstream provisioning thread panicked")))
         })?;
 
+        check_forced_profile(cfg, client.directory())?;
+
         let client = Arc::new(client);
         let info = Arc::new(RelayInfo {
             directory_url: cfg.directory_url.clone(),
             outbound: parts.egress.outbound(),
             timeout: poll.timeout,
+            forced_profile: forced_profile(cfg),
             client: tokio::sync::OnceCell::new_with(Some(client.clone())),
             http01: match &strategy {
                 ChallengeStrategy::Http01(tokens) => Some(tokens.clone()),
@@ -370,12 +373,14 @@ impl SignerBackend for RelaySigner {
         order_id: &str,
         csr_der: &[u8],
         identifiers: &[Identifier],
-        validity: RequestedValidity,
+        request: OrderRequest,
     ) -> Result<IssueOutcome, SignerError> {
         // The upstream CA decides validity, and RFC 8555 §7.4 lets it: relaying
-        // the request would be honest only if the upstream honoured it, which
-        // this proxy cannot promise on its behalf.
-        let _ = validity;
+        // the window would be honest only if the upstream honoured it, which
+        // this proxy cannot promise on its behalf. The profile is relayed: it
+        // is how a client asks the upstream for a lifetime, and `newOrder`
+        // already checked it against what the upstream advertises (or forced
+        // `signer.relay.profile`).
         let inner = self.0.clone();
 
         // An order already relayed: the enqueue below is what may have failed
@@ -393,12 +398,15 @@ impl SignerBackend for RelaySigner {
             return self.requeue(order_id).await;
         }
 
-        let payload = json!({
+        let mut payload = json!({
             "identifiers": identifiers.iter().map(|identifier| json!({
                 "type": identifier.typ,
                 "value": identifier.value,
             })).collect::<Vec<_>>(),
         });
+        if let Some(profile) = &request.profile {
+            payload["profile"] = json!(profile);
+        }
 
         let response = inner
             .client
@@ -440,7 +448,7 @@ impl SignerBackend for RelaySigner {
 
         // The order's own `expires` bounds how long this may be retried: past
         // it the order is refused on read, so a certificate obtained upstream
-        // could never be collected. Its `profile` comes back from the same read
+        // could never be collected. Its `endpoint` comes back from the same read
         // and names the backend that owns the work, this one handling `issue`
         // but the shared handler having several to choose between. One extra
         // primary-key read on a path that has just made an HTTPS round trip, and
@@ -452,7 +460,7 @@ impl SignerBackend for RelaySigner {
     /// This backend, as the shared [`flow::RelayJob`] sees it.
     ///
     /// State rather than a handler, for the reason `crl_refresher` is: the
-    /// registry refuses two handlers for one `kind`, and two relay profiles
+    /// registry refuses two handlers for one `kind`, and two relay endpoints
     /// pointed at different upstreams are two backends.
     fn relay_state(&self) -> Option<RelayState> {
         Some(RelayState(self.0.clone()))
@@ -518,6 +526,52 @@ pub struct RelayInfo {
     timeout: Duration,
     client: tokio::sync::OnceCell<Arc<AcmeClient>>,
     http01: Option<Arc<dyn http01::TokenStore>>,
+    /// `signer.relay.profile`, when set: the one profile listed and issued.
+    forced_profile: Option<String>,
+}
+
+/// How long a request may wait on the upstream's directory to learn which
+/// profiles it advertises. Short, because the request waiting is a client's
+/// `GET /directory` or `newOrder`: past this the offer is reported unknown,
+/// the directory lists none, and a client's choice is passed through for the
+/// upstream to judge. Only a process that holds no relay backend ever waits —
+/// the worker's backend discovered the directory at startup.
+const PROFILE_DISCOVERY_BUDGET: Duration = Duration::from_secs(5);
+
+/// `signer.relay.profile`, or `None` when it is empty.
+fn forced_profile(cfg: &RelayConfig) -> Option<String> {
+    let profile = cfg.profile.trim();
+    (!profile.is_empty()).then(|| profile.to_string())
+}
+
+/// Refuses a forced profile the upstream does not advertise, at startup: every
+/// upstream order would ask for it, and an upstream that does not offer it
+/// would refuse every one (or, predating the draft, ignore the field and
+/// issue something else — the silent version of the same mistake).
+fn check_forced_profile(cfg: &RelayConfig, directory: &client::Directory) -> anyhow::Result<()> {
+    let Some(forced) = forced_profile(cfg) else {
+        return Ok(());
+    };
+    let offered = &directory.meta.profiles;
+    anyhow::ensure!(
+        offered.contains_key(&forced),
+        "signer.relay.profile = \"{forced}\" is not a profile the upstream advertises \
+         at {}: {}",
+        cfg.directory_url,
+        if offered.is_empty() {
+            "its directory lists no profiles at all".to_string()
+        } else {
+            format!(
+                "it offers {}",
+                offered
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
+    );
+    Ok(())
 }
 
 impl RelayInfo {
@@ -533,7 +587,7 @@ impl RelayInfo {
                  to relay to"
             );
         }
-        let timeout = Duration::from_secs(cfg.poll_timeout_secs);
+        let timeout = cfg.poll_timeout.as_std();
         let http01 = (cfg.challenge_strategy == "http01").then(|| {
             Arc::new(http01::DbTokenStore::new(
                 parts.database.clone(),
@@ -546,6 +600,7 @@ impl RelayInfo {
             timeout,
             client: tokio::sync::OnceCell::new(),
             http01,
+            forced_profile: forced_profile(cfg),
         })
     }
 
@@ -614,6 +669,46 @@ impl SignerInfo for RelayInfo {
             // context this proxy cannot reconstruct.
             explanation_url: info.explanation_url,
         }))
+    }
+
+    /// The upstream's own profiles, relayed — or the forced one alone.
+    ///
+    /// A forced profile needs no upstream to report: it is listed and issued
+    /// whatever the upstream's directory says, which the worker checked at
+    /// startup. Otherwise an upstream that cannot be reached within
+    /// [`PROFILE_DISCOVERY_BUDGET`] leaves the offer unknown (`offered:
+    /// None`) rather than failing the client's request.
+    async fn acme_profiles(&self) -> AcmeProfiles {
+        if let Some(forced) = &self.forced_profile {
+            return AcmeProfiles {
+                offered: self
+                    .client
+                    .get()
+                    .map(|client| client.directory().meta.profiles.clone()),
+                default: None,
+                forced: Some(forced.clone()),
+            };
+        }
+        let offered = match tokio::time::timeout(PROFILE_DISCOVERY_BUDGET, self.client()).await {
+            Ok(Ok(client)) => Some(client.directory().meta.profiles.clone()),
+            Ok(Err(error)) => {
+                warn!(event = "upstream_profiles_unavailable", outcome = "failure", error = %error);
+                None
+            }
+            Err(_) => {
+                warn!(
+                    event = "upstream_profiles_unavailable",
+                    outcome = "failure",
+                    error = "the upstream directory did not answer in time"
+                );
+                None
+            }
+        };
+        AcmeProfiles {
+            offered,
+            default: None,
+            forced: None,
+        }
     }
 
     /// Hands the responder route the store the `http01` strategy publishes

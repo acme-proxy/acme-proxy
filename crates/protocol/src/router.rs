@@ -1,4 +1,4 @@
-//! The ACME listener's routers — the whole service and one profile's — the
+//! The ACME listener's routers — the whole service and one endpoint's — the
 //! metrics listener's, and the response layers shared with the admin listener.
 
 use std::any::Any;
@@ -27,35 +27,35 @@ use acme_proxy_net::challenge;
 use acme_proxy_signer as signer;
 use acme_proxy_store::db::Database;
 
-use crate::profile::Profile;
+use crate::endpoint::Endpoint;
 
 /// Shared application state handed to every route via `State<AppState>`.
 #[derive(Clone)]
 pub struct AppState {
     pub database: Arc<Database>,
     /// Process-wide configuration only — `server`, `nonce`, `dns`, `logging`.
-    /// Anything an endpoint can differ on is on [`AppState::profile`].
+    /// Anything an endpoint can differ on is on [`AppState::endpoint`].
     pub config: Arc<Config>,
-    pub profile: Arc<Profile>,
-    /// The CA's audit trail. Beside `config` rather than on the profile,
+    pub endpoint: Arc<Endpoint>,
+    /// The CA's audit trail. Beside `config` rather than on the endpoint,
     /// because `[audit]` is process-wide: the trail describes the CA, and the
     /// web admin writes to the same one across every endpoint it can revoke on.
     pub audit: Arc<acme_proxy_jobs::auditor::Auditor>,
     /// The durable queue, for the work a request starts and does not finish.
     ///
     /// Here for `audit`'s reason — one queue, one table, one runner for the
-    /// process — rather than on the profile. `post_challenge` is its only
+    /// process — rather than on the endpoint. `post_challenge` is its only
     /// caller on this listener: it claims a challenge and queues the outbound
     /// check rather than awaiting it, so a probe of a client-chosen host no
     /// longer holds an admission permit.
     pub jobs: acme_proxy_jobs::jobs::JobQueue,
 }
 
-/// Every distinct `http-01` token store across the mounted profiles.
+/// Every distinct `http-01` token store across the mounted endpoints.
 ///
 /// Deduplicated by pointer: [`signer::build_backends`] already shares one
-/// backend instance between profiles with identical `[signer]` sections, so
-/// several profiles usually contribute the *same* store. Two profiles relaying
+/// backend instance between endpoints with identical `[signer]` sections, so
+/// several endpoints usually contribute the *same* store. Two endpoints relaying
 /// to two different upstreams contribute two, and the route consults each in
 /// turn until one answers — there is nothing to isolate, because the token is
 /// the upstream's own random value and is itself the secret (RFC 8555 §8.3),
@@ -65,10 +65,10 @@ pub struct AppState {
 /// table, so in practice the first answers and the rest are never asked. The
 /// list stays because `Http01TokenStore` is a trait: a provider that is not the
 /// database would be a second place a token can live.
-fn http01_stores(profiles: &[Arc<Profile>]) -> Vec<Arc<dyn signer::Http01TokenStore>> {
+fn http01_stores(endpoints: &[Arc<Endpoint>]) -> Vec<Arc<dyn signer::Http01TokenStore>> {
     let mut stores: Vec<Arc<dyn signer::Http01TokenStore>> = Vec::new();
-    for profile in profiles {
-        if let Some(store) = profile.signer_info.http01_tokens()
+    for endpoint in endpoints {
+        if let Some(store) = endpoint.signer_info.http01_tokens()
             && !stores.iter().any(|existing| Arc::ptr_eq(existing, &store))
         {
             stores.push(store);
@@ -154,11 +154,11 @@ pub fn catch_panic_acme() -> CatchPanicLayer<fn(Box<dyn Any + Send + 'static>) -
 }
 
 /// Builds the whole HTTP service: the server-level routes at the root, and one
-/// ACME router per profile under `/profile/<name>`.
+/// ACME router per endpoint under `/endpoint/<name>`.
 pub fn build_app(
     database: Arc<Database>,
     config: Arc<Config>,
-    profiles: Vec<Arc<Profile>>,
+    endpoints: Vec<Arc<Endpoint>>,
     audit: Arc<acme_proxy_jobs::auditor::Auditor>,
     metrics: Arc<metrics::Metrics>,
     jobs: acme_proxy_jobs::jobs::JobQueue,
@@ -182,10 +182,10 @@ pub fn build_app(
     // The `http-01` responder for the *upstream's* challenge, mounted only when
     // a signer backend has tokens to serve — which today means `relay`
     // with `challenge_strategy = "http01"`. Here beside `/health` rather than
-    // inside a profile: RFC 8555 §8.3 fixes this path at the root of the name
+    // inside an endpoint: RFC 8555 §8.3 fixes this path at the root of the name
     // being certified, and the CA fetching it holds no account at this server,
     // so it must not meet a filter chain, a nonce or an ACME 404.
-    let stores = http01_stores(&profiles);
+    let stores = http01_stores(&endpoints);
     if !stores.is_empty() {
         info!(
             event = "http_01_responder_mounted",
@@ -206,14 +206,14 @@ pub fn build_app(
     }
 
     let mut acme = Router::new();
-    for profile in &profiles {
-        let path = profile.path.clone();
+    for endpoint in &endpoints {
+        let path = endpoint.path.clone();
         acme = acme.nest(
             &path,
             build_router(
                 database.clone(),
                 config.clone(),
-                profile.clone(),
+                endpoint.clone(),
                 audit.clone(),
                 jobs.clone(),
             ),
@@ -225,8 +225,8 @@ pub fn build_app(
         .layer(middleware::from_fn_with_state(
             middlewares::admission::Admission::new(
                 server.max_concurrent_requests,
-                server.admission_wait_ms,
-                server.request_timeout_ms,
+                server.admission_wait.as_millis(),
+                server.request_timeout.as_millis(),
             ),
             middlewares::admission::admission_middleware,
         ))
@@ -237,23 +237,23 @@ pub fn build_app(
         // carrying at most a CSR.
         .layer(DefaultBodyLimit::max(server.max_body_bytes));
 
-    // Server-wide layers, applied once rather than once per profile. The
+    // Server-wide layers, applied once rather than once per endpoint. The
     // filter and nonce layers are deliberately *not* here: both are ACME
-    // concerns and live inside each profile's own router.
+    // concerns and live inside each endpoint's own router.
     let app = root.merge(acme);
 
     // Innermost of the server-wide stack: a panic anywhere below here — a
-    // handler, the admission layer, a nested profile router — is turned into a
+    // handler, the admission layer, a nested endpoint router — is turned into a
     // 500 problem document instead of an aborted connection. Under the metrics
     // and access layers on purpose, so the counter still sees `status = "500"`
-    // and the access line still emits (`request_completed`, with the profile
+    // and the access line still emits (`request_completed`, with the endpoint
     // span field already recorded). ASVS V16.5.4.
     let app = app.layer(catch_panic_acme());
 
     // Counting sits here even though the exposition is served on a *different*
     // socket (see `metrics_app`): this is the only router that sees an ACME
     // request, and the registry both share is an `Arc`. On the merged router
-    // rather than inside a profile, because `Router::layer` applies per route
+    // rather than inside an endpoint, because `Router::layer` applies per route
     // *and* to the fallback — so a request that matched nothing is counted too,
     // under `ROUTE_UNMATCHED`. It also runs after routing, which is what makes
     // `MatchedPath` present: the label has to be the route *pattern*
@@ -286,7 +286,7 @@ pub fn build_app(
 /// A **third socket**, not a route on either of the other two. The port is the
 /// access control — see [`acme_proxy_core::config::MetricsConfig`] — which is why there
 /// is no session extractor here and no filter chain, and why the exposition can
-/// name every profile without that being a decision about the public listener.
+/// name every endpoint without that being a decision about the public listener.
 ///
 /// Deliberately none of `build_app`'s layers. There is no admission control (a
 /// scrape is wanted *most* when the server is saturated, the reason `/health`
@@ -312,7 +312,7 @@ pub fn metrics_app(metrics: Arc<metrics::Metrics>) -> Router {
         ))
 }
 
-/// Builds one profile's ACME router: every RFC 8555 resource, plus the two
+/// Builds one endpoint's ACME router: every RFC 8555 resource, plus the two
 /// layers that are per-endpoint (its filter chain) or ACME-specific (the
 /// `Replay-Nonce` minting).
 ///
@@ -322,27 +322,27 @@ pub fn metrics_app(metrics: Arc<metrics::Metrics>) -> Router {
 pub fn build_router(
     database: Arc<Database>,
     config: Arc<Config>,
-    profile: Arc<Profile>,
+    endpoint: Arc<Endpoint>,
     audit: Arc<acme_proxy_jobs::auditor::Auditor>,
     jobs: acme_proxy_jobs::jobs::JobQueue,
 ) -> Router {
-    let filter = profile.filter.clone();
+    let filter = endpoint.filter.clone();
     let state = AppState {
         database: database.clone(),
         config,
-        profile: profile.clone(),
+        endpoint: endpoint.clone(),
         audit,
         jobs,
     };
 
-    let profile_name = profile.name.clone();
+    let endpoint_name = endpoint.name.clone();
 
     // RFC 8555 §7.1 — the `index` link every resource but the directory carries.
     // Built once here rather than per response; an invalid header value is
     // impossible for a URL that already passed config validation, but falling
     // back to skipping the layer beats panicking a whole endpoint over it.
     let index_link =
-        HeaderValue::from_str(&format!("<{}/directory>;rel=\"index\"", profile.base_url));
+        HeaderValue::from_str(&format!("<{}/directory>;rel=\"index\"", endpoint.base_url));
 
     let router = Router::<AppState>::new()
         // §6.3: the directory and newNonce MUST answer a plain GET *and* a
@@ -394,9 +394,9 @@ pub fn build_router(
             middlewares::nonce::add_nonce_middleware,
         ));
 
-    // Outermost of the profile's layers that touch a response, so the link
+    // Outermost of the endpoint's layers that touch a response, so the link
     // reaches every one of them — including the two fallbacks above and
-    // anything a filter refuses. (The `profile` recorder below wraps this, but
+    // anything a filter refuses. (The `endpoint` recorder below wraps this, but
     // only writes to the tracing span.)
     let router = match index_link {
         Ok(value) => router.layer(middleware::from_fn_with_state(
@@ -407,24 +407,24 @@ pub fn build_router(
             tracing::error!(
                 event = "request_index_link_header_invalid",
                 outcome = "failure",
-                base_url = %profile.base_url,
+                base_url = %endpoint.base_url,
                 error = %error,
             );
             router
         }
     };
 
-    // `profile` is declared `field::Empty` on the server-wide `request` span
+    // `endpoint` is declared `field::Empty` on the server-wide `request` span
     // (`middlewares::access`) and filled in here — the first layer that knows
     // which endpoint the request landed on, since the name comes from the
-    // `/profile/<name>` mount point `Router::nest` has already stripped.
+    // `/endpoint/<name>` mount point `Router::nest` has already stripped.
     // Ahead of every other layer of this router so a request a filter refuses
     // still says *which* endpoint refused it.
     router.layer(middleware::from_fn(
         move |request: Request<Body>, next: Next| {
-            let name = profile_name.clone();
+            let name = endpoint_name.clone();
             async move {
-                Span::current().record("profile", &*name);
+                Span::current().record("endpoint", &*name);
                 next.run(request).await
             }
         },

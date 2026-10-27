@@ -18,7 +18,7 @@ it unsafe to rely on:
   brute-force budget. The book said to run exactly one.
 - A worker generated a CA whenever `ca.key` was missing. A second worker host
   started without the copied key files minted a CA of its own, silently, and a
-  profile then issued from two CAs over one database.
+  endpoint then issued from two CAs over one database.
 - The only probe was `/health`, which answers whenever the process accepts a
   connection. A load balancer could not tell that an instance had lost its
   database.
@@ -46,11 +46,11 @@ endpoint.
 - **No state that several processes see lives in a process.** The sign-in
   limiter is the `admin_login_buckets` table, and a reservation is one
   conditional `UPDATE`. That closes ADR 0008's last exception.
-- **Each `local_ca` profile issues from exactly one CA, recorded in the
-  database** (`profile_issuers`). A worker, `init` and a reload check their CA
+- **Each `local_ca` endpoint issues from exactly one CA, recorded in the
+  database** (`endpoint_issuers`). A worker, `init` and a reload check their CA
   against it before building any backend. A different CA is refused, and so is
   no CA once one is recorded, rather than generating one. The first record is
-  insert-if-absent. A deliberate change is `acme-proxy profile issuer accept`,
+  insert-if-absent. A deliberate change is `acme-proxy endpoint issuer accept`,
   which is audited.
 - **Readiness is `GET /ready`**: a `SELECT 1` bounded to two seconds, on both
   listeners. `/health` stays liveness and touches nothing, so a database
@@ -64,10 +64,10 @@ endpoint.
   than the key derivation it saves. A limiter that cannot reach its table
   refuses the sign-in (fails closed).
 - A worker's first start after the upgrade records the CA it loads. From then
-  on, replacing `ca.pem`/`ca.key` without `profile issuer accept` stops every
+  on, replacing `ca.pem`/`ca.key` without `endpoint issuer accept` stops every
   worker, by design. That is a breaking change for anyone who rotated a CA by
   swapping files.
-- A job a dead worker held waits for its lease to run out (`jobs.lease_seconds`,
+- A job a dead worker held waits for its lease to run out (`jobs.lease`,
   or a handler's own lease) before another worker takes it. There is no lease
   heartbeat yet, because the lease is also the attempt's timeout and
   decoupling the two is its own change.

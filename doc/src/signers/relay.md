@@ -58,6 +58,30 @@ Two consequences fall straight out of the diagram:
   than for the moment `local_ca` needs — see
   [Core Concepts](../core/concepts.md#order).
 
+## ACME profiles
+
+A relay offers its clients the upstream CA's [ACME
+profiles](../features/acme_profiles.md), as the upstream's directory lists them,
+and asks the upstream for the one each order was accepted under. A client
+naming a profile the upstream does not list is refused with `invalidProfile`;
+one naming none leaves the choice to the upstream.
+
+Setting `profile` forces one instead — the way to get only short-lived
+certificates from Let's Encrypt, whatever the clients behind this proxy ask
+for:
+
+```toml
+[signer.relay]
+directory_url = "https://acme-v02.api.letsencrypt.org/directory"
+profile = "shortlived"
+```
+
+The directory then lists that profile alone, and every order is relayed with it.
+The worker checks it against the upstream's directory at startup and refuses to
+start if the upstream does not advertise it, rather than relaying orders the
+upstream would refuse, or — predating profiles — silently issue as something
+else.
+
 ## Challenge strategies
 
 The strategy names the *one* challenge type the proxy answers upstream. A CA
@@ -79,8 +103,8 @@ client's key.
 #### DNS alias mode
 
 By default the record is written at `_acme-challenge.<domain>`, so the update
-key needs write access to every zone a profile issues for. Alias mode moves the
-record to one name in a zone set aside for it, the way acme.sh's
+key needs write access to every zone an endpoint issues for. Alias mode moves
+the record to one name in a zone set aside for it, the way acme.sh's
 `--challenge-alias` does. Delegate each domain once with a CNAME, then point
 `zone` and `challenge_alias` at the alias zone:
 
@@ -98,14 +122,14 @@ zone = "acme-alias.net."
 ```
 
 The CA follows the CNAME itself; nothing changes on its side. Every domain of
-the profile shares the one record name, which is safe because values are added
+the endpoint shares the one record name, which is safe because values are added
 and removed one by one. The alias is configured rather than found by following
 the CNAME, because this server's resolver need not see what the CA sees, and a
 record published at the wrong name invalidates the upstream authorization for
 good.
 
 Whoever can write the alias name can pass `dns-01` for every domain pointing at
-it. Domains that must not share that power belong in separate profiles, each
+it. Domains that must not share that power belong in separate endpoints, each
 with its own alias and key.
 
 ### `http01`
@@ -191,9 +215,9 @@ http:
 ```
 
 The route is mounted on the **root** router, beside `GET /health` — it is not
-under a profile's `/profile/<name>` prefix, carries no filter chain, mints no
+under an endpoint's `/endpoint/<name>` prefix, carries no filter chain, mints no
 nonce, and answers a plain `404` rather than an ACME problem document for an
-unknown token. It exists only while some profile's signer uses this strategy;
+unknown token. It exists only while some endpoint's signer uses this strategy;
 with any other backend the path is not routed at all. A
 `http_01_responder_mounted` line at startup confirms it is live.
 
@@ -208,34 +232,34 @@ directory_url = "https://acme-staging-v02.api.letsencrypt.org/directory"
 account_key_path = "upstream_account.key"
 contact = ["mailto:admin@example.com"]
 challenge_strategy = "bypass"
-poll_interval_ms = 2000
-poll_timeout_secs = 300
+poll_interval = "2s"
+poll_timeout = "5m"
 ```
 
-### Several relaying profiles
+### Several relaying endpoints
 
-`[signer]` is a per-profile section, so one server can relay to several
+`[signer]` is a per-endpoint section, so one server can relay to several
 upstreams at once — a Let's Encrypt endpoint beside a commercial CA, or one
-internal CA per environment. Each profile gets its own `[signer.relay]`, and
+internal CA per environment. Each endpoint gets its own `[signer.relay]`, and
 they must not share an `account_key_path`: two backends over one upstream
 account key would overwrite each other's registration, and startup refuses it
 by name.
 
 ```toml
-[profiles.public.signer]
+[endpoints.public.signer]
 backend = "relay"
 relay.directory_url = "https://acme-v02.api.letsencrypt.org/directory"
 relay.account_key_path = "public_account.key"
 
-[profiles.partner.signer]
+[endpoints.partner.signer]
 backend = "relay"
 relay.directory_url = "https://acme.commercial-ca.example/directory"
 relay.account_key_path = "partner_account.key"
 ```
 
-Two profiles whose `[signer]` sections are byte-for-byte identical share one
+Two endpoints whose `[signer]` sections are byte-for-byte identical share one
 backend and one upstream account; anything that differs makes them independent.
-See [Profiles](../core/profiles.md) for what else a profile separates.
+See [Endpoints](../core/endpoints.md) for what else an endpoint separates.
 
 ### Reference
 
@@ -272,14 +296,20 @@ for) or `http01` (serve the challenge file from this server's own root router,
 which requires a reverse proxy in front of it and cannot prove a wildcard). Any
 other value is a startup error.
 
-**`poll_interval_ms`** (`Integer`) — *Default: `2000` | Env: `ACME_PROXY_SIGNER__RELAY__POLL_INTERVAL_MS`*
+**`poll_interval`** (`Duration`) — *Default: `"2s"` | Env: `ACME_PROXY_SIGNER__RELAY__POLL_INTERVAL`*
 
 How often to poll an upstream order/authorization while it resolves.
 
-**`poll_timeout_secs`** (`Integer`) — *Default: `300` | Env: `ACME_PROXY_SIGNER__RELAY__POLL_TIMEOUT_SECS`*
+**`poll_timeout`** (`Duration`) — *Default: `"5m"` | Env: `ACME_PROXY_SIGNER__RELAY__POLL_TIMEOUT`*
 
-Total budget (in seconds) for one upstream issuance before the local order is
+Total budget for one upstream issuance before the local order is
 marked invalid.
+
+**`profile`** (`String`) — *Default: `""` | Env: `ACME_PROXY_SIGNER__RELAY__PROFILE`*
+
+The [ACME profile](#acme-profiles) every upstream order asks for, whatever a
+client named. Empty relays the upstream's profiles. Must be one the upstream
+advertises, or the worker refuses to start.
 
 ### `[signer.relay.dns01]`
 
@@ -352,17 +382,17 @@ order and, at a public CA, counts against its failed-validation limit.
 **`mode`** (`String`) — *Default: `"none"` | Env: `ACME_PROXY_SIGNER__RELAY__DNS01__PROPAGATION__MODE`*
 
 `none` triggers the challenge right after the update succeeds, which is right
-when the update server is itself what the CA asks. `delay` sleeps `delay_secs`
+when the update server is itself what the CA asks. `delay` sleeps `delay`
 first, for a provider that accepts an update before serving it (a DNS API behind
 an RFC 2136 bridge) or secondaries that lag their primary. Any other value is a
 startup error.
 
-**`delay_secs`** (`u64`) — *Default: `30` | Env: `ACME_PROXY_SIGNER__RELAY__DNS01__PROPAGATION__DELAY_SECS`*
+**`delay`** (`Duration`) — *Default: `"30s"` | Env: `ACME_PROXY_SIGNER__RELAY__DNS01__PROPAGATION__DELAY`*
 
 Seconds to wait under `delay`; ignored under `none`. Zero is refused (use
-`none`), and so is a value not less than `poll_timeout_secs`, which bounds the
+`none`), and so is a value not less than `poll_timeout`, which bounds the
 whole relay attempt. The delay runs once for **each name** in the order, so a
-multi-name order needs `poll_timeout_secs` above the delay times the number of
+multi-name order needs `poll_timeout` above the delay times the number of
 names plus the time the upstream takes.
 
 The wait is a fixed delay rather than a poll of a public resolver on purpose. A
@@ -401,15 +431,15 @@ up next to `account_key_path`. There are two ways to supply it:
 
 **The Admin CLI**, registering the proxy with the upstream CA out of band:
 ```bash
-acme-proxy upstream register --profile prod --eab-kid "..." --eab-hmac-key-file /path/to/secret
+acme-proxy upstream register --endpoint prod --eab-kid "..." --eab-hmac-key-file /path/to/secret
 ```
 The secret may also be piped on stdin. It is never accepted as a command-line
 argument, because argv is visible to every user on the host via `ps`. Nothing
 about this credential is ever written to disk — only the resulting account `kid`
 persists.
 
-`--profile` is required whenever the configuration defines more than one
-profile: `[signer]` is a per-profile section, so registering "the upstream"
+`--endpoint` is required whenever the configuration defines more than one
+endpoint: `[signer]` is a per-endpoint section, so registering "the upstream"
 without saying which one would be registering nothing.
 
 **`[signer.relay.eab]` in configuration**, read by `acme-proxy serve`

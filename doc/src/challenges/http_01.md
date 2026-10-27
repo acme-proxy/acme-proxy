@@ -92,7 +92,7 @@ What contains it instead:
 - Only `http` and `https` schemes are followed.
 - Only the two configured ports (`port` and `https_port`) are connected to.
 - At most `max_redirects` hops.
-- The shared `challenge.timeout_ms` bounds the whole attempt, redirects
+- The shared `challenge.timeout` bounds the whole attempt, redirects
   included.
 - `follow_redirects = false` turns the surface off entirely.
 - **Nothing the fetch learned is echoed back to the client.** The error a

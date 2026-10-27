@@ -42,9 +42,9 @@ Apache-2.0 OR MIT.
   with `# EOF`.
 - **Label values are escaped before they reach the library**, which writes them
   verbatim.
-- **Two histograms**: request latency by profile and route, and issuance latency
-  (finalize accepted to certificate stored) by profile. Neither carries `status`
-  or `reason`, since a histogram multiplies every label by its buckets.
+- **Two histograms**: request latency by endpoint and route, and issuance
+  latency (finalize accepted to certificate stored) by endpoint. Neither carries
+  `status` or `reason`, since a histogram multiplies every label by its buckets.
 
 ## Consequences
 

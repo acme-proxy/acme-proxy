@@ -16,7 +16,7 @@
 //! - Certificate issuance behind a pluggable signer backend: a local CA (whose
 //!   key may live in a PKCS#11 token), a relay to an upstream ACME CA, or an
 //!   operator-supplied script
-//! - **Profiles** — several independent ACME endpoints in one process, each with
+//! - **Endpoints** — several independent ACME endpoints in one process, each with
 //!   its own signer, filters, challenge validators and EAB policy
 //! - External Account Binding (§7.3.4), account key rollover (§7.3.5) and
 //!   Renewal Information (RFC 9773)
@@ -66,13 +66,13 @@
 //! ## Usage
 //!
 //! The main entry point is `router::build_app()`, which mounts one ACME router
-//! per configured profile under `/profile/<name>` and serves the server-level
+//! per configured endpoint under `/endpoint/<name>` and serves the server-level
 //! routes (`/health`) at the root.
 //!
 //! ```rust,no_run
 //! use std::net::SocketAddr;
 //! use std::sync::Arc;
-//! use acme_proxy_protocol::profile::{Profile, ProfileParts};
+//! use acme_proxy_protocol::endpoint::{Endpoint, EndpointParts};
 //! use acme_proxy_protocol::router::build_app;
 //! use acme_proxy_store::db::Database;
 //! use acme_proxy_signer as signer;
@@ -86,7 +86,7 @@
 //!     let config = Arc::new(Config::load()?);
 //!     let database = Arc::new(Database::connect_and_migrate(&config.database.url).await?);
 //!
-//!     let resolved = config.resolve_profiles()?;
+//!     let resolved = config.resolve_endpoints()?;
 //!     // The resolver and the proxy policy, resolved before anything can dial:
 //!     // a proxy URL that cannot be understood must stop the process rather
 //!     // than leave egress elsewhere, and `dns.resolver` governs every outbound
@@ -103,16 +103,16 @@
 //!     // separately, below.
 //!     let job_queue = jobs::JobQueue::new(database.clone(), &config.jobs);
 //!     // Built once, up front: an asynchronous signer backend (`relay`)
-//!     // has no `Profile` to reach a notifier through from its background
+//!     // has no `Endpoint` to reach a notifier through from its background
 //!     // completion task, so it is handed this whole map instead — and so is
 //!     // the `NotifyJob` that performs the deliveries.
 //!     let mut notifiers = std::collections::HashMap::new();
-//!     for profile in &resolved {
+//!     for endpoint in &resolved {
 //!         notifiers.insert(
-//!             profile.name.clone(),
+//!             endpoint.name.clone(),
 //!             notify::from_config(
-//!                 &profile.name,
-//!                 &profile.sections.notify,
+//!                 &endpoint.name,
+//!                 &endpoint.sections.notify,
 //!                 outbound.clone(),
 //!                 &job_queue,
 //!             )?,
@@ -123,13 +123,13 @@
 //!     // `SIGHUP` does not reset every counter to zero — see `Assembly`.
 //!     let metrics = Arc::new(acme_proxy_jobs::metrics::Metrics::new(database.clone()));
 //!
-//!     let mut profiles = Vec::new();
-//!     // Each profile's signer in two halves: the backend, which holds the key
+//!     let mut endpoints = Vec::new();
+//!     // Each endpoint's signer in two halves: the backend, which holds the key
 //!     // and is handed only to the job handlers below, and its read side, which
-//!     // is all a profile — and so a request — ever sees.
+//!     // is all an endpoint — and so a request — ever sees.
 //!     let mut backends = Vec::new();
-//!     for profile in &resolved {
-//!         let sections = &profile.sections;
+//!     for endpoint in &resolved {
+//!         let sections = &endpoint.sections;
 //!         let backend = signer::from_config(
 //!             &sections.signer,
 //!             &signer::SignerParts {
@@ -140,11 +140,11 @@
 //!                 jobs: job_queue.clone(),
 //!             },
 //!         )?;
-//!         backends.push((profile.name.clone(), backend.clone()));
-//!         profiles.push(Arc::new(Profile::new(
-//!             &profile.name,
+//!         backends.push((endpoint.name.clone(), backend.clone()));
+//!         endpoints.push(Arc::new(Endpoint::new(
+//!             &endpoint.name,
 //!             &config.server.base_url,
-//!             ProfileParts {
+//!             EndpointParts {
 //!                 signer_info: backend.info(),
 //!                 filter: filter::from_config(
 //!                     &sections.filter,
@@ -160,12 +160,12 @@
 //!                 order: sections.order.clone(),
 //!                 eab: sections.eab.clone(),
 //!                 meta: sections.meta.clone(),
-//!                 notify: notifiers[&profile.name].clone(),
+//!                 notify: notifiers[&endpoint.name].clone(),
 //!             },
 //!         )));
 //!     }
 //!     // Process-wide, like `[audit]` itself: one trail for the whole CA,
-//!     // shared by every profile's router and by the web admin listener.
+//!     // shared by every endpoint's router and by the web admin listener.
 //!     // The registry is a parameter rather than a builder step, so a serving
 //!     // process cannot build an auditor that counts into nothing. The counters
 //!     // come off the same `AuditRecord` the trail is written from, so the two
@@ -181,7 +181,7 @@
 //!     let app = build_app(
 //!         database.clone(),
 //!         config.clone(),
-//!         profiles,
+//!         endpoints,
 //!         audit.clone(),
 //!         metrics.clone(),
 //!         job_queue.clone(),
@@ -193,7 +193,7 @@
 //!     // on each before it claims anything, which is how work a previous run
 //!     // left in flight is picked back up, and how each sweep's single row gets
 //!     // queued. **One handler per kind, never per backend**: a handler covers
-//!     // every profile or backend of its kind and picks the right one per row,
+//!     // every endpoint or backend of its kind and picks the right one per row,
 //!     // since `register` refuses a second handler for a kind it already has.
 //!     let mut registry = jobs::JobRegistry::new();
 //!     // `finalize` queues the signing: this is the one handler that asks a
@@ -207,7 +207,7 @@
 //!     registry.register(Arc::new(notify::NotifyJob::new(notifiers)))?;
 //!     registry.register(Arc::new(jobs::SweepJob::nonces(
 //!         database.clone(),
-//!         std::time::Duration::from_secs(config.nonce.ttl_seconds),
+//!         config.nonce.ttl.as_std(),
 //!     )))?;
 //!     let (_shutdown, shutdown_rx) = tokio::sync::watch::channel(false);
 //!     jobs::spawn_runner(job_queue, Arc::new(registry), &config.jobs, shutdown_rx);

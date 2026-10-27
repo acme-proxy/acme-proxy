@@ -11,7 +11,7 @@ sections' keys are documented.
 Sources are layered, lowest precedence first:
 
 1. **Built-in defaults** — everything documented below has one, so an empty
-   configuration is valid apart from `[profiles]`.
+   configuration is valid apart from `[endpoints]`.
 2. **A configuration file** — `config.toml` in the working directory, or the
    path in `ACME_PROXY_CONFIG` (the extension may be omitted, in which case the
    format is inferred). A missing file is not an error.
@@ -23,9 +23,41 @@ Sources are layered, lowest precedence first:
 it lists every key with its default and its environment variable name in
 context.
 
-> **`[profiles]` is mandatory.** Everything else can be left at its default, but
-> the server serves ACME only through profiles and refuses to start without at
-> least one enabled. See [`[profiles]`](#profilesname) below.
+> **`[endpoints]` is mandatory.** Everything else can be left at its default,
+> but the server serves ACME only through endpoints and refuses to start without
+> at least one enabled. See [`[endpoints]`](#endpointsname) below.
+
+## Durations
+
+Every length of time — a timeout, a retention, a certificate's lifetime — is a
+`Duration`: a string holding a number and its unit, from a file and from the
+environment alike.
+
+```toml
+request_timeout = "1m"
+leaf_validity = "160h"
+retention = "0s"        # zero, where zero means "off"
+```
+
+| Unit | Length |
+|---|---|
+| `ms` | millisecond |
+| `s` | second |
+| `m` | minute |
+| `h` | hour |
+| `d` | 86 400 seconds |
+| `w` | 7 days |
+| `y` | 365 days |
+
+Units add up, in any order: `"1h30m"` is `"90m"`. They are fixed lengths, not
+calendar arithmetic — `"1y"` is 365 days, not "the same date next year" — and
+there is no month, because `m` is minutes. **A bare number is refused**
+(`retention = 30` would not say whether it means seconds or days), and so is
+zero without a unit: write `"0s"`.
+
+Before 0.8 these keys carried their unit in their name (`timeout_ms`,
+`validity_seconds`, `retention_days`, …). A configuration still using one is
+refused at startup, naming the key and the line to write instead.
 
 ## Every section, and where it is documented
 
@@ -36,7 +68,7 @@ not its text lives here. A delegated section's own sub-tables —
 `[signer.local_ca.subject]`, `[ipam.netbox]`, `[filter.check.<name>]` and the
 rest — are listed in the chapter that owns them.
 
-**Overridable** marks the sections a `[profiles.<name>]` block may override.
+**Overridable** marks the sections an `[endpoints.<name>]` block may override.
 Everything else is process-wide — one setting for the whole server, however many
 endpoints it mounts.
 
@@ -59,7 +91,7 @@ endpoints it mounts.
 | `[logging]` | Filter, format, target | no | [below](#logging) |
 | `[order]` | The ACME order object's lifetime | **yes** | [below](#order) |
 | `[meta]` | Directory `meta` members | **yes** | [below](#meta) |
-| `[profiles.<name>]` | An ACME endpoint | — | [below](#profilesname) |
+| `[endpoints.<name>]` | An ACME endpoint | — | [below](#endpointsname) |
 | `[signer]` | How a certificate is obtained | **yes** | [Signers](../signers/index.md) |
 | `[filter]` | Who may ask, and for what | **yes** | [Filters](../filters/index.md) |
 | `[ipam]` | The inventory an `ipam` filter check consults | **yes** | [IPAM](../ipam/index.md) |
@@ -130,18 +162,18 @@ enabled, this must be set to the public URL or every client is rejected.
 
 How many ACME requests may be in flight at once before the server sheds load.
 
-**`admission_wait_ms`** (`Integer`) — *Default: `50` | Env: `ACME_PROXY_SERVER__ADMISSION_WAIT_MS`*
+**`admission_wait`** (`Duration`) — *Default: `"50ms"` | Env: `ACME_PROXY_SERVER__ADMISSION_WAIT`*
 
 How long a request may wait for a slot before it is refused. Past the limit a
 request waits this long and then gets `503` + `Retry-After` — it is **shed, not
 queued**.
 
-**`request_timeout_ms`** (`Integer`) — *Default: `60000` | Env: `ACME_PROXY_SERVER__REQUEST_TIMEOUT_MS`*
+**`request_timeout`** (`Duration`) — *Default: `"1m"` | Env: `ACME_PROXY_SERVER__REQUEST_TIMEOUT`*
 
-Whole-request deadline. It **must exceed** `signer.custom.timeout_ms` when that
+Whole-request deadline. It **must exceed** `signer.custom.timeout` when that
 backend is installed with its `crl` or `renewal_info` hook enabled, since those
 hooks run inline inside a request; the server refuses to start otherwise. It is
-deliberately independent of `challenge.timeout_ms` and of the script's `issue`
+deliberately independent of `challenge.timeout` and of the script's `issue`
 and `revoke` hooks, which run in the job queue — see [Challenge
 Validation](../challenges/index.md). A relay or custom revocation that a request
 queues is waited on for this long, less a second.
@@ -175,7 +207,7 @@ written when either this or `key_path` is missing.
 
 Path to the private key.
 
-**`handshake_timeout_ms`** (`Integer`) — *Default: `10000` | Env: `ACME_PROXY_SERVER__TLS__HANDSHAKE_TIMEOUT_MS`*
+**`handshake_timeout`** (`Duration`) — *Default: `"10s"` | Env: `ACME_PROXY_SERVER__TLS__HANDSHAKE_TIMEOUT`*
 
 Budget for one TLS handshake. Handshakes run concurrently, off the accept path,
 so this never delays another client.
@@ -185,7 +217,7 @@ so this never delays another client.
 ## `[admin]`
 
 The web admin interface — a **second listener**, on its own socket, serving no
-ACME. Process-wide, so there is no `[profiles.<name>].admin`: an operator
+ACME. Process-wide, so there is no `[endpoints.<name>].admin`: an operator
 manages every endpoint this process serves. Full treatment in
 [Web Admin](../operations/webadmin.md).
 
@@ -223,17 +255,17 @@ does for the ACME listener. Through a tunnel this stays `localhost`. The
 resolved origin is logged at startup (`admin_origin_resolved`) so a mismatch is
 visible before the first refused request.
 
-**`session_ttl_seconds`** (`Integer`) — *Default: `43200` (12 h) | Env: `ACME_PROXY_ADMIN__SESSION_TTL_SECONDS`*
+**`session_ttl`** (`Duration`) — *Default: `"12h"` | Env: `ACME_PROXY_ADMIN__SESSION_TTL`*
 
 Absolute session lifetime. Never extended by activity: past it, the operator
 signs in again.
 
-**`session_idle_timeout_seconds`** (`Integer`) — *Default: `3600` (1 h) | Env: `ACME_PROXY_ADMIN__SESSION_IDLE_TIMEOUT_SECONDS`*
+**`session_idle_timeout`** (`Duration`) — *Default: `"1h"` | Env: `ACME_PROXY_ADMIN__SESSION_IDLE_TIMEOUT`*
 
 Idle lifetime, advanced on use — at most once a minute, so a polling page is not
 a stream of database writes. Whichever deadline comes first wins.
 
-**`login_max_attempts`** (`Integer`) / **`login_window_seconds`** (`Integer`) — *Defaults: `5` / `300` | Env: `ACME_PROXY_ADMIN__LOGIN_MAX_ATTEMPTS`, `ACME_PROXY_ADMIN__LOGIN_WINDOW_SECONDS`*
+**`login_max_attempts`** (`Integer`) / **`login_window`** (`Integer`) — *Defaults: `5` / `300` | Env: `ACME_PROXY_ADMIN__LOGIN_MAX_ATTEMPTS`, `ACME_PROXY_ADMIN__LOGIN_WINDOW`*
 
 Failed sign-ins allowed from one address per window, then `429` with a
 `Retry-After`. The password hash is deliberately expensive (PBKDF2-HMAC-SHA256
@@ -297,7 +329,7 @@ and the same keys as the ACME listener's
 `ACME_PROXY_ADMIN__FILTER__…`, with four differences:
 
 - **It is its own section.** Nothing is inherited from the global `[filter]`,
-  which is the ACME profiles' base: an edit made for one listener must not open
+  which is the ACME endpoints' base: an edit made for one listener must not open
   or shut the other.
 - **Only the connection stage exists here**, so only `allowed_ip`, `path`,
   `reverse_dns` and `custom` checks are accepted. An `identifiers`, `eab` or
@@ -318,7 +350,7 @@ and is logged as `filter_request_blocked` with `listener = "admin"`. See
 A whole `[notify]` section, process-wide, built only while `[admin]` is
 enabled. It delivers the `admin_sign_in` / `admin_credential_changed` operator
 security events (ASVS V6.3.5 / V6.3.7). Every key is the one documented for the
-per-profile [`[notify]`](../notifications/index.md) — under
+per-endpoint [`[notify]`](../notifications/index.md) — under
 `ACME_PROXY_ADMIN__NOTIFY__…` — with one difference: `[admin.notify.email].to`
 may be empty, since each event carries the affected operator's own contact
 address as its recipient. See
@@ -343,7 +375,7 @@ written at startup; the generated key is created `0600`. Separate paths from
 `[server.tls]` on purpose — the two listeners answer to different names and
 should not share a certificate by accident.
 
-**`handshake_timeout_ms`** (`Integer`) — *Default: `10000` | Env: `ACME_PROXY_ADMIN__TLS__HANDSHAKE_TIMEOUT_MS`*
+**`handshake_timeout`** (`Duration`) — *Default: `"10s"` | Env: `ACME_PROXY_ADMIN__TLS__HANDSHAKE_TIMEOUT`*
 
 As `[server.tls]`.
 
@@ -364,18 +396,18 @@ at all, and the per-type keys under `[challenge.http_01]` and
 `[challenge.tls_alpn_01]`.
 
 Documented in full in [Challenge Validation](../challenges/index.md#reference) —
-this section is a per-profile subsystem with its own chapter, so its keys live
+this section is a per-endpoint subsystem with its own chapter, so its keys live
 there rather than being restated here.
 
 ---
 
 ## `[order]`
 
-**`validity_seconds`** (`Integer`) — *Default: `604800` (7 days) | Env: `ACME_PROXY_ORDER__VALIDITY_SECONDS`*
+**`validity`** (`Duration`) — *Default: `"7d"` | Env: `ACME_PROXY_ORDER__VALIDITY`*
 
 Lifetime of the ACME **order object** before it expires. This is housekeeping
 for the order resource, not the issued certificate's validity — that is
-`signer.local_ca.leaf_validity_days`, or whatever the delegating backend
+`signer.local_ca.leaf_validity`, or whatever the delegating backend
 decides.
 
 **`max_identifiers`** (`Integer`) — *Default: `100` | Env: `ACME_PROXY_ORDER__MAX_IDENTIFIERS`*
@@ -395,11 +427,11 @@ Refused as `malformed` rather than `rateLimited` deliberately: the order is
 malformed for this server whenever it is sent, so `rateLimited` — which tells a
 client to come back later — would be a lie.
 
-**`retention_days`** (`Integer`) — *Default: `30` | Env: `ACME_PROXY_ORDER__RETENTION_DAYS`*
+**`retention`** (`Duration`) — *Default: `"30d"` | Env: `ACME_PROXY_ORDER__RETENTION`*
 
 Days an order is kept **after it expires**, before the daily `order_sweep`
 deletes it. The authorizations and challenges beneath it go with it, through the
-schema's `ON DELETE CASCADE`. `0` keeps everything for ever.
+schema's `ON DELETE CASCADE`. `"0s"` keeps everything for ever.
 
 **A `valid` order is never swept, whatever its age.** Its row is how
 `revokeCert` and the CRL resolve a certificate by serial, and what RFC 9773
@@ -414,16 +446,16 @@ grew for the life of a deployment — one order plus one authorization per
 identifier plus one challenge per offered type, on a default configuration where
 `newAccount` is open to anyone.
 
-Per-profile like the rest of `[order]`. The sweep is a single job handler
+Per-endpoint like the rest of `[order]`. The sweep is a single job handler
 (`JobRegistry` refuses two handlers for one kind) that applies each mounted
-profile's own value to that profile's rows, emitting one `order_reaper_swept`
-line per profile.
+endpoint's own value to that endpoint's rows, emitting one `order_reaper_swept`
+line per endpoint.
 
 ---
 
 ## `[nonce]`
 
-**`ttl_seconds`** (`Integer`) — *Default: `300` | Env: `ACME_PROXY_NONCE__TTL_SECONDS`*
+**`ttl`** (`Duration`) — *Default: `"5m"` | Env: `ACME_PROXY_NONCE__TTL`*
 
 Freshness window for JWS anti-replay nonces. Expired nonces are swept on an
 interval for the life of the process.
@@ -432,9 +464,9 @@ interval for the life of the process.
 
 ## `[audit]`
 
-Traceability and the CA's audit trail. **Process-wide, not per-profile** — the
+Traceability and the CA's audit trail. **Process-wide, not per-endpoint** — the
 trail describes the CA, not one of its endpoints, so this section may not appear
-under `[profiles.<name>]`.
+under `[endpoints.<name>]`.
 
 There is deliberately **no `enabled` key**. The address columns on accounts and
 orders, and the `audit_log` table, are always written: recording who asked the
@@ -449,16 +481,16 @@ would fail, every `*_ptr` column would end up `NULL` anyway, and all that would
 be left is the round trip. Lookups go through `dns.resolver` like every other
 DNS query this server makes.
 
-**`reverse_dns_timeout_ms`** (`Integer`) — *Default: `2000` | Env: `ACME_PROXY_AUDIT__REVERSE_DNS_TIMEOUT_MS`*
+**`reverse_dns_timeout`** (`Duration`) — *Default: `"2s"` | Env: `ACME_PROXY_AUDIT__REVERSE_DNS_TIMEOUT`*
 
 Budget for one PTR lookup. Deliberately small: this runs inside a request that
 has already done its real work, so a slow nameserver costs a `NULL` in one
 column rather than latency on issuance. **Every failure is a `NULL`, never a
 refused request.**
 
-**`retention_days`** (`Integer`) — *Default: `0` | Env: `ACME_PROXY_AUDIT__RETENTION_DAYS`*
+**`retention`** (`Duration`) — *Default: `"0s"` | Env: `ACME_PROXY_AUDIT__RETENTION`*
 
-Delete `audit_log` rows older than this many days. `0` keeps everything for
+Delete `audit_log` rows older than this. `"0s"` keeps everything for
 ever, which is the right default for a trail whose value is that it is complete.
 Any non-zero value schedules a daily `audit_sweep` job beside the nonce one,
 running the same `DELETE` as `acme-proxy audit cleanup --older-than <days>`.
@@ -470,9 +502,9 @@ See [Audit Trail](../operations/audit.md).
 ## `[jobs]`
 
 The durable background-work queue: the `jobs` table plus the one runner that
-drains it. **Process-wide, not per-profile** — there is one queue and one
+drains it. **Process-wide, not per-endpoint** — there is one queue and one
 runner for the process, so this section may not appear under
-`[profiles.<name>]`.
+`[endpoints.<name>]`.
 
 There is deliberately **no `enabled` key**. The queue is how the server finishes
 work it has already promised a client: an order answered `processing` is owed a
@@ -488,16 +520,16 @@ section's reach is wider than the name suggests:
   CA's CRL signing (`local_ca_crl_regenerate`).
 - **Deliveries** — every [notification](../notifications/index.md)
   (`notify_deliver`) and the expiry digest (`notify_expiry_digest`).
-- **Periodic sweeps** — expired nonces, orders past `order.retention_days`,
-  `audit.retention_days`, expired admin sessions, stale `http-01` tokens, the
+- **Periodic sweeps** — expired nonces, orders past `order.retention`,
+  `audit.retention`, expired admin sessions, stale `http-01` tokens, the
   daily CRL refresh (`local_ca_crl_sweep`), and this queue's own
-  `retention_days`.
+  `retention`.
 
 A runner that is not running is a server that validates, issues, sweeps and
 notifies nothing — `job_runner_started` is the line that says it is. With role
 processes, only a `worker` process runs one.
 
-**`poll_interval_ms`** (`Integer`) — *Default: `1000` | Env: `ACME_PROXY_JOBS__POLL_INTERVAL_MS`*
+**`poll_interval`** (`Duration`) — *Default: `"1s"` | Env: `ACME_PROXY_JOBS__POLL_INTERVAL`*
 
 How often the runner looks for work nobody woke it for. This bounds only
 *scheduled* work — a backoff coming due, a periodic sweep firing. Queueing a job
@@ -523,31 +555,31 @@ Unlike every other key here, this one is **frozen onto each row as it is
 queued** rather than read afresh each attempt, so raising it applies to work
 queued from then on and not to a backlog already waiting.
 
-**`retry_base_seconds`** (`Integer`) — *Default: `30` | Env: `ACME_PROXY_JOBS__RETRY_BASE_SECONDS`*
+**`retry_base`** (`Duration`) — *Default: `"30s"` | Env: `ACME_PROXY_JOBS__RETRY_BASE`*
 
 The first retry delay; each subsequent one doubles. Longer than any single
 upstream round trip, so a retry is not simply the same failure again, and short
 enough that a blip clears inside one client poll cycle.
 
-**`retry_max_seconds`** (`Integer`) — *Default: `3600` | Env: `ACME_PROXY_JOBS__RETRY_MAX_SECONDS`*
+**`retry_max`** (`Duration`) — *Default: `"1h"` | Env: `ACME_PROXY_JOBS__RETRY_MAX`*
 
 Where the doubling stops, and a real ceiling — the jitter applied to each delay
 only ever subtracts, so no retry is scheduled past this. An hour sits well under
 the default order lifetime, which keeps a job's own deadline the binding
 constraint rather than this.
 
-**`lease_seconds`** (`Integer`) — *Default: `300` | Env: `ACME_PROXY_JOBS__LEASE_SECONDS`*
+**`lease`** (`Duration`) — *Default: `"5m"` | Env: `ACME_PROXY_JOBS__LEASE`*
 
 The default budget for one attempt, and therefore how long a claim is held
 before another runner may take the row. A handler needing a different one says
-so itself: the `relay` signer asks for its own `signer.relay.poll_timeout_secs`.
+so itself: the `relay` signer asks for its own `signer.relay.poll_timeout`.
 
-**`retention_days`** (`Integer`) — *Default: `7` | Env: `ACME_PROXY_JOBS__RETENTION_DAYS`*
+**`retention`** (`Duration`) — *Default: `"7d"` | Env: `ACME_PROXY_JOBS__RETENTION`*
 
-Delete settled job rows older than this many days. Unlike
-[`audit.retention_days`](#audit) this defaults to a **non-zero** value: a
+Delete settled job rows older than this. Unlike
+[`audit.retention`](#audit) this defaults to a **non-zero** value: a
 finished job is a receipt, not evidence, and the trail that has to be complete
-is `audit_log`'s. `0` keeps everything for ever and stops the sweep being
+is `audit_log`'s. `"0s"` keeps everything for ever and stops the sweep being
 scheduled at all.
 
 ---
@@ -556,7 +588,7 @@ scheduled at all.
 
 The Prometheus exposition, served on a **listener of its own** — a third socket
 beside the ACME and admin ones, not a route on either. **Process-wide, not
-per-profile**: there is one counter set for the process, and the endpoint is a
+per-endpoint**: there is one counter set for the process, and the endpoint is a
 *dimension* of it rather than something each endpoint configures for itself.
 
 The separate port is what settles the access question. A scrape carries no
@@ -811,45 +843,46 @@ by default because a field can then collide with one of the format's own keys.
 
 ---
 
-## `[profiles.<name>]`
+## `[endpoints.<name>]`
 
-An **ACME endpoint is a profile**. The server serves ACME only through them, and
-**at least one enabled profile is required** — startup fails otherwise, with a
-copy-pasteable minimal configuration in the error.
+Each **`[endpoints.<name>]` table is one ACME endpoint**. The server serves ACME
+only through them, and **at least one enabled endpoint is required** — startup
+fails otherwise, with a copy-pasteable minimal configuration in the error.
 
 ```toml
 # The whole minimum. `enabled` defaults to true, so naming it is enough.
-[profiles.default]
+[endpoints.default]
 ```
 
-**`enabled`** (`Boolean`) — *Default: `true` | Env: `ACME_PROXY_PROFILES__<NAME>__ENABLED`*
+**`enabled`** (`Boolean`) — *Default: `true` | Env: `ACME_PROXY_ENDPOINTS__<NAME>__ENABLED`*
 
-Parks a profile without deleting its configuration. It also doubles as the one
-key an environment-only profile needs:
-`ACME_PROXY_PROFILES__DEFAULT__ENABLED=true` defines a working profile with no
+Parks an endpoint without deleting its configuration. It also doubles as the one
+key an environment-only endpoint needs:
+`ACME_PROXY_ENDPOINTS__DEFAULT__ENABLED=true` defines a working endpoint with no
 configuration file at all.
 
 Load-bearing rules:
 
-- **The mount path is derived from the name, never configured.** `[profiles.le]`
-  answers at `{base_url}/profile/le/directory`. Names must match `^[a-z0-9-]+$`.
-  The name is public API — it appears in every `kid` and order URL a client
-  stores — so renaming a profile invalidates every client's saved account.
+- **The mount path is derived from the name, never configured.**
+  `[endpoints.le]` answers at `{base_url}/endpoint/le/directory`. Names must
+  match `^[a-z0-9-]+$`. The name is public API — it appears in every `kid` and
+  order URL a client stores — so renaming an endpoint invalidates every client's
+  saved account.
 - **Inheritance is per key, not per section.** The global `[signer]`,
   `[filter]`, `[challenge]`, `[eab]`, `[order]`, `[notify]` and `[meta]`
-  sections are the base each profile overlays. A profile that sets only
+  sections are the base each endpoint overlays. An endpoint that sets only
   `challenge.bypass` keeps the **global** `challenge.enabled` rather than
-  reverting it to the compiled default. Precedence: profile key > global key >
+  reverting it to the compiled default. Precedence: endpoint key > global key >
   compiled default.
-- **Arrays replace wholesale, never append.** A profile's `filter.rules` fully
+- **Arrays replace wholesale, never append.** An endpoint's `filter.rules` fully
   replaces the global one — order *is* the policy, so it is stated once per
-  profile rather than accumulated from two places.
-- **Profiles are a database boundary, not just a URL prefix.** Accounts and
-  orders carry a profile column, and accounts are keyed `UNIQUE(profile,
+  endpoint rather than accumulated from two places.
+- **Endpoints are a database boundary, not just a URL prefix.** Accounts and
+  orders carry an endpoint column, and accounts are keyed `UNIQUE(endpoint,
   pubkey)` — one client key used at two endpoints is two independent ACME
   accounts.
-- **Signer backends are shared by configuration.** Two profiles with identical
-  `[signer]` sections share one backend instance. Two profiles sharing a
+- **Signer backends are shared by configuration.** Two endpoints with identical
+  `[signer]` sections share one backend instance. Two endpoints sharing a
   `local_ca` key path while differing elsewhere is a startup error.
 
 ```toml
@@ -869,16 +902,16 @@ then = "allow"
 
 # Inherits everything above, but dry-runs the one rule: `[filter.rule.<name>]`
 # is a table, so overriding `mode` keeps `when` and `then` from the global one.
-[profiles.dev]
+[endpoints.dev]
 filter.rule.corp-only.mode = "warn"
 
 # Overrides two keys; keeps the whole filter policy.
-[profiles.prod]
+[endpoints.prod]
 signer.backend = "relay"
 signer.relay.directory_url = "https://acme-v02.api.letsencrypt.org/directory"
 ```
 
-See [Profiles & Routing](../core/profiles.md).
+See [Endpoints & Routing](../core/endpoints.md).
 
 ---
 

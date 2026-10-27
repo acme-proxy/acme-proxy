@@ -51,8 +51,8 @@ Worth knowing before you do it:
   upgrade — back them up on the same schedule as the database, since the CA key
   is the one thing that cannot be regenerated without redistributing trust.
 - **Read the changelog's `Breaking` section first.** Before 1.0.0 the schema is
-  the only compatibility guarantee: configuration keys, profile names, the admin
-  JSON API, log event names and the CLI may all have moved, and every such
+  the only compatibility guarantee: configuration keys, endpoint names, the
+  admin JSON API, log event names and the CLI may all have moved, and every such
   change is listed there. See
   [Compatibility](https://github.com/acme-proxy/acme-proxy/blob/main/CHANGELOG.md#compatibility).
   A renamed key is normally refused by name at startup — the server stops with

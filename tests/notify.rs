@@ -39,9 +39,9 @@ use common::{
     first_certificate, make_csr, p, send_from, test_app_full, test_app_with_notify,
 };
 
-const NEW_ACCOUNT_URL: &str = "http://localhost:3000/profile/default/newAccount";
-const NEW_ORDER_URL: &str = "http://localhost:3000/profile/default/newOrder";
-const REVOKE_URL: &str = "http://localhost:3000/profile/default/revokeCert";
+const NEW_ACCOUNT_URL: &str = "http://localhost:3000/endpoint/default/newAccount";
+const NEW_ORDER_URL: &str = "http://localhost:3000/endpoint/default/newOrder";
+const REVOKE_URL: &str = "http://localhost:3000/endpoint/default/revokeCert";
 
 /// Every request in this file carries a real peer address, so the handlers
 /// that extract `ClientIp` (and therefore populate `client_ip` on a
@@ -435,9 +435,9 @@ async fn a_dispatch_that_never_ran_is_still_owed_afterwards() {
     );
 
     dispatcher
-        .dispatch(NotifyEvent::ProfileMounted(
-            acme_proxy_jobs::notify::ProfileMountedData {
-                profile: "default".to_string(),
+        .dispatch(NotifyEvent::EndpointMounted(
+            acme_proxy_jobs::notify::EndpointMountedData {
+                endpoint: "default".to_string(),
             },
         ))
         .await;
@@ -464,7 +464,7 @@ async fn a_dispatch_that_never_ran_is_still_owed_afterwards() {
         queue.clone(),
         Arc::new(registry),
         &JobsConfig {
-            poll_interval_ms: 5,
+            poll_interval: acme_proxy_core::config::ConfigDuration::from_millis(5),
             ..JobsConfig::default()
         },
         receiver,
@@ -492,19 +492,19 @@ async fn a_dispatch_that_never_ran_is_still_owed_afterwards() {
 /// registered but never wired to a dispatcher.
 #[tokio::test]
 async fn the_expiry_digest_reaches_a_backend_through_the_runner() {
+    use acme_proxy_core::config::EndpointConfig;
+    use acme_proxy_core::config::EndpointSections;
     use acme_proxy_core::config::ExpiryNotifyConfig;
     use acme_proxy_core::config::NotifyConfig;
-    use acme_proxy_core::config::ProfileConfig;
-    use acme_proxy_core::config::ProfileSections;
     use acme_proxy_core::identifier::Identifier;
     use acme_proxy_jobs::notify::expiry::ExpiryDigestJob;
     use acme_proxy_store::db::Database;
     use acme_proxy_store::order::Order;
 
     let config = JobsConfig {
-        poll_interval_ms: 5,
+        poll_interval: acme_proxy_core::config::ConfigDuration::from_millis(5),
         max_attempts: 1,
-        retry_base_seconds: 0,
+        retry_base: acme_proxy_core::config::ConfigDuration::from_secs(0),
         ..JobsConfig::default()
     };
     let database = Arc::new(Database::connect_in_memory().await.unwrap());
@@ -561,17 +561,17 @@ async fn the_expiry_digest_reaches_a_backend_through_the_runner() {
     let (_notifiers_tx, notifiers) =
         acme_proxy_jobs::notify::notifiers_channel(dispatchers.clone());
 
-    let profile = ProfileConfig {
+    let endpoint = EndpointConfig {
         name: "default".to_string(),
-        sections: ProfileSections {
+        sections: EndpointSections {
             notify: NotifyConfig {
                 expiry: ExpiryNotifyConfig {
-                    lead_days: 14,
+                    lead: acme_proxy_core::config::ConfigDuration::from_days(14),
                     ..ExpiryNotifyConfig::default()
                 },
                 ..NotifyConfig::default()
             },
-            ..ProfileSections::default()
+            ..EndpointSections::default()
         },
     };
 
@@ -581,8 +581,8 @@ async fn the_expiry_digest_reaches_a_backend_through_the_runner() {
         .unwrap();
     registry
         .register(Arc::new(
-            ExpiryDigestJob::from_profiles(
-                std::slice::from_ref(&profile),
+            ExpiryDigestJob::from_endpoints(
+                std::slice::from_ref(&endpoint),
                 notifiers,
                 database.clone(),
                 queue.clone(),
@@ -591,7 +591,7 @@ async fn the_expiry_digest_reaches_a_backend_through_the_runner() {
         ))
         .unwrap();
 
-    // `recover` runs on the way into the loop and queues the profile's row at
+    // `recover` runs on the way into the loop and queues the endpoint's row at
     // `run_at = now`, so the first pass produces the digest with nothing else
     // to trigger it.
     let (shutdown, receiver) = tokio::sync::watch::channel(false);
@@ -614,7 +614,7 @@ async fn the_expiry_digest_reaches_a_backend_through_the_runner() {
     );
     match &recorded[0] {
         NotifyEvent::CertificatesExpiring(data) => {
-            assert_eq!(data.profile, "default");
+            assert_eq!(data.endpoint, "default");
             assert_eq!(data.total, 1);
             assert_eq!(
                 data.certificates[0].identifiers,

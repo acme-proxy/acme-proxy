@@ -27,7 +27,7 @@ editing, as one line each. The reasoning is elsewhere, in exactly one place:
 | `acme-proxy-policy` (`policy`) | `filter`, `ipam` | core, net |
 | `acme-proxy-jobs` (`jobs`) | `auditor`, `jobs`, `metrics`, `notify` | core, net, store |
 | `acme-proxy-signer` (`signer`) | `local_ca`, `relay`, `custom`, `info`, `issuance`, **at the crate root**; owns the `hsm` feature | core, jobs, net, store |
-| `acme-proxy-protocol` (`protocol`) | `acme` (the services), `extractors`, `handlers`, `middlewares`, `profile`, `router` | everything above |
+| `acme-proxy-protocol` (`protocol`) | `acme` (the services), `extractors`, `handlers`, `middlewares`, `endpoint`, `router` | everything above |
 | `acme-proxy-admin` (`admin`) | `admin` (the operation layer), `identity` (OIDC, LDAP, provisioning), `webadmin` | protocol and below, and net for the identity providers |
 | `acme-proxy-server` (`server`) | the runtime, **at the crate root** (`acme_proxy_server::serve_on`): roles, assembly, generations, sockets, `reload`, `logging` | all of the above |
 | `acme-proxy` (repository root) | `src/cli/`, `main.rs`, every suite in `tests/` | all of the above |
@@ -73,7 +73,7 @@ call too; a handler keeps only what is HTTP.
   it; `alreadyRevoked` only after the request is authorized.
 - `index_link` **appends** `Link`, never sets it — a handler's own `Link`
   (terms of service) must survive.
-- `GET /crl` and `GET /ca.pem` sit **inside** the profile router, behind its
+- `GET /crl` and `GET /ca.pem` sit **inside** the endpoint router, behind its
   filter policy. An address-based policy that must let relying parties fetch the
   CRL needs a `path` rule for it.
 
@@ -81,7 +81,7 @@ call too; a handler keeps only what is HTTP.
 
 - A backend never returns a `JobHandler`; it hands over **state**
   (`crl_refresher`, the relay's state), because the registry refuses a second
-  handler for a kind. One handler per kind, over every profile.
+  handler for a kind. One handler per kind, over every endpoint.
 - `abandon` fires exactly once. A sweep never answers `Failed`.
 - `LocalCa` overwrites **every** CSR extension (`NoCa`, not `ExplicitNoCa`);
   both signing calls stay under `spawn_blocking`, unconditionally.

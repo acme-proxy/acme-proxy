@@ -6,7 +6,7 @@
 //!
 //! ## Why the labels come from `MatchedPath`
 //!
-//! [`MatchedPath`] is the route *pattern* axum matched — `/profile/le/order/{id}`
+//! [`MatchedPath`] is the route *pattern* axum matched — `/endpoint/le/order/{id}`
 //! — rather than the URI the client sent. That distinction is the whole
 //! cardinality argument: a `route` label taken from the URI would mint a series
 //! per order id, per account id and per challenge id, and a Prometheus series
@@ -55,8 +55,8 @@ pub async fn record_request(
     // the client's reading speed rather than this server.
     let elapsed = started.elapsed();
 
-    let (profile, route) = split_matched_path(matched.as_deref());
-    metrics.record_request(&profile, &route, response.status().as_u16(), elapsed);
+    let (endpoint, route) = split_matched_path(matched.as_deref());
+    metrics.record_request(&endpoint, &route, response.status().as_u16(), elapsed);
 
     response.into_response()
 }
@@ -76,7 +76,7 @@ mod tests {
         Router::new()
             .route("/health", get(|| async { "ok" }))
             .nest(
-                &format!("{}/le", acme_proxy_core::routes::PROFILE_PREFIX),
+                &format!("{}/le", acme_proxy_core::routes::ENDPOINT_PREFIX),
                 inner,
             )
             .layer(middleware::from_fn_with_state(metrics, record_request))
@@ -99,7 +99,7 @@ mod tests {
         let app = app(metrics.clone()).await;
 
         for id in ["aaaa-1111", "bbbb-2222", "cccc-3333"] {
-            let request = Request::get(format!("/profile/le/order/{id}"))
+            let request = Request::get(format!("/endpoint/le/order/{id}"))
                 .body(Body::empty())
                 .unwrap();
             app.clone().oneshot(request).await.unwrap();
@@ -108,7 +108,7 @@ mod tests {
         let rendered = metrics.render();
         assert!(
             rendered.contains(
-                "acme_proxy_requests_total{role=\"acme,admin,worker\",profile=\"le\",route=\"/order/{id}\",status=\"200\"} 3\n"
+                "acme_proxy_requests_total{role=\"acme,admin,worker\",endpoint=\"le\",route=\"/order/{id}\",status=\"200\"} 3\n"
             ),
             "{rendered}"
         );
@@ -128,7 +128,7 @@ mod tests {
             .unwrap();
         app.clone()
             .oneshot(
-                Request::get("/profile/le/boom")
+                Request::get("/endpoint/le/boom")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -138,13 +138,13 @@ mod tests {
         let rendered = metrics.render();
         assert!(
             rendered.contains(
-                "acme_proxy_requests_total{role=\"acme,admin,worker\",profile=\"none\",route=\"/health\",status=\"200\"} 1\n"
+                "acme_proxy_requests_total{role=\"acme,admin,worker\",endpoint=\"none\",route=\"/health\",status=\"200\"} 1\n"
             ),
             "{rendered}"
         );
         assert!(
             rendered.contains(
-                "acme_proxy_requests_total{role=\"acme,admin,worker\",profile=\"le\",route=\"/boom\",status=\"500\"} 1\n"
+                "acme_proxy_requests_total{role=\"acme,admin,worker\",endpoint=\"le\",route=\"/boom\",status=\"500\"} 1\n"
             ),
             "{rendered}"
         );
@@ -165,7 +165,7 @@ mod tests {
         let rendered = metrics.render();
         assert!(
             rendered.contains(&format!(
-                "acme_proxy_requests_total{{role=\"acme,admin,worker\",profile=\"none\",\
+                "acme_proxy_requests_total{{role=\"acme,admin,worker\",endpoint=\"none\",\
                  route=\"{ROUTE_UNMATCHED}\",status=\"404\"}} 3\n"
             )),
             "{rendered}"

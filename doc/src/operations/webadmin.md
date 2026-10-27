@@ -31,7 +31,7 @@ The admin listener has the opposite shape. It defaults to loopback, requires a
 session on every route but sign-in, and deliberately carries **no admission
 control** (the availability concern here is credential brute force, which the
 login rate limiter handles and admission control would not touch). It does not
-inherit the profiles' `[filter]` either: it has a policy of its own,
+inherit the endpoints' `[filter]` either: it has a policy of its own,
 [`[admin.filter]`](#restricting-who-can-reach-it).
 
 Access control on this listener is the bind address, TLS, `[admin.filter]`, and
@@ -185,8 +185,8 @@ through an OpenID Connect provider, a provider's sign-in for one; see
 - It travels in a `__Host-acme_admin_session` cookie, `HttpOnly; Secure;
   SameSite=Strict; Path=/`. The `__Host-` prefix is browser-enforced: it
   *requires* those attributes, so an edit that drops one breaks visibly.
-- Sessions have both an absolute lifetime (`session_ttl_seconds`, never extended
-  by activity) and an idle timeout (`session_idle_timeout_seconds`).
+- Sessions have both an absolute lifetime (`session_ttl`, never extended
+  by activity) and an idle timeout (`session_idle_timeout`).
 - Passwords are hashed with PBKDF2-HMAC-SHA256 at 600 000 iterations. A failed
   sign-in costs the same whether the username exists or not, so the endpoint
   cannot be used to enumerate operators — and every failure returns the same
@@ -240,16 +240,16 @@ it that needs a session bounces to `/ui/login`.
 | Page | What is on it |
 |---|---|
 | `/ui/` | What needs attention — failed jobs, certificates expiring within seven days, refusals in the last day, and any endpoint bypassing validation — each linking to its list; then totals for accounts, orders, EAB credentials and nonces, and the mounted endpoints |
-| `/ui/accounts` | Every account, filterable by profile and EAB credential, listed with the address its key was last seen from; a detail page carries both recorded addresses, the contact editor, deactivate and delete |
-| `/ui/orders` | Every order, filterable by profile, status, account, identifier (exact or substring) and certificate serial; a detail page shows the authorizations and challenges, offers the issued chain for download, and revokes or deletes |
+| `/ui/accounts` | Every account, filterable by endpoint and EAB credential, listed with the address its key was last seen from; a detail page carries both recorded addresses, the contact editor, deactivate and delete |
+| `/ui/orders` | Every order, filterable by endpoint, status, account, identifier (exact or substring) and certificate serial; a detail page shows the authorizations and challenges, offers the issued chain for download, and revokes or deletes |
 | `/ui/eab` | Credentials, paged; minting (the secret is shown **once**); a detail page counts the accounts it registered, links to them, and revokes or deletes — keeping, deactivating or deleting those accounts |
-| `/ui/expiring` | Certificates lapsing inside a window, soonest first, each annotated with whatever has already replaced it; filterable by profile and window, with a control to hide the replaced ones. **Read-only** |
+| `/ui/expiring` | Certificates lapsing inside a window, soonest first, each annotated with whatever has already replaced it; filterable by endpoint and window, with a control to hide the replaced ones. **Read-only** |
 | `/ui/jobs` | The background queue — relayed issuance, notification delivery, the periodic sweeps — filterable by kind and status. A detail page cross-links a relay job to its upstream order and carries **Cancel** and **Run now** (see below) |
 | `/ui/upstream-orders` | One row per local order relayed to an upstream CA: the upstream URLs, the upstream's own error text, the local order status. **Read-only** — stop an in-flight relay from `/ui/jobs` instead |
 | `/ui/audit` | The CA's audit trail — every issuance and every refusal, filterable, with a detail page per row. **Read-only**: there is no route here that prunes it |
 | `/ui/nonces` | The table size, and a manual sweep |
-| `/ui/profiles` | The endpoints this process serves, and a warning for any that bypass validation |
-| `/ui/profiles/{name}/filter` | One endpoint's resolved access policy: every check, and every rule in evaluation order with its condition re-parenthesized. **Read-only** |
+| `/ui/endpoints` | The endpoints this process serves, and a warning for any that bypass validation |
+| `/ui/endpoints/{name}/filter` | One endpoint's resolved access policy: every check, and every rule in evaluation order with its condition re-parenthesized. **Read-only** |
 
 The account pages surface the CA's account-side traceability columns: where
 `newAccount` was called from and the reverse name that address had at the time
@@ -285,10 +285,11 @@ with scripting disabled.
 Mounted at `/api`, unversioned. Every response is `application/json` with
 `Cache-Control: no-store`.
 
-A filter left blank is the same as leaving it out: `?profile=` is every profile,
-not a profile whose name is the empty string. That matters because the panel's
-own controls are `<select>` elements inside a submitted form, which always send
-their name — so `every profile` and `any status` reach the API as blanks.
+A filter left blank is the same as leaving it out: `?endpoint=` is every
+endpoint, not an endpoint whose name is the empty string. That matters because
+the panel's own controls are `<select>` elements inside a submitted form, which
+always send their name — so `every endpoint` and `any status` reach the API as
+blanks.
 
 | Method | Path | |
 |---|---|---|
@@ -315,18 +316,18 @@ their name — so `every profile` and `any status` reach the API as blanks.
 | `POST` | `/api/operators/{username}/contact` | `{password, contact}` |
 | `POST` | `/api/operators/{username}/totp/reset` | `{password}` |
 | `POST` | `/api/operators/{username}/sessions/{id}/revoke` | `{password}` |
-| `GET` | `/api/accounts?profile=&eabKid=&limit=&offset=` | `eabKid`: the accounts one credential registered |
+| `GET` | `/api/accounts?endpoint=&eabKid=&limit=&offset=` | `eabKid`: the accounts one credential registered |
 | `GET` | `/api/accounts/{id}` | |
 | `GET` | `/api/accounts/{id}/orders?limit=&offset=` | |
 | `PATCH` | `/api/accounts/{id}` | `{contact: [...]}` |
 | `POST` | `/api/accounts/{id}/deactivate` | |
 | `DELETE` | `/api/accounts/{id}` | cascades to the account's orders; `409 live_certificates` while one holds a live certificate |
-| `GET` | `/api/orders?profile=&accountId=&status=&identifier=&identifierContains=&certSerial=&limit=&offset=` | `identifier` is exact, `identifierContains` a substring, the two mutually exclusive; `certSerial` is the issued leaf's serial |
+| `GET` | `/api/orders?endpoint=&accountId=&status=&identifier=&identifierContains=&certSerial=&limit=&offset=` | `identifier` is exact, `identifierContains` a substring, the two mutually exclusive; `certSerial` is the issued leaf's serial |
 | `GET` | `/api/orders/{id}` | order + authorizations + challenges, plus `certificatePem` once issued |
 | `POST` | `/api/orders/{id}/revoke` | `{reason}` optional |
 | `DELETE` | `/api/orders/{id}` | `409 live_certificates` while its certificate is live |
 | `GET` | `/api/eab?limit=&offset=` | never shows a secret |
-| `POST` | `/api/eab` | `{label, profile}` — **returns the secret, once** |
+| `POST` | `/api/eab` | `{label, endpoint}` — **returns the secret, once** |
 | `GET` | `/api/eab/{kid}` | |
 | `POST` | `/api/eab/{kid}/revoke` | the row survives, moved to `revoked` |
 | `DELETE` | `/api/eab/{kid}?accounts=keep\|deactivate\|delete` | the row goes; `409 live_certificates` for `delete` while an account holds a live certificate |
@@ -334,15 +335,15 @@ their name — so `every profile` and `any status` reach the API as blanks.
 | `GET` | `/api/jobs/{id}` | |
 | `POST` | `/api/jobs/{id}/cancel` | |
 | `POST` | `/api/jobs/{id}/run` | |
-| `GET` | `/api/upstream-orders?profile=&status=&limit=&offset=` | read-only |
+| `GET` | `/api/upstream-orders?endpoint=&status=&limit=&offset=` | read-only |
 | `GET` | `/api/upstream-orders/{id}` | by local order id |
-| `GET` | `/api/expiring?profile=&days=&superseded=&limit=&offset=` | read-only; `superseded=hide` drops the replaced rows |
-| `GET` | `/api/audit?profile=&accountId=&orderId=&certSerial=&event=&outcome=&limit=&offset=` | read-only |
+| `GET` | `/api/expiring?endpoint=&days=&superseded=&limit=&offset=` | read-only; `superseded=hide` drops the replaced rows |
+| `GET` | `/api/audit?endpoint=&accountId=&orderId=&certSerial=&event=&outcome=&limit=&offset=` | read-only |
 | `GET` | `/api/audit/{id}` | one row |
 | `GET` | `/api/nonces` | `{count, ttlSeconds}`, the shape `nonce count --json` prints |
 | `POST` | `/api/nonces/cleanup` | `{ttlSeconds}` optional |
-| `GET` | `/api/profiles` | the endpoints actually mounted; `profile list`'s document |
-| `GET` | `/api/profiles/{name}/filter` | one endpoint's resolved access policy; read-only |
+| `GET` | `/api/endpoints` | the endpoints actually mounted; `endpoint list`'s document |
+| `GET` | `/api/endpoints/{name}/filter` | one endpoint's resolved access policy; read-only |
 | `GET` | `/health` | unauthenticated, no database access |
 | `GET` | `/ready` | unauthenticated; `503` while the database does not answer |
 
@@ -396,10 +397,10 @@ after` above it, which is the §7.4 window the client requested. Both are
 ### Revocation
 
 `POST /api/orders/{id}/revoke` resolves the revocation route from **the
-order's own profile**. Two profiles can hold two different CAs, and revoking
+order's own endpoint**. Two endpoints can hold two different CAs, and revoking
 against the wrong one would record nothing useful and leave the real CRL
-untouched. An order belonging to a profile this process no longer mounts
-answers `409 profile_not_mounted` rather than guessing.
+untouched. An order belonging to an endpoint this process no longer mounts
+answers `409 endpoint_not_mounted` rather than guessing.
 
 The panel holds no signing backend — only the `worker` role does — so it revokes
 the way the CLI does. A `local_ca` revocation is recorded at once and the worker
@@ -421,7 +422,7 @@ both requiring an `operator`-or-higher session (a `viewer` is refused):
   operator — the way to stop a relayed issuance that will never complete.
   Cancelling a periodic sweep job stops that sweep until the server restarts.
 - **`POST /api/jobs/{id}/run`** — makes the job eligible immediately (picked up
-  within `jobs.poll_interval_ms`; the runner is not woken). On a `ready` job it
+  within `jobs.poll_interval`; the runner is not woken). On a `ready` job it
   pulls `run_at` forward; on a `failed` one it grants **exactly one more
   attempt** — `attempts` is set to `max_attempts - 1`, not reset, so repeatedly
   clicking it is the only way to loop a permanently failing job.
@@ -445,7 +446,7 @@ that is all they do. There is no route on this listener that deletes audit
 history, and that is a deliberate limit rather than a missing feature: the first
 thing a stolen session would do is erase what it had just done, and a trail the
 watched thing can erase proves nothing. Pruning happens on the host with
-`acme-proxy audit cleanup`, or on a schedule via `audit.retention_days`.
+`acme-proxy audit cleanup`, or on a schedule via `audit.retention`.
 
 This is also why `/api/audit` contributes no entry to the CSRF test table — with
 no mutating verb, there is nothing to protect. Every other verb on those paths
@@ -471,17 +472,17 @@ than in SQL, so the count beside the page cannot follow the filter down — and 
 pager whose arithmetic quietly disagrees with the rows under it would be worse
 than saying so. The page says it in a line above the table.
 
-The default window is `[notify.expiry] lead_days` wherever the digest is on,
+The default window is `[notify.expiry] lead` wherever the digest is on,
 and 30 days where it is off: an operator who has chosen a lead time gets that
 one back.
 
 ### The policy is shown, never explained
 
-`/api/profiles/{name}/filter` and `/ui/profiles/{name}/filter` answer what
+`/api/endpoints/{name}/filter` and `/ui/endpoints/{name}/filter` answer what
 `acme-proxy filter show` prints: the default effect, every check with its type
 and the stages it decides at, and every rule in evaluation order with its
 condition **re-parenthesized**, so an operator who wrote `a or b and c` reads
-`a or (b and c)` back. It is the missing half of the warning on `/ui/profiles`:
+`a or (b and c)` back. It is the missing half of the warning on `/ui/endpoints`:
 an endpoint with `challenge.bypass` on has `[filter]` and nothing else between
 it and its clients, and this is where that policy can be read.
 
@@ -529,7 +530,7 @@ Every web-admin sign-in and every second-factor change is logged, and — when
   *replaced*, not the new one, since whoever made the change controls the new
   address. A first-ever address replaced nothing and tells nobody.
 
-`[admin.notify]` has exactly the shape of the per-profile [`[notify]`
+`[admin.notify]` has exactly the shape of the per-endpoint [`[notify]`
 section](../notifications/index.md) — `enabled`, `email` / `webhook` / `custom`
 backends, `template_dir`, per-backend `events` — but is process-wide and built
 only while `[admin]` is enabled (`ACME_PROXY_ADMIN__NOTIFY__ENABLED`). Email
@@ -571,7 +572,7 @@ and may change. The codes:
   `reauthentication_required`.
 - **The row's state:** `order_not_issued`, `already_revoked`,
   `live_certificates`, `last_admin`, `job_not_cancellable`, `job_not_runnable`,
-  `profile_not_mounted`, `managed_externally`.
+  `endpoint_not_mounted`, `managed_externally`.
 - **Server:** `signer_failed`, `provider_unavailable`, `internal`.
 
 The pages answer the same failures as HTML carrying the same code, with one
@@ -605,7 +606,7 @@ $ curl -sb jar -X POST http://127.0.0.1:3001/api/eab \
   control, and filters nothing until `[admin.filter]` names a rule. That is
   worth knowing rather than discovering.
 - Sign-in is protected by a fixed-window rate limiter
-  (`admin.login_max_attempts` per `admin.login_window_seconds`, keyed on the
+  (`admin.login_max_attempts` per `admin.login_window`, keyed on the
   client address — an IPv6 client by its /64, which one subscriber can rotate
   through at will). An attempt counts from the moment it starts, so a parallel
   burst gets no more guesses than a sequence, and the count is in the database,

@@ -4,7 +4,11 @@
 //! Re-exported flat from [`super`], so nothing outside this directory names
 //! the submodule.
 
+use std::collections::BTreeMap;
+
 use serde::Deserialize;
+
+use super::ConfigDuration;
 
 use super::string_list;
 
@@ -38,7 +42,7 @@ impl Default for SignerConfig {
 #[serde(default)]
 pub struct CustomSignerConfig {
     pub script_path: String,
-    pub timeout_ms: u64,
+    pub timeout: ConfigDuration,
     #[serde(deserialize_with = "string_list")]
     pub args: Vec<String>,
     /// Whether the script answers the `crl` hook (`GET /crl`). Off by
@@ -57,7 +61,7 @@ impl Default for CustomSignerConfig {
     fn default() -> Self {
         Self {
             script_path: String::new(),
-            timeout_ms: 5000,
+            timeout: ConfigDuration::from_millis(5000),
             args: Vec::new(),
             supports_crl: false,
             supports_renewal_info: false,
@@ -89,10 +93,18 @@ pub struct RelayConfig {
     /// the upstream asks for, which is what a public CA requires).
     pub challenge_strategy: String,
     /// How often to poll an upstream order/authorization while it resolves.
-    pub poll_interval_ms: u64,
+    pub poll_interval: ConfigDuration,
     /// Total budget for one upstream issuance, after which the local order is
     /// marked `invalid` rather than left processing forever.
-    pub poll_timeout_secs: u64,
+    pub poll_timeout: ConfigDuration,
+    /// The ACME profile (draft-ietf-acme-profiles) every upstream order asks
+    /// for, whatever a client named. Empty (the default) relays the upstream's
+    /// own profiles to clients and passes each client's choice through.
+    ///
+    /// Forcing is a relay-only key: a `local_ca` operator writes the profile
+    /// list, so restricting that list is how it forces one, while a relay's
+    /// list belongs to the upstream.
+    pub profile: String,
     pub dns01: Dns01Config,
     pub eab: RelayEabConfig,
 }
@@ -104,8 +116,9 @@ impl Default for RelayConfig {
             account_key_path: "upstream_account.key".to_string(),
             contact: Vec::new(),
             challenge_strategy: "bypass".to_string(),
-            poll_interval_ms: 2000,
-            poll_timeout_secs: 300,
+            poll_interval: ConfigDuration::from_millis(2000),
+            poll_timeout: ConfigDuration::from_secs(300),
+            profile: String::new(),
             dns01: Dns01Config::default(),
             eab: RelayEabConfig::default(),
         }
@@ -173,23 +186,23 @@ impl Default for Dns01Config {
 /// What the `dns01` strategy waits for between publishing a record and asking
 /// the upstream to validate it.
 ///
-/// Validated (against `poll_timeout_secs`, the attempt's whole budget) in
+/// Validated (against `poll_timeout`, the attempt's whole budget) in
 /// `RelaySigner::from_config`, and only when `dns01` is the strategy in force.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct Dns01PropagationConfig {
     /// `none` (trigger right after the update) or `delay`.
     pub mode: String,
-    /// Under `delay`: seconds between the update and the trigger. Ignored
+    /// Under `delay`: how long between the update and the trigger. Ignored
     /// under `none`.
-    pub delay_secs: u64,
+    pub delay: ConfigDuration,
 }
 
 impl Default for Dns01PropagationConfig {
     fn default() -> Self {
         Self {
             mode: "none".to_string(),
-            delay_secs: 30,
+            delay: ConfigDuration::from_secs(30),
         }
     }
 }
@@ -215,16 +228,16 @@ pub struct LocalCaConfig {
     pub cert_path: String,
     pub key_path: String,
     pub key_type: String,
-    pub leaf_validity_days: u64,
+    pub leaf_validity: ConfigDuration,
     pub crl_path: String,
     /// Where a relying party can fetch the CRL, written into every issued leaf
     /// as `cRLDistributionPoints` (RFC 5280 §4.2.1.13). Empty (the default)
     /// emits no extension at all.
     ///
     /// Not derived from `server.base_url`: the value is frozen into every
-    /// certificate signed while it is set, so a `base_url` change or a profile
+    /// certificate signed while it is set, so a `base_url` change or an endpoint
     /// rename would silently break certificates already issued — and the
-    /// per-profile `/crl` sits behind that profile's filter chain, which an
+    /// per-endpoint `/crl` sits behind that endpoint's filter chain, which an
     /// address-based policy will refuse to a relying party. Several entries
     /// mean one CRL reachable at several places, not several CRLs.
     ///
@@ -255,6 +268,39 @@ pub struct LocalCaConfig {
     /// so validation lives in `LocalCa::load_or_generate`, where the selector
     /// that makes these fields required is also in scope.
     pub pkcs11: Pkcs11Config,
+    /// The ACME profiles (draft-ietf-acme-profiles) this CA offers, by name.
+    /// Empty (the default) offers none: the directory lists no `profiles` and
+    /// every leaf gets [`leaf_validity`](Self::leaf_validity).
+    ///
+    /// A map keyed by an operator-chosen name, so the name is validated like
+    /// every such key (`config::validate_key_names`), in `LocalCa`'s
+    /// constructor along with each profile's lifetime.
+    pub profiles: BTreeMap<String, LocalCaProfileConfig>,
+    /// The profile an order that names none is issued under. Empty (the
+    /// default) issues such an order under [`leaf_validity`](Self::leaf_validity)
+    /// and records no profile on it.
+    pub default_profile: String,
+}
+
+/// One ACME profile a `local_ca` offers (`[signer.local_ca.profiles.<name>]`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct LocalCaProfileConfig {
+    /// What the directory's `meta.profiles` says about it: free text for the
+    /// client's operator, per the draft.
+    pub description: String,
+    /// The lifetime of a leaf issued under this profile, in place of the
+    /// CA's own `leaf_validity`. Bounded the same way.
+    pub leaf_validity: ConfigDuration,
+}
+
+impl Default for LocalCaProfileConfig {
+    fn default() -> Self {
+        Self {
+            description: String::new(),
+            leaf_validity: ConfigDuration::from_days(90),
+        }
+    }
 }
 
 impl Default for LocalCaConfig {
@@ -263,13 +309,15 @@ impl Default for LocalCaConfig {
             cert_path: "ca.pem".to_string(),
             key_path: "ca.key".to_string(),
             key_type: "ecdsa-p256".to_string(),
-            leaf_validity_days: 90,
+            leaf_validity: ConfigDuration::from_days(90),
             crl_path: "ca.crl".to_string(),
             crl_distribution_points: Vec::new(),
             ca_issuer_urls: Vec::new(),
             subject: LocalCaSubjectConfig::default(),
             key_source: "file".to_string(),
             pkcs11: Pkcs11Config::default(),
+            profiles: BTreeMap::new(),
+            default_profile: String::new(),
         }
     }
 }

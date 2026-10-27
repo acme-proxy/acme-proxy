@@ -31,7 +31,7 @@ use acme_proxy_store::order::OrderQuery;
 #[derive(Debug, Deserialize, Default)]
 pub struct AccountListParams {
     #[serde(default, deserialize_with = "empty_is_absent")]
-    pub profile: Option<String>,
+    pub endpoint: Option<String>,
     /// The accounts one EAB credential bound.
     #[serde(default, rename = "eabKid", deserialize_with = "empty_is_absent")]
     pub eab_kid: Option<String>,
@@ -45,7 +45,7 @@ pub struct UpdateAccount {
     pub contact: Vec<String>,
 }
 
-/// `GET /api/accounts?profile=&eabKid=&limit=&offset=`
+/// `GET /api/accounts?endpoint=&eabKid=&limit=&offset=`
 pub async fn list_accounts(
     State(state): State<AdminState>,
     Query(params): Query<AccountListParams>,
@@ -53,7 +53,7 @@ pub async fn list_accounts(
 ) -> Result<Json<serde_json::Value>, AdminError> {
     let page = PageParams::from(params.limit, params.offset).resolve(&state.config);
     let (accounts, total) = Account::search(
-        params.profile.as_deref(),
+        params.endpoint.as_deref(),
         params.eab_kid.as_deref(),
         page.limit,
         page.offset,
@@ -72,7 +72,7 @@ pub async fn list_accounts(
 ///
 /// `find_any_by_id` — the deliberately **unscoped** admin lookup. An operator
 /// holding an id wants the account whatever endpoint it was registered at;
-/// only the request path needs the profile predicate that keeps a `kid` minted
+/// only the request path needs the endpoint predicate that keeps a `kid` minted
 /// at one endpoint from working at another.
 pub async fn get_account(
     State(state): State<AdminState>,
@@ -219,7 +219,7 @@ pub(crate) async fn apply_deactivate_account(
     let account = admin::deactivate_account(
         id,
         state.database.clone(),
-        |profile| state.notifiers.get(profile),
+        |endpoint| state.notifiers.get(endpoint),
         caller
             .request
             .ip

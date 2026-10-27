@@ -17,7 +17,7 @@ use tower::ServiceExt;
 mod common;
 use common::{EcSigner, TestSigner, body_json, fetch_nonce, p, test_app};
 
-const NEW_ACCOUNT_URL: &str = "http://localhost:3000/profile/default/newAccount";
+const NEW_ACCOUNT_URL: &str = "http://localhost:3000/endpoint/default/newAccount";
 const BASE: &str = common::BASE;
 
 async fn post(app: &Router, path: &str, body: String) -> Response {

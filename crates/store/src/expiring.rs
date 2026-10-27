@@ -21,7 +21,7 @@ use acme_proxy_core::config::Config;
 
 /// The window the panel opens on when the caller names no `days`.
 ///
-/// Only reached when `[notify.expiry]` is off (`lead_days = 0`): a deployment
+/// Only reached when `[notify.expiry]` is off (`lead = "0s"`): a deployment
 /// that has chosen a lead time gets that one, since the operator reading the
 /// page is the operator who set it.
 const DEFAULT_LEAD_DAYS: u64 = 30;
@@ -55,7 +55,7 @@ pub struct ExpiringEntry {
 /// The window [`list_expiring`] answers.
 pub struct ExpiringQuery {
     /// `None` is every endpoint, the panel's default. The digest names one.
-    pub profile: Option<String>,
+    pub endpoint: Option<String>,
     /// `None` is every account. Only the digest addressed to an account's own
     /// `contact` names one.
     pub account: Option<Uuid>,
@@ -100,11 +100,12 @@ pub fn days_remaining(not_after: i64, now: i64) -> i64 {
     not_after.saturating_sub(now).max(0) / (24 * 60 * 60)
 }
 
-/// The lead time a surface should default to: the configured one, or
-/// [`DEFAULT_LEAD_DAYS`] when the digest is switched off.
+/// The lead time a surface should default to: the configured one rounded up
+/// to whole days (the unit every listing counts in, so `"12h"` lists a day),
+/// or [`DEFAULT_LEAD_DAYS`] when the digest is switched off.
 #[must_use]
 pub fn default_lead_days(config: &Config) -> u64 {
-    match config.notify.expiry.lead_days {
+    match config.notify.expiry.lead.as_secs().div_ceil(24 * 60 * 60) {
         0 => DEFAULT_LEAD_DAYS,
         days => days,
     }
@@ -138,7 +139,8 @@ pub async fn superseded_by(
     //    certificate still doing the work.
     if let Some(chain) = order.certificate.as_deref()
         && let Some(cert_id) = ari_cert_id(chain)
-        && let Some(successor) = Order::find_by_replaces(&order.profile, &cert_id, database).await?
+        && let Some(successor) =
+            Order::find_by_replaces(&order.endpoint, &cert_id, database).await?
         && successor.certificate.is_some()
         && successor.revoked_at.is_none()
     {
@@ -243,7 +245,7 @@ pub async fn list_expiring(
     database: Arc<Database>,
 ) -> Result<(Vec<ExpiringEntry>, i64, i64), sqlx::Error> {
     let (orders, total) = Order::find_expiring(
-        query.profile.as_deref(),
+        query.endpoint.as_deref(),
         query.account,
         query.before,
         query.limit,
@@ -444,14 +446,14 @@ mod tests {
     }
 
     /// The panel needs a window even where the digest is switched off, which
-    /// `lead_days = 0` is.
+    /// `lead = "0s"` is.
     #[test]
     fn the_default_window_falls_back_only_when_the_digest_is_off() {
         let mut config = Config::default();
-        assert_eq!(config.notify.expiry.lead_days, 0, "off by default");
+        assert!(config.notify.expiry.lead.is_zero(), "off by default");
         assert_eq!(default_lead_days(&config), DEFAULT_LEAD_DAYS);
 
-        config.notify.expiry.lead_days = 3;
+        config.notify.expiry.lead = acme_proxy_core::config::ConfigDuration::from_days(3);
         assert_eq!(
             default_lead_days(&config),
             3,
@@ -523,7 +525,7 @@ mod tests {
         issued(&db, acct, &["a.example.com"], 90).await;
 
         let query = |include: bool| ExpiringQuery {
-            profile: None,
+            endpoint: None,
             account: None,
             before: expiring_horizon(30),
             include_superseded: include,
@@ -547,10 +549,10 @@ mod tests {
         );
     }
 
-    /// The profile filter reaches through the operation layer, and the ordering
+    /// The endpoint filter reaches through the operation layer, and the ordering
     /// is the query's: soonest first.
     #[tokio::test]
-    async fn the_listing_scopes_by_profile_and_answers_soonest_first() {
+    async fn the_listing_scopes_by_endpoint_and_answers_soonest_first() {
         let db = db().await;
         let acct = account_id(&db).await;
         let here = issued_order(&db, "default", acct, &["a.example.com"], 5).await;
@@ -558,7 +560,7 @@ mod tests {
         issued_order(&db, "other", acct, &["c.example.com"], 1).await;
 
         let scoped = ExpiringQuery {
-            profile: Some("default".to_string()),
+            endpoint: Some("default".to_string()),
             account: None,
             before: expiring_horizon(30),
             include_superseded: true,
@@ -574,7 +576,7 @@ mod tests {
         assert_eq!(total, 2);
 
         let unscoped = ExpiringQuery {
-            profile: None,
+            endpoint: None,
             ..scoped
         };
         let (entries, total, _) = list_expiring(&unscoped, db).await.unwrap();

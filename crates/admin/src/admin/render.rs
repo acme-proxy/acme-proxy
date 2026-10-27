@@ -30,7 +30,7 @@ use acme_proxy_store::job::Job;
 use acme_proxy_store::order::Order;
 use acme_proxy_store::upstream_order::UpstreamOrderRow;
 
-use acme_proxy_core::routes::profile_base_url;
+use acme_proxy_core::routes::endpoint_base_url;
 
 /// The envelope every paged listing answers with, on both front ends:
 /// `{items, total, limit, offset}`, where `total` is the count the same filters
@@ -69,14 +69,14 @@ pub fn render_totp_status_json(user: &AdminUser, recovery_codes_remaining: i64) 
 #[must_use]
 pub fn render_account_json(account: &Account, base_url: &str) -> Value {
     let mut object = account
-        .to_json(&profile_base_url(base_url, &account.profile))
+        .to_json(&endpoint_base_url(base_url, &account.endpoint))
         .as_object()
         .cloned()
         .unwrap_or_default();
     object.insert("id".to_string(), Value::String(account.id.to_string()));
     object.insert(
-        "profile".to_string(),
-        Value::String(account.profile.clone()),
+        "endpoint".to_string(),
+        Value::String(account.endpoint.clone()),
     );
     object.insert(
         "createdAt".to_string(),
@@ -111,13 +111,16 @@ pub fn render_account_json(account: &Account, base_url: &str) -> Value {
 #[must_use]
 pub fn render_order_json(order: &Order, base_url: &str, authz_ids: &[Uuid]) -> Value {
     let mut object = order
-        .to_json(&profile_base_url(base_url, &order.profile), authz_ids)
+        .to_json(&endpoint_base_url(base_url, &order.endpoint), authz_ids)
         .as_object()
         .cloned()
         .unwrap_or_default();
     object.insert("id".to_string(), Value::String(order.id.to_string()));
-    object.insert("profile".to_string(), Value::String(order.profile.clone()));
-    // Admin-only, like `id` and `profile`: the ACME order object deliberately
+    object.insert(
+        "endpoint".to_string(),
+        Value::String(order.endpoint.clone()),
+    );
+    // Admin-only, like `id` and `endpoint`: the ACME order object deliberately
     // never names its account, but an operator looking at an order almost
     // always wants to get to the account behind it, and without this neither
     // front end can offer that link.
@@ -166,11 +169,11 @@ pub fn render_order_json(order: &Order, base_url: &str, authz_ids: &[Uuid]) -> V
 #[must_use]
 pub fn render_order_detail_json(detail: &OrderDetail, base_url: &str) -> Value {
     let authz_ids: Vec<Uuid> = detail.authorizations.iter().map(|(a, _)| a.id).collect();
-    let profile_base = profile_base_url(base_url, &detail.order.profile);
+    let endpoint_base = endpoint_base_url(base_url, &detail.order.endpoint);
     let authorizations: Vec<Value> = detail
         .authorizations
         .iter()
-        .map(|(a, c)| a.to_json(&profile_base, c))
+        .map(|(a, c)| a.to_json(&endpoint_base, c))
         .collect();
     let mut order = render_order_json(&detail.order, base_url, &authz_ids);
     // The issued chain itself, admin-only and **detail-only**.
@@ -196,7 +199,7 @@ pub fn render_order_detail_json(detail: &OrderDetail, base_url: &str) -> Value {
 /// One background job, for `acme-proxy jobs list/show` and `GET /api/jobs`.
 ///
 /// `payload` is echoed verbatim — it is the subject's identity (an order id, a
-/// profile name), never a secret, which the migration guarantees so an operator
+/// endpoint name), never a secret, which the migration guarantees so an operator
 /// can read the table with `sqlite3`. Every optional member is **omitted** when
 /// absent, never nulled; `lastError` is text a far end wrote, so a web surface
 /// must escape it (the `.html` templates do).
@@ -250,7 +253,7 @@ pub fn render_upstream_order_json(row: &UpstreamOrderRow) -> Value {
         "orderId".to_string(),
         Value::String(row.order_id.to_string()),
     );
-    object.insert("profile".to_string(), Value::String(row.profile.clone()));
+    object.insert("endpoint".to_string(), Value::String(row.endpoint.clone()));
     object.insert(
         "accountId".to_string(),
         Value::String(row.account_id.to_string()),
@@ -359,7 +362,10 @@ pub fn render_expiring_json(entry: &ExpiringEntry) -> Value {
     let order = &entry.order;
     let mut object = serde_json::Map::new();
     object.insert("orderId".to_string(), Value::String(order.id.to_string()));
-    object.insert("profile".to_string(), Value::String(order.profile.clone()));
+    object.insert(
+        "endpoint".to_string(),
+        Value::String(order.endpoint.clone()),
+    );
     object.insert(
         "accountId".to_string(),
         Value::String(order.account_id.to_string()),
@@ -499,47 +505,47 @@ pub fn render_nonce_stats_json(count: i64, ttl_seconds: u64) -> Value {
 /// One ACME endpoint, as every surface describes it.
 ///
 /// The two front ends reach this from opposite directions, and the difference
-/// is real rather than an implementation detail. `GET /api/profiles` and
-/// `/ui/profiles` build it from a **mounted** [`acme_proxy_protocol::profile::Profile`], so
-/// they describe what this process is actually serving; `acme-proxy profile
+/// is real rather than an implementation detail. `GET /api/endpoints` and
+/// `/ui/endpoints` build it from a **mounted** [`acme_proxy_protocol::endpoint::Endpoint`], so
+/// they describe what this process is actually serving; `acme-proxy endpoint
 /// list` builds it from the configuration, because the alternative is
-/// `server::profile::build_all`, which constructs signer backends -- generating a CA
+/// `server::endpoint::build_all`, which constructs signer backends -- generating a CA
 /// key and contacting a relay upstream for a read-only listing. That is `filter
 /// show`'s split exactly: the panel serves the live thing, the terminal
 /// rebuilds one, and between an edit and its `SIGHUP` the two legitimately
 /// disagree.
-pub struct ProfileSummary {
+pub struct EndpointSummary {
     pub name: String,
     pub base_url: String,
     pub challenge_bypass: bool,
     pub eab_enabled: bool,
 }
 
-impl ProfileSummary {
+impl EndpointSummary {
     /// An endpoint this process is serving.
     #[must_use]
-    pub fn mounted(profile: &acme_proxy_protocol::profile::Profile) -> Self {
+    pub fn mounted(endpoint: &acme_proxy_protocol::endpoint::Endpoint) -> Self {
         Self {
-            name: profile.name.clone(),
-            base_url: profile.base_url.clone(),
-            challenge_bypass: profile.challenges.is_bypassed(),
-            eab_enabled: profile.eab.enabled,
+            name: endpoint.name.clone(),
+            base_url: endpoint.base_url.clone(),
+            challenge_bypass: endpoint.challenges.is_bypassed(),
+            eab_enabled: endpoint.eab.enabled,
         }
     }
 
     /// An endpoint this configuration would mount.
     ///
-    /// `Config::resolve_profiles` has already dropped anything `enabled = false`
+    /// `Config::resolve_endpoints` has already dropped anything `enabled = false`
     /// on the caller's behalf, so this needs no filter of its own -- the list it
     /// is mapped over is already the mounted set, minus the fact of being
     /// mounted.
     #[must_use]
-    pub fn configured(base_url: &str, profile: &acme_proxy_core::config::ProfileConfig) -> Self {
+    pub fn configured(base_url: &str, endpoint: &acme_proxy_core::config::EndpointConfig) -> Self {
         Self {
-            name: profile.name.clone(),
-            base_url: profile_base_url(base_url, &profile.name),
-            challenge_bypass: profile.sections.challenge.bypass,
-            eab_enabled: profile.sections.eab.enabled,
+            name: endpoint.name.clone(),
+            base_url: endpoint_base_url(base_url, &endpoint.name),
+            challenge_bypass: endpoint.sections.challenge.bypass,
+            eab_enabled: endpoint.sections.eab.enabled,
         }
     }
 
@@ -550,15 +556,15 @@ impl ProfileSummary {
     }
 }
 
-/// `profile list --json`, `GET /api/profiles` and `/ui/profiles`.
+/// `endpoint list --json`, `GET /api/endpoints` and `/ui/endpoints`.
 #[must_use]
-pub fn render_profile_json(profile: &ProfileSummary) -> Value {
+pub fn render_endpoint_json(endpoint: &EndpointSummary) -> Value {
     serde_json::json!({
-        "name": profile.name,
-        "baseUrl": profile.base_url,
-        "directory": profile.directory_url(),
-        "challengeBypass": profile.challenge_bypass,
-        "eabEnabled": profile.eab_enabled,
+        "name": endpoint.name,
+        "baseUrl": endpoint.base_url,
+        "directory": endpoint.directory_url(),
+        "challengeBypass": endpoint.challenge_bypass,
+        "eabEnabled": endpoint.eab_enabled,
     })
 }
 
@@ -631,16 +637,16 @@ mod tests {
         let order = order_fixture(account, OrderStatus::Pending);
         let json = render_order_json(&order, "http://localhost:3000", &[authz]);
         assert_eq!(json["id"], order.id.to_string());
-        // Admin output is rendered against the *profile's* base URL, not the
+        // Admin output is rendered against the *endpoint's* base URL, not the
         // server's: that is the URL the client was handed.
-        assert_eq!(json["profile"], "default");
+        assert_eq!(json["endpoint"], "default");
         // Admin-only, and absent from the ACME order object: without it
         // neither front end could link an order back to its account.
         assert_eq!(json["accountId"], account.to_string());
         assert_eq!(
             json["authorizations"],
             serde_json::json!([format!(
-                "http://localhost:3000/profile/default/authz/{authz}"
+                "http://localhost:3000/endpoint/default/authz/{authz}"
             )])
         );
     }

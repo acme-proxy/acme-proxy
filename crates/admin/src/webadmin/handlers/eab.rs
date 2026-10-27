@@ -29,9 +29,9 @@ use acme_proxy_store::eab::EabDeletion;
 pub struct CreateEab {
     #[serde(default, deserialize_with = "empty_is_absent")]
     pub label: Option<String>,
-    /// Bind the credential to one endpoint. Absent means every profile.
+    /// Bind the credential to one endpoint. Absent means every endpoint.
     #[serde(default, deserialize_with = "empty_is_absent")]
-    pub profile: Option<String>,
+    pub endpoint: Option<String>,
 }
 
 /// The query of `DELETE /api/eab/{kid}` and `DELETE /ui/eab/{kid}`.
@@ -111,8 +111,8 @@ pub async fn create_eab(
         &state,
         &Caller::api(&auth, &request_context),
         body.label,
-        body.profile,
-        "omit `profile`",
+        body.endpoint,
+        "omit `endpoint`",
     )
     .await?;
 
@@ -172,25 +172,30 @@ pub async fn delete_eab(
     })))
 }
 
-/// Mints a credential: the mounted-profile check, the row, its audit row and
-/// the log line. `hint` is the front end's wording of "leave the profile out"
-/// (see [`require_mounted_profile`]).
+/// Mints a credential: the mounted-endpoint check, the row, its audit row and
+/// the log line. `hint` is the front end's wording of "leave the endpoint out"
+/// (see [`require_mounted_endpoint`]).
 pub(crate) async fn apply_create_eab(
     state: &AdminState,
     caller: &Caller<'_>,
     label: Option<String>,
-    profile: Option<String>,
+    endpoint: Option<String>,
     hint: &str,
 ) -> Result<Eab, AdminError> {
-    require_mounted_profile(state, profile.as_deref(), hint)?;
+    require_mounted_endpoint(state, endpoint.as_deref(), hint)?;
 
-    let eab =
-        admin::create_eab(label, profile, state.database.clone(), &caller.trail(state)).await?;
+    let eab = admin::create_eab(
+        label,
+        endpoint,
+        state.database.clone(),
+        &caller.trail(state),
+    )
+    .await?;
     tracing::info!(event = "admin_eab_created",
                    outcome = "success",
                    surface = caller.surface,
                    kid = %eab.kid,
-                   profile = ?eab.profile,
+                   endpoint = ?eab.endpoint,
                    username = %caller.username());
     Ok(eab)
 }
@@ -257,16 +262,16 @@ pub(crate) fn deleted_or_refused(
 
 /// Refuses a credential scoped to an endpoint this process does not serve, in
 /// this state's terms; the rule itself is
-/// [`ops::unmounted_profile_refusal`](crate::admin::ops::unmounted_profile_refusal),
+/// [`ops::unmounted_endpoint_refusal`](crate::admin::ops::unmounted_endpoint_refusal),
 /// which `eab create` on the host CLI asks too.
-pub(crate) fn require_mounted_profile(
+pub(crate) fn require_mounted_endpoint(
     state: &AdminState,
-    profile: Option<&str>,
+    endpoint: Option<&str>,
     hint: &str,
 ) -> Result<(), AdminError> {
-    match crate::admin::ops::unmounted_profile_refusal(
-        |name| state.profiles.contains_key(name),
-        profile,
+    match crate::admin::ops::unmounted_endpoint_refusal(
+        |name| state.endpoints.contains_key(name),
+        endpoint,
         hint,
     ) {
         Some(message) => Err(AdminError::bad_request(message)),

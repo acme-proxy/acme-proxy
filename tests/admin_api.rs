@@ -369,7 +369,7 @@ async fn an_expired_session_is_refused_and_swept() {
 #[tokio::test]
 async fn an_idle_session_is_refused_with_its_own_code() {
     let mut config = admin_config();
-    config.admin.session_idle_timeout_seconds = 60;
+    config.admin.session_idle_timeout = acme_proxy_core::config::ConfigDuration::from_secs(60);
     let (app, database, session) = test_admin_app_logged_in(config).await;
 
     let hash = acme_proxy_admin::webadmin::session::hash_token(&session.cookie);
@@ -438,7 +438,7 @@ async fn a_surviving_session_of_a_disabled_operator_is_refused() {
 }
 
 /// A session in use has its idle deadline moved. Without the touch, an
-/// operator working steadily would be signed out `session_idle_timeout_seconds`
+/// operator working steadily would be signed out `session_idle_timeout`
 /// after signing in, as if they had walked away.
 #[tokio::test]
 async fn a_session_in_use_is_touched_so_it_does_not_go_idle() {
@@ -1842,7 +1842,7 @@ async fn reads_need_no_csrf_token() {
         "/api/audit",
         "/api/eab",
         "/api/nonces",
-        "/api/profiles",
+        "/api/endpoints",
     ] {
         let request = axum::http::Request::builder()
             .method(Method::GET)
@@ -1874,8 +1874,8 @@ async fn every_api_route_needs_a_session() {
         (Method::GET, "/api/eab"),
         (Method::GET, "/api/eab/some-kid"),
         (Method::GET, "/api/nonces"),
-        (Method::GET, "/api/profiles"),
-        (Method::GET, "/api/profiles/default/filter"),
+        (Method::GET, "/api/endpoints"),
+        (Method::GET, "/api/endpoints/default/filter"),
         // The surfaces added since this table was written. Each was reachable
         // only through an extractor that refuses a missing session, but that
         // was nobody's assertion until now.
@@ -2102,7 +2102,7 @@ async fn accounts_list_pages_and_reports_the_total() {
     assert_eq!(body["items"].as_array().unwrap().len(), 2);
     // The renderer's admin-only augmentation is present.
     assert!(body["items"][0]["id"].as_str().is_some());
-    assert_eq!(body["items"][0]["profile"], PROFILE);
+    assert_eq!(body["items"][0]["endpoint"], ENDPOINT);
 
     let paged = json_body(
         admin_request(
@@ -2670,10 +2670,10 @@ async fn revoking_an_order_covers_every_outcome() {
     assert_eq!(bad_reason.status(), StatusCode::CONFLICT);
 }
 
-/// An order from a profile this process does not mount cannot be revoked here,
+/// An order from an endpoint this process does not mount cannot be revoked here,
 /// and says so rather than reaching for whatever signer is at hand.
 #[tokio::test]
-async fn revoking_an_order_from_an_unmounted_profile_is_a_conflict() {
+async fn revoking_an_order_from_an_unmounted_endpoint_is_a_conflict() {
     use acme_proxy_core::identifier::Identifier;
     use acme_proxy_store::account::Account;
     use acme_proxy_store::order::Order;
@@ -2710,7 +2710,7 @@ async fn revoking_an_order_from_an_unmounted_profile_is_a_conflict() {
     .await;
     assert_eq!(response.status(), StatusCode::CONFLICT);
     let body = json_body(response).await;
-    assert_eq!(body["error"], "profile_not_mounted");
+    assert_eq!(body["error"], "endpoint_not_mounted");
     assert!(body["message"].as_str().unwrap().contains("retired"));
 }
 
@@ -3007,7 +3007,7 @@ async fn an_eab_secret_is_returned_once_and_never_again() {
 }
 
 #[tokio::test]
-async fn creating_an_eab_for_an_unmounted_profile_is_refused() {
+async fn creating_an_eab_for_an_unmounted_endpoint_is_refused() {
     let (app, _database, session) = test_admin_app_logged_in(admin_config()).await;
 
     let response = admin_request(
@@ -3015,7 +3015,7 @@ async fn creating_an_eab_for_an_unmounted_profile_is_refused() {
         Method::POST,
         "/api/eab",
         Some(&session),
-        Some(json!({ "profile": "no-such-profile" })),
+        Some(json!({ "endpoint": "no-such-endpoint" })),
     )
     .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -3023,7 +3023,7 @@ async fn creating_an_eab_for_an_unmounted_profile_is_refused() {
         json_body(response).await["message"]
             .as_str()
             .unwrap()
-            .contains("no-such-profile")
+            .contains("no-such-endpoint")
     );
 }
 
@@ -3059,28 +3059,28 @@ async fn nonces_can_be_counted_and_swept() {
 }
 
 #[tokio::test]
-async fn profiles_reports_the_endpoints_actually_mounted() {
+async fn endpoints_reports_the_endpoints_actually_mounted() {
     let (app, _database, session) = test_admin_app_logged_in(admin_config()).await;
 
     let body =
-        json_body(admin_request(&app, Method::GET, "/api/profiles", Some(&session), None).await)
+        json_body(admin_request(&app, Method::GET, "/api/endpoints", Some(&session), None).await)
             .await;
-    let profiles = body.as_array().unwrap();
-    assert_eq!(profiles.len(), 1);
-    assert_eq!(profiles[0]["name"], PROFILE);
-    assert_eq!(profiles[0]["baseUrl"], BASE);
-    assert_eq!(profiles[0]["directory"], format!("{BASE}/directory"));
+    let endpoints = body.as_array().unwrap();
+    assert_eq!(endpoints.len(), 1);
+    assert_eq!(endpoints[0]["name"], ENDPOINT);
+    assert_eq!(endpoints[0]["baseUrl"], BASE);
+    assert_eq!(endpoints[0]["directory"], format!("{BASE}/directory"));
 
     // Equal to the shared document, not merely compatible with it.
-    // `acme-proxy profile list` renders `render_profile_json` too, from a
-    // `ProfileSummary` built out of the *configuration* rather than out of a
-    // mounted profile — building the real thing constructs signer backends —
+    // `acme-proxy endpoint list` renders `render_endpoint_json` too, from a
+    // `EndpointSummary` built out of the *configuration* rather than out of a
+    // mounted endpoint — building the real thing constructs signer backends —
     // so a member this route added or dropped on its own would be the panel and
     // the terminal describing one endpoint differently.
     assert_eq!(
-        profiles[0],
-        acme_proxy_admin::admin::render_profile_json(&acme_proxy_admin::admin::ProfileSummary {
-            name: PROFILE.to_string(),
+        endpoints[0],
+        acme_proxy_admin::admin::render_endpoint_json(&acme_proxy_admin::admin::EndpointSummary {
+            name: ENDPOINT.to_string(),
             base_url: BASE.to_string(),
             // The harness's `ChallengeRegistry::default()`, which bypasses:
             // there is no `http-01` responder on port 80 in a test.
@@ -3091,7 +3091,7 @@ async fn profiles_reports_the_endpoints_actually_mounted() {
 }
 
 /// `filter show`, behind a session — and the live policy rather than a rebuilt
-/// one, since this listener reads the profiles the process actually mounted.
+/// one, since this listener reads the endpoints the process actually mounted.
 #[tokio::test]
 async fn the_filter_policy_api_serves_the_resolved_policy() {
     let (app, _database, session) =
@@ -3101,7 +3101,7 @@ async fn the_filter_policy_api_serves_the_resolved_policy() {
         admin_request(
             &app,
             Method::GET,
-            &format!("/api/profiles/{PROFILE}/filter"),
+            &format!("/api/endpoints/{ENDPOINT}/filter"),
             Some(&session),
             None,
         )
@@ -3109,7 +3109,7 @@ async fn the_filter_policy_api_serves_the_resolved_policy() {
     )
     .await;
 
-    assert_eq!(body["profile"], PROFILE);
+    assert_eq!(body["endpoint"], ENDPOINT);
     assert_eq!(body["active"], true);
     assert_eq!(body["defaultEffect"], "deny");
     assert!(body["warning"].is_null());
@@ -3141,7 +3141,7 @@ async fn the_filter_policy_api_serves_the_resolved_policy() {
     let unknown = admin_request(
         &app,
         Method::GET,
-        "/api/profiles/nope/filter",
+        "/api/endpoints/nope/filter",
         Some(&session),
         None,
     )
@@ -3153,7 +3153,7 @@ async fn the_filter_policy_api_serves_the_resolved_policy() {
         admin_request(
             &app,
             Method::GET,
-            &format!("/api/profiles/{PROFILE}/filter"),
+            &format!("/api/endpoints/{ENDPOINT}/filter"),
             None,
             None
         )
@@ -3168,7 +3168,7 @@ async fn the_filter_policy_api_serves_the_resolved_policy() {
         let response = admin_request(
             &app,
             method.clone(),
-            &format!("/api/profiles/{PROFILE}/filter"),
+            &format!("/api/endpoints/{ENDPOINT}/filter"),
             Some(&session),
             Some(json!({})),
         )
@@ -3176,7 +3176,7 @@ async fn the_filter_policy_api_serves_the_resolved_policy() {
         assert!(
             response.status() == StatusCode::METHOD_NOT_ALLOWED
                 || response.status() == StatusCode::NOT_FOUND,
-            "{method} /api/profiles/{PROFILE}/filter answered {}",
+            "{method} /api/endpoints/{ENDPOINT}/filter answered {}",
             response.status()
         );
     }
@@ -3193,7 +3193,7 @@ async fn an_endpoint_with_no_rules_says_so_rather_than_answering_404() {
         admin_request(
             &app,
             Method::GET,
-            &format!("/api/profiles/{PROFILE}/filter"),
+            &format!("/api/endpoints/{ENDPOINT}/filter"),
             Some(&session),
             None,
         )
@@ -3223,7 +3223,7 @@ async fn an_endpoint_with_no_rules_says_so_rather_than_answering_404() {
 async fn every_response_carries_the_hardening_headers() {
     let (app, _database, session) = test_admin_app_logged_in(admin_config()).await;
 
-    let response = admin_request(&app, Method::GET, "/api/profiles", Some(&session), None).await;
+    let response = admin_request(&app, Method::GET, "/api/endpoints", Some(&session), None).await;
     let headers = response.headers();
     assert_eq!(headers[header::CACHE_CONTROL], "no-store");
     assert_eq!(headers[header::REFERRER_POLICY], "same-origin");
@@ -3259,8 +3259,8 @@ async fn the_admin_listener_serves_no_acme() {
     for path in [
         "/directory",
         "/newNonce",
-        "/profile/default/directory",
-        "/profile/default/newNonce",
+        "/endpoint/default/directory",
+        "/endpoint/default/newNonce",
     ] {
         let response = admin_request(&app, Method::GET, path, None, None).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND, "GET {path}");
@@ -3477,7 +3477,7 @@ async fn the_admin_listener_fails_closed_when_the_database_is_gone() {
         (Method::GET, "/api/orders"),
         (Method::GET, "/api/eab"),
         (Method::GET, "/api/mfa"),
-        (Method::GET, "/api/profiles"),
+        (Method::GET, "/api/endpoints"),
     ] {
         let response = admin_request(&app, method.clone(), path, Some(&session), None).await;
         assert_eq!(
@@ -3561,7 +3561,7 @@ async fn an_oversized_admin_request_body_is_refused() {
 /// than a missing feature: a panel session that could delete audit history
 /// would make the history prove nothing, since a stolen session's first act
 /// would be to use it. Pruning is `acme-proxy audit cleanup` on the host, or
-/// `audit.retention_days`.
+/// `audit.retention`.
 ///
 /// This is also why `/api/audit` contributes nothing to `mutating_endpoints()`
 /// — there is no mutating route to list.
@@ -3571,14 +3571,18 @@ async fn the_audit_api_lists_pages_and_refuses_every_way_of_writing_to_it() {
 
     for _ in 0..3 {
         AuditEntry::insert(
-            AuditRecord::new(AuditEvent::CertificateIssued, PROFILE, Actor::admin("root"))
-                .with_account("acct-1")
-                .with_serial("0a0b")
-                .with_client(ClientContext {
-                    ip: Some("203.0.113.7".to_string()),
-                    ptr: Some("host.example.com".to_string()),
-                    ..ClientContext::default()
-                }),
+            AuditRecord::new(
+                AuditEvent::CertificateIssued,
+                ENDPOINT,
+                Actor::admin("root"),
+            )
+            .with_account("acct-1")
+            .with_serial("0a0b")
+            .with_client(ClientContext {
+                ip: Some("203.0.113.7".to_string()),
+                ptr: Some("host.example.com".to_string()),
+                ..ClientContext::default()
+            }),
             &database,
         )
         .await
@@ -3587,7 +3591,7 @@ async fn the_audit_api_lists_pages_and_refuses_every_way_of_writing_to_it() {
     AuditEntry::insert(
         AuditRecord::new(
             AuditEvent::CertificateRevokeFailed,
-            PROFILE,
+            ENDPOINT,
             Actor::acme_certificate_key(),
         )
         .with_reason("unauthorized"),
@@ -3706,7 +3710,7 @@ fn now_secs() -> i64 {
         .as_secs() as i64
 }
 
-/// Seeds an order on `PROFILE`, an `upstream_orders` row for it, and a
+/// Seeds an order on `ENDPOINT`, an `upstream_orders` row for it, and a
 /// `signer_relay_issue` job keyed on the order id — the in-flight-relay shape.
 /// A plain periodic sweep job — the kind whose cancellation is an ordinary
 /// administrative action rather than an abandoned issuance.
@@ -3743,7 +3747,7 @@ async fn seed_relay_job(
     use acme_proxy_store::upstream_order::UpstreamOrder;
 
     let (account, _) = Account::find_or_create(
-        PROFILE,
+        ENDPOINT,
         &[9u8, 9],
         Vec::new(),
         &ClientContext::default(),
@@ -3752,7 +3756,7 @@ async fn seed_relay_job(
     .await
     .unwrap();
     let order = Order::create(
-        PROFILE,
+        ENDPOINT,
         account.id,
         vec![Identifier::dns("relay.example.com")],
         now_secs() + 3600,
@@ -3777,7 +3781,7 @@ async fn seed_relay_job(
             id: job_id,
             kind: "signer_relay_issue",
             dedup_key: &order.id.to_string(),
-            payload: &json!({ "order_id": order.id.to_string(), "profile": PROFILE }),
+            payload: &json!({ "order_id": order.id.to_string(), "endpoint": ENDPOINT }),
             run_at: now_secs(),
             deadline: Some(order.expires),
             max_attempts: 5,
@@ -4029,7 +4033,7 @@ async fn the_upstream_orders_api_is_read_only() {
     }
 }
 
-/// One issued order on `PROFILE` whose leaf expires at `not_after`.
+/// One issued order on `ENDPOINT` whose leaf expires at `not_after`.
 ///
 /// The chain is a placeholder rather than a real signature: the identifier
 /// signal reads the stored `identifiers` and `cert_not_after`, and the
@@ -4046,7 +4050,7 @@ async fn expiring(
     use acme_proxy_store::order::Order;
 
     let mut order = Order::create(
-        PROFILE,
+        ENDPOINT,
         account,
         names.iter().map(|name| Identifier::dns(*name)).collect(),
         2_000_000_000,
@@ -4081,7 +4085,7 @@ async fn the_expiring_api_lists_annotates_filters_and_refuses_every_way_of_writi
 
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
     let (account, _) = Account::find_or_create(
-        PROFILE,
+        ENDPOINT,
         b"expiry-key",
         Vec::new(),
         &ClientContext::default(),
@@ -4197,12 +4201,12 @@ async fn the_expiring_api_lists_annotates_filters_and_refuses_every_way_of_writi
     .await;
     assert_eq!(typo["items"].as_array().unwrap().len(), 2);
 
-    // A profile that issued none of this answers with none of it.
+    // An endpoint that issued none of this answers with none of it.
     let other = json_body(
         admin_request(
             &app,
             Method::GET,
-            "/api/expiring?profile=nothing-here",
+            "/api/expiring?endpoint=nothing-here",
             Some(&session),
             None,
         )
@@ -4211,13 +4215,13 @@ async fn the_expiring_api_lists_annotates_filters_and_refuses_every_way_of_writi
     .await;
     assert_eq!(other["total"], 0);
 
-    // A *blank* profile is not that: it is the "every profile" option of the
-    // panel's own `<select>`, which submits `profile=` rather than omitting the
+    // A *blank* endpoint is not that: it is the "every endpoint" option of the
+    // panel's own `<select>`, which submits `endpoint=` rather than omitting the
     // key. Asserted against the unfiltered total rather than against a bare
     // non-zero, so this cannot start passing again by accident.
     for query in [
-        "/api/expiring?profile=",
-        "/api/expiring?profile=&days=30&superseded=",
+        "/api/expiring?endpoint=",
+        "/api/expiring?endpoint=&days=30&superseded=",
     ] {
         let blank =
             json_body(admin_request(&app, Method::GET, query, Some(&session), None).await).await;
@@ -4273,11 +4277,11 @@ async fn the_expiring_api_lists_annotates_filters_and_refuses_every_way_of_writi
 /// empty string.
 ///
 /// An HTML `<select>` inside a submitted form always contributes its `name`, so
-/// `<option value="">` arrives as `profile=` rather than as an omitted key, and
+/// `<option value="">` arrives as `endpoint=` rather than as an omitted key, and
 /// `serde_urlencoded` reads that as `Some("")`. Every predicate builder below
-/// then honoured it — `AND profile = ''` matches no row — so the panel's own
+/// then honoured it — `AND endpoint = ''` matches no row — so the panel's own
 /// filter form emptied each list the moment an operator touched it. The CLI
-/// never saw the shape at all, clap giving `None` for an omitted `--profile`,
+/// never saw the shape at all, clap giving `None` for an omitted `--endpoint`,
 /// which is why `order list` was right where `/ui/orders` was empty.
 ///
 /// `status=` was the worst of them: it reached `OrderStatus::from_str`, which
@@ -4292,9 +4296,13 @@ async fn a_blank_filter_is_absent_on_every_list() {
     seed(&database, 3).await;
     for _ in 0..2 {
         AuditEntry::insert(
-            AuditRecord::new(AuditEvent::CertificateIssued, PROFILE, Actor::admin("root"))
-                .with_account("acct-1")
-                .with_serial("0a0b"),
+            AuditRecord::new(
+                AuditEvent::CertificateIssued,
+                ENDPOINT,
+                Actor::admin("root"),
+            )
+            .with_account("acct-1")
+            .with_serial("0a0b"),
             &database,
         )
         .await
@@ -4304,21 +4312,21 @@ async fn a_blank_filter_is_absent_on_every_list() {
     // Each pair is (the unfiltered listing, the same listing with every filter
     // control left blank — the exact query string the panel's form submits).
     for (bare, blank, expected) in [
-        ("/api/accounts", "/api/accounts?profile=&eabKid=", 3),
+        ("/api/accounts", "/api/accounts?endpoint=&eabKid=", 3),
         (
             "/api/orders",
-            "/api/orders?profile=&accountId=&status=&identifier=&identifierContains=&certSerial=",
+            "/api/orders?endpoint=&accountId=&status=&identifier=&identifierContains=&certSerial=",
             3,
         ),
         (
             "/api/audit",
-            "/api/audit?profile=&accountId=&orderId=&certSerial=&event=&outcome=",
+            "/api/audit?endpoint=&accountId=&orderId=&certSerial=&event=&outcome=",
             2,
         ),
         ("/api/jobs", "/api/jobs?kind=&status=", 0),
         (
             "/api/upstream-orders",
-            "/api/upstream-orders?profile=&status=",
+            "/api/upstream-orders?endpoint=&status=",
             0,
         ),
     ] {
@@ -4358,7 +4366,7 @@ async fn a_blank_filter_is_absent_on_every_list() {
         admin_request(
             &app,
             Method::GET,
-            "/api/accounts?profile=nothing-here",
+            "/api/accounts?endpoint=nothing-here",
             Some(&session),
             None,
         )

@@ -2,12 +2,12 @@
 //!
 //! Three rules the request path leans on:
 //!
-//! - **An account belongs to one profile.** Every lookup takes the profile, so
+//! - **An account belongs to one endpoint.** Every lookup takes the endpoint, so
 //!   an account URL minted at one endpoint is not a `kid` at another, and the
 //!   same key registers separately at each.
 //! - **Registration is find-or-create, decided by the database.** Two
 //!   concurrent `newAccount`s with one key end as one row: the unique key on
-//!   `(profile, pubkey)` refuses the second insert, and its caller reads the
+//!   `(endpoint, pubkey)` refuses the second insert, and its caller reads the
 //!   winner's row instead ([`Account::find_or_register`]).
 //! - **A delete never takes a live certificate with it.** [`Account::delete`]
 //!   re-checks inside the `DELETE` and refuses, since the order rows the
@@ -44,8 +44,8 @@ use acme_proxy_core::audit::ClientContext;
 ///
 /// ## Methods
 ///
-/// - `find_by_pubkey`: Lookup account by public key, within one profile
-/// - `find_by_id`: Lookup account by ID, within one profile
+/// - `find_by_pubkey`: Lookup account by public key, within one endpoint
+/// - `find_by_id`: Lookup account by ID, within one endpoint
 /// - `find_or_create` / `find_or_register`: Create new account or return the
 ///   existing one (RFC 8555 §7.3)
 /// - `delete`: Hard-delete an account, cascading to its orders, unless one
@@ -54,12 +54,12 @@ use acme_proxy_core::audit::ClientContext;
 #[derive(Debug)]
 pub struct Account {
     pub id: Uuid,
-    /// The ACME endpoint (`[profiles.<name>]`) this account was registered at.
-    /// Accounts are keyed by `(profile, pubkey)`, so the same client key at two
+    /// The ACME endpoint (`[endpoints.<name>]`) this account was registered at.
+    /// Accounts are keyed by `(endpoint, pubkey)`, so the same client key at two
     /// endpoints is two accounts — see the schema comment in
     /// `crates/store/migrations/20260722210000_add_accounts.sql` for why that is a security
     /// property and not just tidiness.
-    pub profile: String,
+    pub endpoint: String,
     pub pubkey: Vec<u8>,
     pub contact: Vec<String>,
     pub status: String,
@@ -151,7 +151,7 @@ pub fn pubkey_fingerprint(pubkey: &[u8]) -> String {
 /// design.
 macro_rules! columns {
     () => {
-        "id, profile, pubkey, contact, status, created_at, eab_kid, \
+        "id, endpoint, pubkey, contact, status, created_at, eab_kid, \
          terms_of_service_agreed, created_ip, created_ptr, last_seen_at, \
          last_seen_ip, last_seen_ptr"
     };
@@ -165,7 +165,7 @@ impl Account {
 
         Ok(Account {
             id: row.try_get("id")?,
-            profile: row.try_get("profile")?,
+            endpoint: row.try_get("endpoint")?,
             pubkey: row.try_get("pubkey")?,
             contact,
             status: row.try_get("status")?,
@@ -180,21 +180,21 @@ impl Account {
         })
     }
 
-    /// Looks an account up by its public key (DER SPKI) **within one profile**:
+    /// Looks an account up by its public key (DER SPKI) **within one endpoint**:
     /// the `jwk`-signed `newAccount` path, and `onlyReturnExisting`.
     #[tracing::instrument(name = "Account::find_by_pubkey", skip(pubkey, database))]
     pub async fn find_by_pubkey(
-        profile: &str,
+        endpoint: &str,
         pubkey: &[u8],
         database: &Database,
     ) -> Result<Option<Account>, sqlx::Error> {
-        debug!(event = "db_account_find_by_pubkey_started", outcome = "progress", profile = %profile, pubkey_fp = %pubkey_fingerprint(pubkey));
+        debug!(event = "db_account_find_by_pubkey_started", outcome = "progress", endpoint = %endpoint, pubkey_fp = %pubkey_fingerprint(pubkey));
         let row = crate::sql::query(concat!(
             "SELECT ",
             columns!(),
-            " FROM accounts WHERE profile = ? AND pubkey = ?;"
+            " FROM accounts WHERE endpoint = ? AND pubkey = ?;"
         ))
-        .bind(profile)
+        .bind(endpoint)
         .bind(pubkey)
         .fetch_optional(database)
         .await?;
@@ -208,26 +208,26 @@ impl Account {
         Ok(result)
     }
 
-    /// Looks an account up by id **within one profile**. An id is a UUID and
-    /// therefore globally unique, so the `profile` predicate is not about
+    /// Looks an account up by id **within one endpoint**. An id is a UUID and
+    /// therefore globally unique, so the `endpoint` predicate is not about
     /// finding the row: it is what makes an account URL minted at one endpoint
     /// unusable as a `kid` at another.
     #[tracing::instrument(name = "Account::find_by_id", skip(database), fields(account_id = %id))]
     pub async fn find_by_id(
-        profile: &str,
+        endpoint: &str,
         id: &str,
         database: &Database,
     ) -> Result<Option<Account>, sqlx::Error> {
-        debug!(event = "db_account_find_by_id_started", outcome = "progress", profile = %profile, account_id = %id);
+        debug!(event = "db_account_find_by_id_started", outcome = "progress", endpoint = %endpoint, account_id = %id);
         let Some(id) = crate::id::parse(id) else {
             return Ok(None);
         };
         let row = crate::sql::query(concat!(
             "SELECT ",
             columns!(),
-            " FROM accounts WHERE profile = ? AND id = ?;"
+            " FROM accounts WHERE endpoint = ? AND id = ?;"
         ))
-        .bind(profile)
+        .bind(endpoint)
         .bind(id)
         .fetch_optional(database)
         .await?;
@@ -264,14 +264,14 @@ impl Account {
     /// [`Account::touch`] keeps up to date.
     #[tracing::instrument(name = "Account::find_or_create", skip(pubkey, client, database))]
     pub async fn find_or_create(
-        profile: &str,
+        endpoint: &str,
         pubkey: &[u8],
         contact: Vec<String>,
         client: &ClientContext,
         database: &Database,
     ) -> Result<(Account, bool), sqlx::Error> {
         Self::find_or_register(
-            profile,
+            endpoint,
             pubkey,
             contact,
             &Registration::default(),
@@ -295,15 +295,15 @@ impl Account {
         skip(pubkey, registration, client, database)
     )]
     pub async fn find_or_register(
-        profile: &str,
+        endpoint: &str,
         pubkey: &[u8],
         contact: Vec<String>,
         registration: &Registration,
         client: &ClientContext,
         database: &Database,
     ) -> Result<(Account, bool), sqlx::Error> {
-        debug!(event = "db_account_find_or_create_started", outcome = "progress", profile = %profile, pubkey_fp = %pubkey_fingerprint(pubkey));
-        if let Some(account) = Account::find_by_pubkey(profile, pubkey, database).await? {
+        debug!(event = "db_account_find_or_create_started", outcome = "progress", endpoint = %endpoint, pubkey_fp = %pubkey_fingerprint(pubkey));
+        if let Some(account) = Account::find_by_pubkey(endpoint, pubkey, database).await? {
             debug!(event = "db_account_found_existing", outcome = "success", account_id = %account.id, pubkey_fp = %pubkey_fingerprint(pubkey));
             return Ok((account, false));
         }
@@ -313,7 +313,7 @@ impl Account {
         let now = now_secs();
         let account = Account {
             id: crate::id::mint(),
-            profile: profile.to_string(),
+            endpoint: endpoint.to_string(),
             pubkey: pubkey.to_vec(),
             contact,
             status: "valid".to_string(),
@@ -337,13 +337,13 @@ impl Account {
 
         debug!(event = "db_account_create_started", outcome = "progress", account_id = %account.id);
         let inserted = crate::sql::query(
-            "INSERT INTO accounts (id, profile, pubkey, contact, status, created_at, eab_kid, \
+            "INSERT INTO accounts (id, endpoint, pubkey, contact, status, created_at, eab_kid, \
              terms_of_service_agreed, created_ip, created_ptr, last_seen_at, last_seen_ip, \
              last_seen_ptr) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
         )
         .bind(account.id)
-        .bind(&account.profile)
+        .bind(&account.endpoint)
         .bind(&account.pubkey)
         .bind(contact_json)
         .bind(&account.status)
@@ -373,7 +373,7 @@ impl Account {
         // violation rather than as a second, less informative error.
         if let Err(error) = inserted {
             if is_pubkey_conflict(&error)
-                && let Some(existing) = Account::find_by_pubkey(profile, pubkey, database).await?
+                && let Some(existing) = Account::find_by_pubkey(endpoint, pubkey, database).await?
             {
                 debug!(event = "db_account_create_lost_race", outcome = "advisory", account_id = %existing.id, pubkey_fp = %pubkey_fingerprint(pubkey));
                 return Ok((existing, false));
@@ -552,11 +552,11 @@ impl Account {
         Ok(())
     }
 
-    /// Looks an account up by id across **every** profile — for the admin CLI,
+    /// Looks an account up by id across **every** endpoint — for the admin CLI,
     /// where an operator holds an id and not necessarily the endpoint it came
     /// from. Ids are UUIDs, so this is unambiguous.
     ///
-    /// Never use it on a request path: profile scoping is what keeps an account
+    /// Never use it on a request path: endpoint scoping is what keeps an account
     /// URL minted at one endpoint from being accepted at another.
     pub async fn find_any_by_id(
         id: &str,
@@ -585,24 +585,24 @@ impl Account {
     /// and the **only** listing this model offers: an unpaged `list_all` stood
     /// beside it until `account list` grew a window, and a second listing whose
     /// ordering disagreed with this one was a page control waiting to skip a
-    /// row. `profile` filters to one endpoint; `None` lists accounts of every
-    /// profile, which is what an operator asking "what is on this server?"
+    /// row. `endpoint` filters to one endpoint; `None` lists accounts of every
+    /// endpoint, which is what an operator asking "what is on this server?"
     /// wants. `eab_kid` narrows to the accounts one EAB credential bound —
     /// what the credential card links to before an operator deletes it.
     ///
     /// A [`crate::sql::Builder`] with one predicate function shared by the page
     /// and the count, [`crate::query`]'s shape. It was two literal
-    /// statements per branch while `profile` was the only filter; a second
+    /// statements per branch while `endpoint` was the only filter; a second
     /// optional filter made that four shapes, each a place for the page and the
     /// total to disagree.
     pub async fn search(
-        profile: Option<&str>,
+        endpoint: Option<&str>,
         eab_kid: Option<&str>,
         limit: i64,
         offset: i64,
         database: &Database,
     ) -> Result<(Vec<Account>, i64), sqlx::Error> {
-        debug!(event = "db_account_search_started", outcome = "progress", profile = ?profile, eab_kid = ?eab_kid, limit = limit, offset = offset);
+        debug!(event = "db_account_search_started", outcome = "progress", endpoint = ?endpoint, eab_kid = ?eab_kid, limit = limit, offset = offset);
 
         // A kid that is not a UUID names no credential, so it matches nothing:
         // the `find_any_by_kid` answer, rather than an error for a filter.
@@ -615,7 +615,7 @@ impl Account {
             let separator = crate::query::push_equalities(
                 builder,
                 crate::query::WHERE,
-                &[("profile = ", profile)],
+                &[("endpoint = ", endpoint)],
             );
             if let Some(kid) = eab_kid {
                 builder.push(separator).push("eab_kid = ").push_bind(kid);
@@ -873,14 +873,14 @@ impl Account {
 ///
 /// The two dialects name different things, so both spellings are passed and
 /// [`crate::sql::is_unique_violation_on`] asks whichever the driver can answer:
-/// SQLite reports `UNIQUE constraint failed: accounts.profile, accounts.pubkey`
+/// SQLite reports `UNIQUE constraint failed: accounts.endpoint, accounts.pubkey`
 /// and offers no constraint name, while PostgreSQL reports only the constraint,
 /// which is why `migrations-postgres/` names it rather than letting the server
 /// pick a spelling. Pinned by
 /// `tests::concurrent_find_or_create_for_one_key_yields_one_account`, which
 /// reaches this branch by racing eight callers over one key.
 pub fn is_pubkey_conflict(error: &sqlx::Error) -> bool {
-    crate::sql::is_unique_violation_on(error, "accounts.pubkey", "accounts_profile_pubkey_key")
+    crate::sql::is_unique_violation_on(error, "accounts.pubkey", "accounts_endpoint_pubkey_key")
 }
 
 #[cfg(test)]
@@ -894,7 +894,7 @@ mod tests {
     fn needs_touch_yields_to_the_interval_but_never_to_a_changed_address() {
         let mut account = Account {
             id: crate::id::mint(),
-            profile: "default".to_string(),
+            endpoint: "default".to_string(),
             pubkey: vec![1],
             contact: vec![],
             status: "valid".to_string(),
@@ -1421,7 +1421,7 @@ mod tests {
     }
 
     /// `eab_kid` narrows the rows and the total alike, composes with
-    /// `profile`, and a kid that is not a UUID matches nothing rather than
+    /// `endpoint`, and a kid that is not a UUID matches nothing rather than
     /// failing.
     #[tokio::test]
     async fn search_filters_by_eab_kid() {
@@ -1503,15 +1503,15 @@ mod tests {
         );
     }
 
-    /// Seeds `count` accounts under `profile`, backdated so `created_at DESC`
+    /// Seeds `count` accounts under `endpoint`, backdated so `created_at DESC`
     /// is deterministic rather than resolved by the random-UUID tiebreak.
-    async fn seed_accounts(db: &Arc<Database>, profile: &str, count: usize) -> Vec<String> {
+    async fn seed_accounts(db: &Arc<Database>, endpoint: &str, count: usize) -> Vec<String> {
         let base = now_secs();
         let mut ids = Vec::new();
         for index in 0..count {
             let (account, _) = Account::find_or_create(
-                profile,
-                &[profile.len() as u8, index as u8],
+                endpoint,
+                &[endpoint.len() as u8, index as u8],
                 vec![],
                 &ClientContext::default(),
                 db,
@@ -1554,7 +1554,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn search_scopes_by_profile_and_counts_only_that_profile() {
+    async fn search_scopes_by_endpoint_and_counts_only_that_endpoint() {
         let db = Arc::new(Database::connect_for_test().await.unwrap());
         seed_accounts(&db, "default", 2).await;
         seed_accounts(&db, "other", 3).await;
@@ -1564,10 +1564,10 @@ mod tests {
             .unwrap();
         assert_eq!(total, 3);
         assert_eq!(rows.len(), 3);
-        assert!(rows.iter().all(|a| a.profile == "other"));
+        assert!(rows.iter().all(|a| a.endpoint == "other"));
 
         let (_, total) = Account::search(None, None, 50, 0, &db).await.unwrap();
-        assert_eq!(total, 5, "no profile means every endpoint");
+        assert_eq!(total, 5, "no endpoint means every endpoint");
 
         let (rows, total) = Account::search(Some("nope"), None, 50, 0, &db)
             .await
@@ -1595,7 +1595,7 @@ mod tests {
     /// point, and each one's lookup is an `.await`, so all eight `SELECT`s are
     /// issued before the first `INSERT` commits.
     ///
-    /// `UNIQUE (profile, pubkey)` is what the losers then hit. Before the
+    /// `UNIQUE (endpoint, pubkey)` is what the losers then hit. Before the
     /// recovery in `find_or_create` that came back as a bare `sqlx::Error`,
     /// which `post_new_account` turns into `serverInternal` — a 500 for a
     /// request the RFC says must answer 200 with the existing account, leaving

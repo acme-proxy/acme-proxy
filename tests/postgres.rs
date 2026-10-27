@@ -165,7 +165,7 @@ async fn a_nonce_is_spent_exactly_once_on_both_backends() {
 
 /// One predecessor, one live claim — enforced by a partial unique index.
 ///
-/// The index is `(profile, replaces) WHERE replaces IS NOT NULL AND status !=
+/// The index is `(endpoint, replaces) WHERE replaces IS NOT NULL AND status !=
 /// 'invalid'`, and both dialects spell it the same way. What differs is the
 /// *error*: SQLite names the columns and gives sqlx no constraint name, while
 /// PostgreSQL names the index and never the columns. `is_replaces_conflict`
@@ -395,7 +395,7 @@ async fn one_key_registering_twice_is_one_account_on_both_backends() {
         // what the recovery inside `find_or_create` rests on. Provoked with a
         // direct insert, since `find_or_create` is the thing that hides it.
         let error = acme_proxy_store::sql::query(
-            "INSERT INTO accounts (id, profile, pubkey, contact, status, created_at) \
+            "INSERT INTO accounts (id, endpoint, pubkey, contact, status, created_at) \
              VALUES (?, 'default', ?, '[]', 'valid', 0);",
         )
         .bind(acme_proxy_store::id::mint())

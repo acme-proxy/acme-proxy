@@ -3,7 +3,7 @@
 //!
 //! The secret is printed **once**, by `create`: nothing reads it back, and a
 //! lost credential is replaced rather than recovered. A credential scoped to a
-//! profile is checked against the mounted set here, as it is on `/api` and
+//! endpoint is checked against the mounted set here, as it is on `/api` and
 //! `/ui`, because one scoped to an endpoint this configuration does not serve
 //! would be accepted and then never usable.
 //!
@@ -38,9 +38,9 @@ pub enum EabCommand {
         #[arg(long)]
         label: Option<String>,
         /// Bind the credential to one ACME endpoint. Omitted, it is accepted
-        /// at every profile — which is what an unscoped credential means.
+        /// at every endpoint — which is what an unscoped credential means.
         #[arg(long)]
-        profile: Option<String>,
+        endpoint: Option<String>,
         /// Print it as JSON.
         #[arg(long)]
         json: bool,
@@ -99,23 +99,23 @@ pub async fn run_eab_command(
     match command {
         EabCommand::Create {
             label,
-            profile,
+            endpoint,
             json,
         } => {
             // The same refusal the panel and the API make: a credential scoped
             // to an endpoint this configuration does not mount is accepted and
             // then never usable, and the operator is still looking at what they
-            // typed. Only where `--profile` was given — a credential valid
-            // everywhere needs no profile to exist, and resolving would refuse
+            // typed. Only where `--endpoint` was given — a credential valid
+            // everywhere needs no endpoint to exist, and resolving would refuse
             // a configuration that mounts none.
-            if profile.is_some() {
+            if endpoint.is_some() {
                 let mounted = config
-                    .resolve_profiles()
+                    .resolve_endpoints()
                     .map_err(|error| CliError::failed(format!("configuration error: {error}")))?;
-                if let Some(message) = admin::unmounted_profile_refusal(
-                    |name| mounted.iter().any(|profile| profile.name == name),
-                    profile.as_deref(),
-                    "omit --profile",
+                if let Some(message) = admin::unmounted_endpoint_refusal(
+                    |name| mounted.iter().any(|endpoint| endpoint.name == name),
+                    endpoint.as_deref(),
+                    "omit --endpoint",
                 ) {
                     // The operator's to fix (exit 3), as the API's `400` says.
                     return Err(CliError::bad_request(message));
@@ -123,7 +123,7 @@ pub async fn run_eab_command(
             }
 
             let trail = admin::trail::CliActions::new(&database);
-            let eab = admin::create_eab(label, profile, database.clone(), &trail).await?;
+            let eab = admin::create_eab(label, endpoint, database.clone(), &trail).await?;
             if json {
                 println!("{}", admin::render_eab_created_json(&eab));
             } else {
@@ -221,14 +221,14 @@ fn not_found(kid: &str) -> CliError {
 mod tests {
     use super::*;
 
-    /// A configuration with no profiles, which is all a command that does not
+    /// A configuration with no endpoints, which is all a command that does not
     /// name one ever reads.
     fn config() -> Config {
         Config::default()
     }
 
-    /// Loads a `Config` the way the server does, so `resolve_profiles` has the
-    /// raw sources it needs — `cli::profile`'s helper, and for its reason.
+    /// Loads a `Config` the way the server does, so `resolve_endpoints` has the
+    /// raw sources it needs — `cli::endpoint`'s helper, and for its reason.
     fn config_from(body: &str) -> Config {
         let _lock = acme_proxy_core::config::ENV_LOCK
             .lock()
@@ -251,11 +251,11 @@ mod tests {
     /// operator can still fix the spelling — the same rule `/api` and `/ui`
     /// apply.
     #[tokio::test]
-    async fn create_refuses_a_profile_that_is_not_mounted() {
+    async fn create_refuses_a_endpoint_that_is_not_mounted() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         let config = config_from(
             r#"
-            [profiles.default]
+            [endpoints.default]
             signer.backend = "local_ca"
             "#,
         );
@@ -263,7 +263,7 @@ mod tests {
         let error = run_eab_command(
             EabCommand::Create {
                 label: None,
-                profile: Some("typo".to_string()),
+                endpoint: Some("typo".to_string()),
                 json: false,
             },
             true,
@@ -280,11 +280,11 @@ mod tests {
         let (rows, _) = Eab::search(50, 0, &database).await.unwrap();
         assert!(rows.is_empty());
 
-        // The profile that is mounted is minted as usual.
+        // The endpoint that is mounted is minted as usual.
         run_eab_command(
             EabCommand::Create {
                 label: None,
-                profile: Some("default".to_string()),
+                endpoint: Some("default".to_string()),
                 json: false,
             },
             true,
@@ -338,11 +338,11 @@ mod tests {
         let eab = Eab::create(Some("test".to_string()), None, &database)
             .await
             .unwrap();
-        // `--profile` is checked against the mounted set, so this one needs a
+        // `--endpoint` is checked against the mounted set, so this one needs a
         // configuration that mounts it.
         let config = config_from(
             r#"
-            [profiles.default]
+            [endpoints.default]
             signer.backend = "local_ca"
             "#,
         );
@@ -350,7 +350,7 @@ mod tests {
         for command in [
             EabCommand::Create {
                 label: None,
-                profile: Some("default".to_string()),
+                endpoint: Some("default".to_string()),
                 json: true,
             },
             EabCommand::List {
@@ -525,7 +525,7 @@ mod tests {
             kid: uuid::Uuid::nil(),
             secret: Vec::new(),
             label: None,
-            profile: None,
+            endpoint: None,
             status: "active".to_string(),
             created_at: 0,
         };

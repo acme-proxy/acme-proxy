@@ -86,7 +86,7 @@ const SUBSYSTEMS: &[&str] = &[
     "nonce",
     "notify",
     "order",
-    "profile",
+    "endpoint",
     "proxy",
     "renewal_info",
     "replaces",

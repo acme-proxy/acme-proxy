@@ -66,7 +66,7 @@ too.
    >what it refuses.
    >One case still deserves a quiet period: a request that waits — a `custom`
    >script's `crl` or `renewal_info` hook, or a relay revocation waiting on its
-   >job — can take up to `server.request_timeout_ms`. If systemd's
+   >job — can take up to `server.request_timeout`. If systemd's
    >`TimeoutStopSec` (90 s by default) is shorter than that, systemd sends
    >`SIGKILL` first and the graceful path is skipped — raise it, or lower the
    >request timeout. Challenge validation and issuance are not among these:

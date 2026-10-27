@@ -18,7 +18,7 @@ use uuid::Uuid;
 use super::access::signer_account;
 use super::error::Error;
 use super::rules::validate_contacts;
-use crate::profile::Profile;
+use crate::endpoint::Endpoint;
 use acme_proxy_core::audit::RequestContext;
 use acme_proxy_core::eab;
 use acme_proxy_core::error::Problem;
@@ -98,7 +98,7 @@ pub struct UpdateAccountPayload {
 pub struct AccountService<'a> {
     pub database: &'a Arc<Database>,
     pub audit: &'a Auditor,
-    pub profile: &'a Profile,
+    pub endpoint: &'a Endpoint,
 }
 
 impl AccountService<'_> {
@@ -119,14 +119,14 @@ impl AccountService<'_> {
         client_ip: Option<IpAddr>,
         request: &RequestContext,
     ) -> Result<NewAccount, Error> {
-        let (database, profile, audit) = (self.database, self.profile, self.audit);
+        let (database, endpoint, audit) = (self.database, self.endpoint, self.audit);
 
         // RFC 8555 §7.3.1: a key that already holds an account gets it back with
         // a 200, and "any fields in the request object MUST be ignored". The
         // conditions below — contact format, the terms (§7.3.3), the binding
         // (§7.3.4) — are for creating an account, so they are asked only when
         // none exists yet; `onlyReturnExisting` never gets that far.
-        let existing = Account::find_by_pubkey(&profile.name, pubkey, database)
+        let existing = Account::find_by_pubkey(&endpoint.name, pubkey, database)
             .await
             .map_err(|error| {
                 // Distinct from `acme::access`'s `account_lookup_failed`: same
@@ -162,19 +162,19 @@ impl AccountService<'_> {
         // when it has not. Enforced only when `meta.termsOfService` is configured —
         // §7.3.3 ties the requirement to the directory advertising a ToS, so an
         // endpoint with none must not demand agreement to something it never named.
-        if !profile.meta.terms_of_service.is_empty() && !payload.terms_of_service_agreed {
+        if !endpoint.meta.terms_of_service.is_empty() && !payload.terms_of_service_agreed {
             warn!(event = "account_terms_not_agreed", outcome = "failure");
             return Err(Error::TermsNotAgreed);
         }
 
         // The binding is kept only once it is verified, so nothing downstream
         // can reflect one this request did not check.
-        let (eab_kid, verified_binding) = if profile.eab.enabled {
+        let (eab_kid, verified_binding) = if endpoint.eab.enabled {
             let binding = payload.external_account_binding;
             let kid = verify_eab(
                 binding.as_ref().map(|binding| &binding.jws),
                 header,
-                &profile.name,
+                &endpoint.name,
                 database,
             )
             .await?;
@@ -198,10 +198,10 @@ impl AccountService<'_> {
         // with a ToS configured means the client set the flag.
         let registration = acme_proxy_store::account::Registration {
             eab_kid,
-            terms_agreed: !profile.meta.terms_of_service.is_empty(),
+            terms_agreed: !endpoint.meta.terms_of_service.is_empty(),
         };
         let (account, created) = Account::find_or_register(
-            &profile.name,
+            &endpoint.name,
             pubkey,
             payload.contact,
             &registration,
@@ -223,10 +223,10 @@ impl AccountService<'_> {
         }
 
         if created {
-            profile
+            endpoint
                 .notify
                 .dispatch(NotifyEvent::AccountCreated(AccountCreatedData {
-                    profile: profile.name.clone(),
+                    endpoint: endpoint.name.clone(),
                     account_id: account.id.to_string(),
                     contact: account.contact.clone(),
                     client_ip: client_ip
@@ -279,7 +279,7 @@ impl AccountService<'_> {
         pubkey: &[u8],
         client_ip: Option<IpAddr>,
     ) -> Result<Account, Error> {
-        let (database, profile) = (self.database, self.profile);
+        let (database, endpoint) = (self.database, self.endpoint);
         let mut account = self.owned_active(cached, id, pubkey).await?;
 
         if let Some(status) = payload.status {
@@ -290,7 +290,7 @@ impl AccountService<'_> {
             deactivate(
                 &mut account,
                 database,
-                Some(&profile.notify),
+                Some(&endpoint.notify),
                 client_ip.map(|ip| acme_proxy_core::client::canonical(ip).to_string()),
             )
             .await
@@ -351,8 +351,8 @@ impl AccountService<'_> {
         id: &str,
         pubkey: &[u8],
     ) -> Result<Account, Error> {
-        let (database, profile) = (self.database, self.profile);
-        let account = signer_account(cached, &profile.name, pubkey, database).await?;
+        let (database, endpoint) = (self.database, self.endpoint);
+        let account = signer_account(cached, &endpoint.name, pubkey, database).await?;
         if account.id.to_string() != id {
             warn!(
                 event = "account_ownership_mismatch",
@@ -378,10 +378,10 @@ impl AccountService<'_> {
         header: &ProtectedHeader,
         inner_jws: &key_change::KeyChangeJws,
     ) -> Result<Account, Error> {
-        let (database, profile) = (self.database, self.profile);
-        let base = &profile.base_url;
+        let (database, endpoint) = (self.database, self.endpoint);
+        let base = &endpoint.base_url;
 
-        let mut old_account = signer_account(cached, &profile.name, old_pubkey, database).await?;
+        let mut old_account = signer_account(cached, &endpoint.name, old_pubkey, database).await?;
 
         let inner_header = key_change::parse_header(inner_jws, &header.url)
             .map_err(key_change::key_change_problem)?;
@@ -396,7 +396,7 @@ impl AccountService<'_> {
         key_change::verify_payload(inner_jws, &account_url, &old_key_jwk)
             .map_err(key_change::key_change_problem)?;
 
-        let conflicting_account = Account::find_by_pubkey(&profile.name, &new_pubkey, database)
+        let conflicting_account = Account::find_by_pubkey(&endpoint.name, &new_pubkey, database)
             .await
             .map_err(|error| {
                 error!(event = "key_change_conflict_lookup_failed", outcome = "failure", account_id = %old_account.id, error = %error);
@@ -412,7 +412,7 @@ impl AccountService<'_> {
         if let Err(error) = old_account.update_pubkey(&new_pubkey, database).await {
             // The check above and this write are two statements, and another
             // rollover onto the same key can land between them — at which point
-            // `UNIQUE (profile, pubkey)` is what says so. §7.3.5 gives that case a
+            // `UNIQUE (endpoint, pubkey)` is what says so. §7.3.5 gives that case a
             // status and a `Location`, so answering `serverInternal` here would
             // report "something went wrong" for a condition the RFC describes
             // exactly, and deny the client the one field it needs to recover.
@@ -421,7 +421,7 @@ impl AccountService<'_> {
             // account that won is by definition committed now.
             if acme_proxy_store::account::is_pubkey_conflict(&error)
                 && let Ok(Some(winner)) =
-                    Account::find_by_pubkey(&profile.name, &new_pubkey, database).await
+                    Account::find_by_pubkey(&endpoint.name, &new_pubkey, database).await
             {
                 warn!(event = "key_change_conflict", outcome = "failure", account_id = %old_account.id, conflicting_account_id = %winner.id);
                 return Err(Error::KeyChangeConflict { holder: winner.id });
@@ -490,22 +490,22 @@ fn refuse_deactivated(account: &Account, only_return_existing: bool) -> Result<(
 pub async fn verify_eab(
     eab_jws: Option<&eab::EabJws>,
     header: &ProtectedHeader,
-    profile: &str,
+    endpoint: &str,
     database: &Arc<Database>,
 ) -> Result<Uuid, Problem> {
     let eab_jws = eab_jws.ok_or_else(|| {
-        warn!(event = "eab_required", outcome = "failure", profile);
+        warn!(event = "eab_required", outcome = "failure", endpoint);
         Problem::external_account_required("This server requires External Account Binding")
     })?;
 
     let outer_jwk = header.jwk.as_ref().ok_or_else(|| {
-        warn!(event = "eab_missing_jwk", outcome = "failure", profile);
+        warn!(event = "eab_missing_jwk", outcome = "failure", endpoint);
         Problem::malformed("newAccount requires an embedded jwk for External Account Binding")
     })?;
 
     let eab_header = eab::parse_header(eab_jws, &header.url).map_err(eab::eab_problem)?;
 
-    let key = Eab::find_by_kid(&eab_header.kid, profile, database)
+    let key = Eab::find_by_kid(&eab_header.kid, endpoint, database)
         .await
         .map_err(|error| {
             error!(event = "eab_lookup_failed", outcome = "failure", kid = %eab_header.kid, error = %error);
@@ -526,7 +526,7 @@ pub async fn verify_eab(
 /// Deactivates `account` (RFC 8555 §7.3.6), then queues `account_deactivated`.
 ///
 /// Shared by the account's own request and an operator's: the notification is
-/// about the account, whoever shut it. `notify` is the account's profile's
+/// about the account, whoever shut it. `notify` is the account's endpoint's
 /// dispatcher where this process has one, and `client_ip` whoever asked — the
 /// client, the operator, or nobody. Logs nothing; each caller names its own
 /// events.
@@ -540,7 +540,7 @@ pub async fn deactivate(
     if let Some(dispatcher) = notify {
         dispatcher
             .dispatch(NotifyEvent::AccountDeactivated(AccountDeactivatedData {
-                profile: account.profile.clone(),
+                endpoint: account.endpoint.clone(),
                 account_id: account.id.to_string(),
                 client_ip,
             }))

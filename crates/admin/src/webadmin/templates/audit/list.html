@@ -4,20 +4,20 @@
   <p class="small">
     Every certificate this CA signed or withdrew, and every attempt it refused.
     Rows are never edited or deleted from here — pruning is
-    <code>acme-proxy audit cleanup</code> or <code>audit.retention_days</code>.
+    <code>acme-proxy audit cleanup</code> or <code>audit.retention</code>.
   </p>
 
   <div class="panel">
     <form class="row" hx-get="/ui/audit" hx-target="#audit-table"
           hx-push-url="true" hx-trigger="change, submit">
       <div class="field">
-        <label for="profile">Profile</label>
-        <select id="profile" name="profile">
-          <option value="">every profile</option>
-          {% for profile in profiles %}
-            <option value="{{ profile.name }}"
-                    {% if filters.profile == profile.name %}selected{% endif %}>
-              {{ profile.name }}
+        <label for="endpoint">Endpoint</label>
+        <select id="endpoint" name="endpoint">
+          <option value="">every endpoint</option>
+          {% for endpoint in endpoints %}
+            <option value="{{ endpoint.name }}"
+                    {% if filters.endpoint == endpoint.name %}selected{% endif %}>
+              {{ endpoint.name }}
             </option>
           {% endfor %}
         </select>

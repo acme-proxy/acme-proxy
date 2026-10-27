@@ -11,7 +11,7 @@
       <div class="label">Rows in the table</div>
     </div>
     <div class="stat">
-      <div class="value">{{ ttl_seconds }}s</div>
+      <div class="value">{{ ttl }}s</div>
       <div class="label">Freshness window</div>
     </div>
   </div>
@@ -29,7 +29,7 @@
       <div class="field">
         <label for="ttlSeconds">Age past which a nonce is swept</label>
         <input type="number" id="ttlSeconds" name="ttlSeconds" min="0"
-               placeholder="{{ ttl_seconds }}">
+               placeholder="{{ ttl }}">
       </div>
       <div>
         <button type="submit">Sweep</button>

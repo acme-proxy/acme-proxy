@@ -33,8 +33,6 @@
 //! its branches are driven by `tests/jws_rejections.rs` and
 //! `tests/db_failures.rs`.
 
-use std::time::Duration;
-
 use axum::extract::{FromRef, FromRequest, Request};
 use axum::http::StatusCode;
 use base64::prelude::*;
@@ -172,11 +170,11 @@ where
     // never reaches the database at all. The signature still has to verify
     // before anything is *acted* on — this only reorders two refusals.
     //
-    // `request_path` is what the profile's own router saw, i.e. with the
-    // `/profile/<name>` mount point already stripped by `Router::nest` — so
-    // pairing it with the profile's base URL reconstructs exactly the URL the
+    // `request_path` is what the endpoint's own router saw, i.e. with the
+    // `/endpoint/<name>` mount point already stripped by `Router::nest` — so
+    // pairing it with the endpoint's base URL reconstructs exactly the URL the
     // client was given, and a JWS signed for another endpoint fails here.
-    let expected_url = format!("{}{request_path}", app.profile.base_url);
+    let expected_url = format!("{}{request_path}", app.endpoint.base_url);
     if header.url != expected_url {
         warn!(event = "jws_url_mismatch", outcome = "failure", url = %header.url, expected = %expected_url);
         return Err(Problem::malformed("URL invalid"));
@@ -273,9 +271,9 @@ async fn resolve_signing_key(
             }
             debug!(event = "jws_kid_verification_started", outcome = "progress", algorithm = %header.alg, kid = %kid);
             // The account URL is the one *this* endpoint minted, prefix and
-            // all: a `kid` naming another profile does not match here, and the
-            // lookup below is scoped to this profile besides.
-            let base = &app.profile.base_url;
+            // all: a `kid` naming another endpoint does not match here, and the
+            // lookup below is scoped to this endpoint besides.
+            let base = &app.endpoint.base_url;
             let id = kid
                 .strip_prefix(&format!("{base}/acct/"))
                 .ok_or_else(|| {
@@ -285,7 +283,7 @@ async fn resolve_signing_key(
 
             Span::current().record("account_id", id);
 
-            let account = Account::find_by_id(&app.profile.name, id, &app.database)
+            let account = Account::find_by_id(&app.endpoint.name, id, &app.database)
                 .await
                 .map_err(|error| {
                     error!(event = "jws_kid_account_lookup_failed", outcome = "failure", account_id = %id, error = %error);
@@ -316,11 +314,11 @@ async fn consume_nonce(
     header: &ProtectedHeader,
     request_path: &str,
 ) -> Result<(), Problem> {
-    let ttl = Duration::from_secs(app.config.nonce.ttl_seconds);
+    let ttl = app.config.nonce.ttl.as_std();
     match Nonce::verify(&header.nonce, &app.database, ttl).await {
         Ok(true) => Ok(()),
         Ok(false) => {
-            // Unknown, already consumed or past `nonce.ttl_seconds` — the three
+            // Unknown, already consumed or past `nonce.ttl` — the three
             // are indistinguishable by design, since a consumed nonce is
             // deleted. This is the anti-replay refusal, so it is worth a line:
             // a client stuck replaying is a client that will never issue.

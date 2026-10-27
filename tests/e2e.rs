@@ -25,8 +25,8 @@ mod certbot;
 #[path = "e2e/acme_sh.rs"]
 mod acme_sh;
 
-#[path = "e2e/profiles.rs"]
-mod profiles;
+#[path = "e2e/endpoints.rs"]
+mod endpoints;
 
 #[path = "e2e/admin_cli.rs"]
 mod admin_cli;

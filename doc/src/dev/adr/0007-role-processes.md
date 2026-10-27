@@ -41,7 +41,7 @@ the binaries, where one database and one job queue already do the job.
   - **`SignerBackend`**, the write side: issue and revoke. Only the worker
     builds it, in `Assembly::build_parts`.
 
-  `Profile` has no backend field at all. The job handlers take their backend
+  `Endpoint` has no backend field at all. The job handlers take their backend
   from `GenerationParts::signers`.
 - **The worker stores each CA's first CRL before it serves**
   (`store_first_crls`, at startup and before publishing a reload), since the
@@ -64,7 +64,7 @@ the binaries, where one database and one job queue already do the job.
   process logs the advisory `server_role_no_worker`. A process that does not
   own the schema and finds it behind refuses with `server_schema_behind`.
 - The wake-up is in-process. A worker in another process picks up a new row
-  within `jobs.poll_interval_ms`, whereas the claim itself is race-free across
+  within `jobs.poll_interval`, whereas the claim itself is race-free across
   processes.
 - Counters live per process, so each process needs its own
   `metrics.bind_address`. A `role` label is added when the metrics are rendered.

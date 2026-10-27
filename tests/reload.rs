@@ -67,13 +67,13 @@ impl Server {
     }
 }
 
-/// A single-profile configuration whose CA and TLS material all live under
+/// A single-endpoint configuration whose CA and TLS material all live under
 /// `dir`, so no test touches the repository.
 ///
 /// `extra` is spliced in at the end, which is how each test states the one thing
 /// it is about. `website` moves the directory document's `meta` member, and is
 /// this suite's cheapest observable: it proves the whole chain — a re-read file,
-/// a rebuilt `Profile`, a rebuilt router, and the swap cell the socket is
+/// a rebuilt `Endpoint`, a rebuilt router, and the swap cell the socket is
 /// serving through.
 fn write_config(dir: &TempDir, tls: bool, website: &str, extra: &str) {
     write_config_with_admin(dir, tls, false, website, extra);
@@ -115,7 +115,7 @@ struct Sockets<'a> {
     admin_enabled: bool,
 }
 
-/// A single-profile configuration whose CA and TLS material all live under
+/// A single-endpoint configuration whose CA and TLS material all live under
 /// `dir`, on the sockets the caller names.
 fn write_config_on(dir: &TempDir, sockets: Sockets<'_>, tls: bool, website: &str, extra: &str) {
     let ca = dir.join("ca");
@@ -146,7 +146,7 @@ fn write_config_on(dir: &TempDir, sockets: Sockets<'_>, tls: bool, website: &str
         [meta]
         website = "{website}"
 
-        [profiles.default]
+        [endpoints.default]
         signer.local_ca.cert_path = "{ca}.pem"
         signer.local_ca.key_path = "{ca}.key"
         signer.local_ca.crl_path = "{ca}.crl"
@@ -302,15 +302,15 @@ async fn a_reload_changes_what_the_running_socket_answers() {
     write_config(&dir, false, "https://before.example", "");
     let server = boot(load_from(&dir), false).await;
 
-    let before = get(server.acme, "/profile/default/directory").await;
+    let before = get(server.acme, "/endpoint/default/directory").await;
     assert!(before.contains("https://before.example"), "{before}");
 
     write_config(&dir, false, "https://after.example", "");
     let report = server.reload.reload().await.expect("the reload must apply");
     assert_eq!(report.generation, 2, "the first reload is generation two");
-    assert_eq!(report.profiles, vec!["default".to_string()]);
+    assert_eq!(report.endpoints, vec!["default".to_string()]);
 
-    let after = get(server.acme, "/profile/default/directory").await;
+    let after = get(server.acme, "/endpoint/default/directory").await;
     assert!(
         after.contains("https://after.example"),
         "the socket must serve the new configuration: {after}"
@@ -336,7 +336,7 @@ async fn a_reload_changes_what_the_running_socket_answers() {
 /// pacing from a cell on each pass and the queue reads `max_attempts` from a
 /// shared atomic, so all seven ride an ordinary generation.
 ///
-/// `retention_days` is the half with an observable in the report: it is the one
+/// `retention` is the half with an observable in the report: it is the one
 /// key carried by a *handler* rather than by the runner's own loop, so turning it
 /// off has to reach `job_kinds` — which is also what proves the section was
 /// applied rather than merely accepted. `crates/server/src/reload.rs`'s
@@ -353,13 +353,13 @@ async fn a_jobs_change_reloads_and_rebuilds_the_registry() {
         false,
         "https://before.example",
         "[jobs]\n\
-         poll_interval_ms = 250\n\
+         poll_interval = \"250ms\"\n\
          max_concurrent = 3\n\
          max_attempts = 9\n\
-         retry_base_seconds = 15\n\
-         retry_max_seconds = 900\n\
-         lease_seconds = 120\n\
-         retention_days = 0\n",
+         retry_base = \"15s\"\n\
+         retry_max = \"900s\"\n\
+         lease = \"120s\"\n\
+         retention = \"0d\"\n",
     );
 
     let report = server
@@ -370,7 +370,7 @@ async fn a_jobs_change_reloads_and_rebuilds_the_registry() {
     assert_eq!(report.generation, 2);
     assert!(
         !report.job_kinds.contains(&"job_retention_sweep"),
-        "`retention_days = 0` unregisters the sweep, so the new registry must \
+        "`retention = \"0d\"` unregisters the sweep, so the new registry must \
          not carry it: {:?}",
         report.job_kinds,
     );
@@ -381,7 +381,7 @@ async fn a_jobs_change_reloads_and_rebuilds_the_registry() {
         &dir,
         false,
         "https://before.example",
-        "[jobs]\nretention_days = 3\n",
+        "[jobs]\nretention = \"3d\"\n",
     );
     let report = server
         .reload
@@ -465,7 +465,7 @@ async fn a_logging_change_reloads_and_moves_the_level() {
         "the raised level must reach callsites that already exist",
     );
 
-    let after = get(server.acme, "/profile/default/directory").await;
+    let after = get(server.acme, "/endpoint/default/directory").await;
     assert!(after.contains("https://after.example"), "{after}");
 
     server.stop().await;
@@ -506,7 +506,7 @@ async fn a_frozen_key_is_refused_and_the_old_configuration_keeps_serving() {
     }
     assert_eq!(error.kind(), "frozen_key");
 
-    let after = get(server.acme, "/profile/default/directory").await;
+    let after = get(server.acme, "/endpoint/default/directory").await;
     assert!(
         after.contains("https://before.example"),
         "a refused reload must change nothing at all: {after}"
@@ -545,10 +545,10 @@ async fn a_configuration_that_does_not_build_leaves_the_old_one_running() {
         false,
         "https://after.example",
         r#"
-        [profiles.default.filter]
+        [endpoints.default.filter]
         rules = ["only"]
 
-        [profiles.default.filter.rule.only]
+        [endpoints.default.filter.rule.only]
         when = "nothing-defines-this"
         then = "allow"
         "#,
@@ -561,7 +561,7 @@ async fn a_configuration_that_does_not_build_leaves_the_old_one_running() {
         .expect_err("an unbuildable filter must not be applied");
     assert_eq!(error.kind(), "build_failed");
 
-    let after = get(server.acme, "/profile/default/directory").await;
+    let after = get(server.acme, "/endpoint/default/directory").await;
     assert!(
         after.contains("https://before.example"),
         "the old generation must still be serving: {after}"
@@ -760,7 +760,7 @@ async fn a_keep_alive_connection_sees_the_new_router_on_its_next_request() {
     // One socket, held open across the reload.
     let mut stream = TcpStream::connect(server.acme).await.unwrap();
 
-    let before = read_one_response(&mut stream, "/profile/default/directory").await;
+    let before = read_one_response(&mut stream, "/endpoint/default/directory").await;
     assert!(
         before.contains("https://before.example"),
         "the first request on this connection: {before}"
@@ -770,7 +770,7 @@ async fn a_keep_alive_connection_sees_the_new_router_on_its_next_request() {
     server.reload.reload().await.expect("the reload must apply");
 
     // The *same* socket, not a new one.
-    let after = read_one_response(&mut stream, "/profile/default/directory").await;
+    let after = read_one_response(&mut stream, "/endpoint/default/directory").await;
     assert!(
         after.contains("https://after.example"),
         "a keep-alive connection must not pin the generation it was opened on: {after}"
@@ -831,7 +831,7 @@ async fn read_one_response(stream: &mut TcpStream, path: &str) -> String {
 /// something `axum::serve` consumes. Three things have to hold together for it
 /// to mean anything: the new port answers, the old one is *released* rather
 /// than merely ignored, and it is the same process — same generation counter,
-/// same profiles, same everything else.
+/// same endpoints, same everything else.
 #[tokio::test]
 async fn a_moved_bind_address_rebinds_the_socket() {
     let dir = TempDir::shared("reload-rebind").await;
@@ -867,7 +867,7 @@ async fn a_moved_bind_address_rebinds_the_socket() {
     );
 
     let new_addr = std::net::SocketAddr::from(([127, 0, 0, 1], moved));
-    let directory = get(new_addr, "/profile/default/directory").await;
+    let directory = get(new_addr, "/endpoint/default/directory").await;
     assert!(
         directory.contains("https://after.example"),
         "the new socket serves the new generation: {directory}"
@@ -920,7 +920,7 @@ async fn an_unbindable_address_refuses_the_reload_and_the_socket_keeps_serving()
     // And the whole generation is untouched, `meta.website` included: a refusal
     // that had applied the half it could would leave a running configuration no
     // file describes.
-    let after = get(server.acme, "/profile/default/directory").await;
+    let after = get(server.acme, "/endpoint/default/directory").await;
     assert!(
         after.contains("https://before.example"),
         "the original socket must still be serving the original generation: {after}"
@@ -1051,11 +1051,11 @@ async fn tls_can_be_switched_on_without_the_socket_moving() {
 /// The survivor is asserted at every step for exactly that reason: an endpoint
 /// coming or going must be invisible to its neighbours.
 #[tokio::test]
-async fn a_profile_can_be_mounted_and_unmounted_by_a_reload() {
-    let dir = TempDir::shared("reload-profiles").await;
+async fn an_endpoint_can_be_mounted_and_unmounted_by_a_reload() {
+    let dir = TempDir::shared("reload-endpoints").await;
     let staging = format!(
         r#"
-        [profiles.staging]
+        [endpoints.staging]
         signer.local_ca.cert_path = "{dir}/staging.pem"
         signer.local_ca.key_path = "{dir}/staging.key"
         signer.local_ca.crl_path = "{dir}/staging.crl"
@@ -1066,50 +1066,50 @@ async fn a_profile_can_be_mounted_and_unmounted_by_a_reload() {
     write_config(&dir, false, "https://before.example", "");
     let server = boot(load_from(&dir), false).await;
 
-    let missing = get(server.acme, "/profile/staging/directory").await;
+    let missing = get(server.acme, "/endpoint/staging/directory").await;
     assert!(missing.contains("404"), "not mounted yet: {missing}");
 
     // Mounted.
     write_config(&dir, false, "https://before.example", &staging);
     let report = server.reload.reload().await.expect("mounting must apply");
     assert_eq!(report.generation, 2);
-    let mut mounted = report.profiles.clone();
+    let mut mounted = report.endpoints.clone();
     mounted.sort();
     assert_eq!(mounted, vec!["default".to_string(), "staging".to_string()]);
 
-    let now = get(server.acme, "/profile/staging/directory").await;
+    let now = get(server.acme, "/endpoint/staging/directory").await;
     assert!(
-        now.contains("/profile/staging/newOrder"),
+        now.contains("/endpoint/staging/newOrder"),
         "the new endpoint must serve its own directory: {now}"
     );
     assert!(
-        get(server.acme, "/profile/default/directory")
+        get(server.acme, "/endpoint/default/directory")
             .await
-            .contains("/profile/default/newOrder"),
+            .contains("/endpoint/default/newOrder"),
         "and the endpoint that was already up must be untouched"
     );
 
     // Unmounted again.
     write_config(&dir, false, "https://before.example", "");
     let report = server.reload.reload().await.expect("unmounting must apply");
-    assert_eq!(report.profiles, vec!["default".to_string()]);
+    assert_eq!(report.endpoints, vec!["default".to_string()]);
 
-    let gone = get(server.acme, "/profile/staging/directory").await;
+    let gone = get(server.acme, "/endpoint/staging/directory").await;
     assert!(
         gone.contains("404"),
         "the endpoint is no longer served: {gone}"
     );
     assert!(
-        get(server.acme, "/profile/default/directory")
+        get(server.acme, "/endpoint/default/directory")
             .await
-            .contains("/profile/default/newOrder"),
+            .contains("/endpoint/default/newOrder"),
         "the survivor is still serving"
     );
 
     server.stop().await;
 }
 
-/// A profile's `[signer]` edited under a running server, with the CRL proving
+/// An endpoint's `[signer]` edited under a running server, with the CRL proving
 /// the rebuilt CA kept the revocation the old one recorded.
 ///
 /// This is the case the freeze existed for. `LocalCa` used to rebuild its whole
@@ -1141,7 +1141,7 @@ async fn a_signer_edit_reloads_without_losing_a_revocation() {
         ..acme_proxy_core::config::LocalCaConfig::default()
     };
 
-    let before = status_of(server.acme, "/profile/default/crl").await;
+    let before = status_of(server.acme, "/endpoint/default/crl").await;
     assert!(before.contains("200 OK"), "the CRL is served: {before}");
 
     // The edit: one key of `[signer]`, which is what forces a rebuild.
@@ -1149,7 +1149,7 @@ async fn a_signer_edit_reloads_without_losing_a_revocation() {
         &dir,
         false,
         "https://before.example",
-        "profiles.default.signer.local_ca.leaf_validity_days = 30",
+        "endpoints.default.signer.local_ca.leaf_validity = 30",
     );
     let report = server
         .reload
@@ -1157,16 +1157,16 @@ async fn a_signer_edit_reloads_without_losing_a_revocation() {
         .await
         .expect("an edited [signer] must apply rather than be refused");
     assert_eq!(report.generation, 2);
-    assert_eq!(report.profiles, vec!["default".to_string()]);
+    assert_eq!(report.endpoints, vec!["default".to_string()]);
 
     // The endpoint still serves, and still serves a CRL — the rebuilt CA is a
     // working CA over the same files rather than a half-built one.
-    let after = status_of(server.acme, "/profile/default/crl").await;
+    let after = status_of(server.acme, "/endpoint/default/crl").await;
     assert!(after.contains("200 OK"), "{after}");
     assert!(
-        get(server.acme, "/profile/default/directory")
+        get(server.acme, "/endpoint/default/directory")
             .await
-            .contains("/profile/default/newOrder"),
+            .contains("/endpoint/default/newOrder"),
     );
 
     // The files were not clobbered: a fresh CA over them still loads, which is
@@ -1214,7 +1214,7 @@ async fn the_egress_sections_reload_where_they_used_to_be_refused() {
 
     // The generation really is the new one, not a refusal that happened to
     // return `Ok`.
-    let after = get(server.acme, "/profile/default/directory").await;
+    let after = get(server.acme, "/endpoint/default/directory").await;
     assert!(after.contains("https://after.example"), "{after}");
 
     server.stop().await;
@@ -1261,7 +1261,7 @@ async fn a_process_without_the_admin_role_reloads_over_an_admin_section() {
         .expect("a role this process does not run must not refuse its reloads");
     assert_eq!(report.generation, 2);
 
-    let after = get(server.acme, "/profile/default/directory").await;
+    let after = get(server.acme, "/endpoint/default/directory").await;
     assert!(after.contains("https://after.example"), "{after}");
 
     server.stop().await;

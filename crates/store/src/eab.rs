@@ -42,8 +42,8 @@ pub struct Eab {
     pub secret: Vec<u8>,
     pub label: Option<String>,
     /// Which ACME endpoint the credential is good for. `None` means every
-    /// profile -- the default, for an operator who does not care to scope it.
-    pub profile: Option<String>,
+    /// endpoint -- the default, for an operator who does not care to scope it.
+    pub endpoint: Option<String>,
     pub status: String,
     pub created_at: i64,
 }
@@ -61,7 +61,7 @@ impl std::fmt::Debug for Eab {
             .field("kid", &self.kid)
             .field("secret", &"<redacted>")
             .field("label", &self.label)
-            .field("profile", &self.profile)
+            .field("endpoint", &self.endpoint)
             .field("status", &self.status)
             .field("created_at", &self.created_at)
             .finish()
@@ -126,7 +126,7 @@ pub enum EabDeletion {
 /// A credential [`Eab::delete`] removed, and what became of its accounts.
 #[derive(Debug)]
 pub struct DeletedEab {
-    /// The row as it was — its label and profile name the audit row.
+    /// The row as it was — its label and endpoint name the audit row.
     pub eab: Eab,
     pub accounts: BoundAccounts,
     /// The accounts [`BoundAccounts::Deactivate`] changed, as they now are.
@@ -149,7 +149,7 @@ impl Eab {
             kid: row.try_get("kid")?,
             secret: row.try_get("secret")?,
             label: row.try_get("label")?,
-            profile: row.try_get("profile")?,
+            endpoint: row.try_get("endpoint")?,
             status: row.try_get("status")?,
             created_at: row.try_get("created_at")?,
         })
@@ -161,27 +161,27 @@ impl Eab {
     /// the only time it is meant to leave the database in plaintext form.
     pub async fn create(
         label: Option<String>,
-        profile: Option<String>,
+        endpoint: Option<String>,
         database: &Database,
     ) -> Result<Eab, sqlx::Error> {
         let eab = Eab {
             kid: crate::id::mint(),
             secret: random_bytes::<SECRET_LEN>().to_vec(),
             label,
-            profile,
+            endpoint,
             status: "active".to_string(),
             created_at: now_secs(),
         };
 
-        debug!(event = "db_eab_create_started", outcome = "progress", kid = ?eab.kid, profile = ?eab.profile);
+        debug!(event = "db_eab_create_started", outcome = "progress", kid = ?eab.kid, endpoint = ?eab.endpoint);
         crate::sql::query(
-            "INSERT INTO eab_keys (kid, secret, label, profile, status, created_at) \
+            "INSERT INTO eab_keys (kid, secret, label, endpoint, status, created_at) \
              VALUES (?, ?, ?, ?, ?, ?);",
         )
         .bind(eab.kid)
         .bind(&eab.secret)
         .bind(&eab.label)
-        .bind(&eab.profile)
+        .bind(&eab.endpoint)
         .bind(&eab.status)
         .bind(eab.created_at)
         .execute(database)
@@ -191,31 +191,31 @@ impl Eab {
         Ok(eab)
     }
 
-    /// Looks a credential up for use at `profile`. A row scoped to another
-    /// profile is *not* returned: to the endpoint asking, it does not exist.
-    /// A row with no profile at all matches everywhere.
+    /// Looks a credential up for use at `endpoint`. A row scoped to another
+    /// endpoint is *not* returned: to the endpoint asking, it does not exist.
+    /// A row with no endpoint at all matches everywhere.
     pub async fn find_by_kid(
         kid: &str,
-        profile: &str,
+        endpoint: &str,
         database: &Database,
     ) -> Result<Option<Eab>, sqlx::Error> {
-        debug!(event = "db_eab_find_by_kid_started", outcome = "progress", kid = ?kid, profile = %profile);
+        debug!(event = "db_eab_find_by_kid_started", outcome = "progress", kid = ?kid, endpoint = %endpoint);
         let Some(kid) = crate::id::parse(kid) else {
             return Ok(None);
         };
         let row = crate::sql::query(
-            "SELECT kid, secret, label, profile, status, created_at FROM eab_keys \
-             WHERE kid = ? AND (profile IS NULL OR profile = ?);",
+            "SELECT kid, secret, label, endpoint, status, created_at FROM eab_keys \
+             WHERE kid = ? AND (endpoint IS NULL OR endpoint = ?);",
         )
         .bind(kid)
-        .bind(profile)
+        .bind(endpoint)
         .fetch_optional(database)
         .await?;
 
         row.map(Eab::from_row).transpose()
     }
 
-    /// Looks a credential up by kid regardless of the profile it is scoped to
+    /// Looks a credential up by kid regardless of the endpoint it is scoped to
     /// -- the admin CLI's `eab show`/`eab revoke`, where the operator holds the
     /// kid and wants to see it whatever it is bound to. Never the request path,
     /// which must use [`Eab::find_by_kid`].
@@ -228,7 +228,7 @@ impl Eab {
             return Ok(None);
         };
         let row = crate::sql::query(
-            "SELECT kid, secret, label, profile, status, created_at FROM eab_keys WHERE kid = ?;",
+            "SELECT kid, secret, label, endpoint, status, created_at FROM eab_keys WHERE kid = ?;",
         )
         .bind(kid)
         .fetch_optional(database)
@@ -269,7 +269,7 @@ impl Eab {
             offset = offset
         );
         let rows = crate::sql::query(
-            "SELECT kid, secret, label, profile, status, created_at FROM eab_keys \
+            "SELECT kid, secret, label, endpoint, status, created_at FROM eab_keys \
              ORDER BY created_at DESC, kid DESC LIMIT ? OFFSET ?;",
         )
         .bind(limit)
@@ -334,7 +334,7 @@ impl Eab {
         let mut tx = database.transaction().await?;
         let Some(row) = crate::sql::query(
             "DELETE FROM eab_keys WHERE kid = ? \
-             RETURNING kid, secret, label, profile, status, created_at;",
+             RETURNING kid, secret, label, endpoint, status, created_at;",
         )
         .bind(kid)
         .fetch_optional(tx.conn())
@@ -395,7 +395,7 @@ impl Eab {
         self.status == "active"
     }
 
-    /// The admin-facing rendering: `kid`, `label`, `profile`, `status`,
+    /// The admin-facing rendering: `kid`, `label`, `endpoint`, `status`,
     /// `createdAt`.
     /// **Never** includes the secret -- that is shown once, by `eab create`,
     /// via `admin::render_eab_created_json`/`render_eab_created_text`, never
@@ -405,7 +405,7 @@ impl Eab {
         serde_json::json!({
             "kid": self.kid,
             "label": self.label,
-            "profile": self.profile,
+            "endpoint": self.endpoint,
             "status": self.status,
             "createdAt": rfc3339(self.created_at),
         })

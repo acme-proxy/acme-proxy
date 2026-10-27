@@ -46,7 +46,7 @@ are they in*. Then, in order:
 **Groups are read at sign-in, and only then.** There is no back-channel
 logout and no periodic re-check, so a person removed from their groups, or
 disabled at the provider, keeps a session they already hold until it expires
-(`admin.session_ttl_seconds`, `admin.session_idle_timeout_seconds`) or until
+(`admin.session_ttl`, `admin.session_idle_timeout`) or until
 their next sign-in is refused. To cut somebody off now, **disable** them on the
 Operators page or with `admin user disable`, which ends their sessions at once.
 
@@ -302,7 +302,7 @@ only for an extra scope (`groups`).
 The ID-token claim the operator's name comes from. Lowercased; it may hold
 letters, digits, `-`, `_`, `.` and `@`. A token without it is refused. Pick a
 claim the provider **assigns**, not one its users can edit in their own
-profile: names are first come, first served across every realm, so a
+endpoint: names are first come, first served across every realm, so a
 self-chosen name can take one a real operator would have needed. `email` is
 accepted only with `email_verified` true.
 
@@ -330,7 +330,7 @@ provider asked for a second factor. Empty accepts any.
 Extra CA certificates (PEM) trusted on top of the public roots, for a provider
 behind an internal PKI.
 
-**`timeout_ms`** (`Integer`) — *Default: `10000` | Env: `ACME_PROXY_ADMIN__AUTH__OIDC__<NAME>__TIMEOUT_MS`*
+**`timeout`** (`Duration`) — *Default: `"10s"` | Env: `ACME_PROXY_ADMIN__AUTH__OIDC__<NAME>__TIMEOUT`*
 
 Bound on each call to the provider (discovery, key set, token, userinfo).
 
@@ -412,7 +412,7 @@ The group search, with `{dn}` replaced by the person's escaped DN.
 Active Directory: count membership through other groups too, with the
 in-chain matching rule in place of `group_filter`. Needs `group_search_base`.
 
-**`timeout_ms`** (`Integer`) — *Default: `5000` | Env: `ACME_PROXY_ADMIN__AUTH__LDAP__<NAME>__TIMEOUT_MS`*
+**`timeout`** (`Duration`) — *Default: `"5s"` | Env: `ACME_PROXY_ADMIN__AUTH__LDAP__<NAME>__TIMEOUT`*
 
 Bound on the whole exchange with the directory, connection included.
 

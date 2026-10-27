@@ -18,7 +18,7 @@ mod common;
 use common::{EcSigner, RsaSigner, TestSigner, body_json, fetch_nonce, flattened_jws, p, test_app};
 
 const BASE: &str = common::BASE;
-const NEW_ACCOUNT_URL: &str = "http://localhost:3000/profile/default/newAccount";
+const NEW_ACCOUNT_URL: &str = "http://localhost:3000/endpoint/default/newAccount";
 
 async fn post(app: &Router, path: &str, body: String) -> Response {
     app.clone()
@@ -257,7 +257,7 @@ async fn an_update_to_an_unknown_account_url_is_unauthorized() {
 
     let account_url = register(&app, &signer).await;
     let fake_path = &p("/acct/00000000-0000-0000-0000-000000000000");
-    // From the host, not from BASE: `fake_path` already carries the profile's
+    // From the host, not from BASE: `fake_path` already carries the endpoint's
     // own prefix, and a doubled one would be refused by the §6.4 url check
     // before the handler ever looked the account up.
     let fake_url = format!("{}{fake_path}", common::HOST);

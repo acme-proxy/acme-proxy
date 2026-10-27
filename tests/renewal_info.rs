@@ -45,8 +45,8 @@ async fn post(app: &Router, path: &str, body: String) -> Response {
         .unwrap()
 }
 
-const NEW_ACCOUNT_URL: &str = "http://localhost:3000/profile/default/newAccount";
-const NEW_ORDER_URL: &str = "http://localhost:3000/profile/default/newOrder";
+const NEW_ACCOUNT_URL: &str = "http://localhost:3000/endpoint/default/newAccount";
+const NEW_ORDER_URL: &str = "http://localhost:3000/endpoint/default/newOrder";
 
 async fn register(app: &Router, signer: &impl TestSigner) -> String {
     let nonce = fetch_nonce(app).await;
@@ -177,7 +177,8 @@ async fn renewal_info_returns_window_for_valid_cert() {
     assert_eq!(res.status(), StatusCode::OK);
 
     // RFC 9773 §4.3: "it indicates the desired (i.e., both requested minimum
-    // and maximum) amount of time to wait" — six hours, §4.2's own example.
+    // and maximum) amount of time to wait" — for a 90-day certificate, the
+    // six-hour cap, §4.2's own example.
     assert_eq!(
         res.headers().get("retry-after").unwrap().to_str().unwrap(),
         "21600"
@@ -192,10 +193,64 @@ async fn renewal_info_returns_window_for_valid_cert() {
     assert!(body.get("explanationURL").is_none());
 }
 
+/// Issue #54: a CA issuing short-lived certificates gets a window inside each
+/// one's own lifetime and a `Retry-After` paced to it — half the window, so an
+/// ARI client polling at that pace lands inside it. A fixed six-hour pace would
+/// step clean over a 24-hour certificate's two-hour window.
+#[tokio::test]
+async fn a_short_lived_certificate_gets_a_window_and_pace_to_match() {
+    let signer = Arc::new(
+        acme_proxy_signer::local_ca::LocalCa::generate_in_memory_lasting(
+            "ecdsa-p256",
+            acme_proxy_core::config::ConfigDuration::from_hours(24),
+            Arc::new(
+                acme_proxy_store::db::Database::connect_in_memory()
+                    .await
+                    .unwrap(),
+            ),
+        )
+        .unwrap(),
+    );
+    let (app, _db) = test_app_with_signer(signer).await;
+    let ec = EcSigner::new();
+    let account_url = register(&app, &ec).await;
+    let chain = issue_certificate(&app, &ec, &account_url, make_csr("example.com")).await;
+
+    let res = get(&app, &format!("{PREFIX}/renewalInfo/{}", cert_id(&chain))).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    // 24 h plus the 1 h backdate: a window from 2/3 to 3/4 of 25 h is 2 h 5 min
+    // wide, so the pace is half of it.
+    let retry_after: i64 = res.headers()["retry-after"]
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!((3700..=3800).contains(&retry_after), "{retry_after}");
+
+    let body = body_json(res).await;
+    let parse = |field: &str| {
+        time::OffsetDateTime::parse(
+            body["suggestedWindow"][field].as_str().unwrap(),
+            &time::format_description::well_known::Rfc3339,
+        )
+        .unwrap()
+        .unix_timestamp()
+    };
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let (start, end) = (parse("start"), parse("end"));
+    assert!(
+        start > now + 14 * 3600,
+        "the window opens well before expiry"
+    );
+    assert!(end < now + 24 * 3600, "and closes before it");
+    assert!(end - start <= 2 * 3600 + 600, "{start}..{end}");
+}
+
 /// RFC 9773 §4.1 builds the certID from *both* the issuer's key identifier and
 /// the serial. Matching on the serial alone would answer for a certificate the
 /// caller did not name — a different issuer's certificate that happens to share
-/// a serial within this profile.
+/// a serial within this endpoint.
 #[tokio::test]
 async fn a_cert_id_whose_key_identifier_is_wrong_is_rejected() {
     let app = test_app().await;
@@ -273,7 +328,7 @@ async fn renewal_info_returns_past_window_for_revoked_cert() {
     let payload = json!({ "certificate": cert_field(&chain) });
     let body = signer.sign_kid(
         &account_url,
-        "http://localhost:3000/profile/default/revokeCert",
+        "http://localhost:3000/endpoint/default/revokeCert",
         &nonce,
         &payload,
     );
@@ -449,7 +504,7 @@ async fn revocation_beats_an_upstream_window_in_the_future() {
     let nonce = fetch_nonce(&app).await;
     let body = ec.sign_kid(
         &account_url,
-        "http://localhost:3000/profile/default/revokeCert",
+        "http://localhost:3000/endpoint/default/revokeCert",
         &nonce,
         &json!({ "certificate": cert_field(&chain) }),
     );

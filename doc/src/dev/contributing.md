@@ -180,8 +180,8 @@ section optional. Beyond the field itself, a new key owes:
   its environment variable, plus an entry in `config.toml.example` (which a test
   deserializes, so it cannot rot into invalid TOML). `doc/lint.py` refuses a key
   documented in two pages.
-- **A decision about scope.** A section listed in `PROFILE_SECTIONS` is
-  per-profile and inherited key by key (see [Profiles](../core/profiles.md));
+- **A decision about scope.** A section listed in `ENDPOINT_SECTIONS` is
+  per-endpoint and inherited key by key (see [Endpoints](../core/endpoints.md));
   one describing the process — `[jobs]`, `[audit]`, `[metrics]`, `[proxy]`,
   `[admin]` — is not.
 - **A decision about reload.** A reload rebuilds everything from the new
@@ -193,7 +193,7 @@ section optional. Beyond the field itself, a new key owes:
 
 - `#[serde(deserialize_with = "string_list")]` on the field. An environment
   variable can only carry a string, and this is what splits `a,b` into a list,
-  at any depth: inside a profile or inside a named table
+  at any depth: inside an endpoint or inside a named table
   (`[filter.check.<name>]`, `[notify.webhook.<name>]`, …) alike. It also reads
   a variable set to the empty string (a `${VAR:-}` shell default) as `[]`.
   Without it the key loads from a file and fails from the environment;

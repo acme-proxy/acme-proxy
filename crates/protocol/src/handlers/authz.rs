@@ -64,16 +64,16 @@ pub async fn post_authz(
     );
     let AppState {
         database,
-        profile,
+        endpoint,
         audit,
         ..
     } = state;
-    let base = &profile.base_url;
+    let base = &endpoint.base_url;
 
     // `load_owned_authz` walks up to the order and checks `account_id`, which is
     // §7.5.2's "the server MUST verify that the request is signed by the account
     // key corresponding to the account that owns the authorization".
-    let account = signer_account(account, &profile.name, &pubkey, &database).await?;
+    let account = signer_account(account, &endpoint.name, &pubkey, &database).await?;
     let (mut authz, mut order) = load_owned_authz(&id, &account, &database).await?;
 
     if let Some(update) = payload {
@@ -88,7 +88,7 @@ pub async fn post_authz(
         let orders = OrderService {
             database: &database,
             audit: &audit,
-            profile: &profile,
+            endpoint: &endpoint,
         };
         orders.deactivate_authz(&mut authz, &mut order).await?;
     }
@@ -167,19 +167,19 @@ pub async fn post_challenge(
     );
     let AppState {
         database,
-        profile,
+        endpoint,
         audit,
         jobs,
         ..
     } = state;
-    let base = &profile.base_url;
+    let base = &endpoint.base_url;
     let orders = OrderService {
         database: &database,
         audit: &audit,
-        profile: &profile,
+        endpoint: &endpoint,
     };
 
-    let account = signer_account(account, &profile.name, &pubkey, &database).await?;
+    let account = signer_account(account, &endpoint.name, &pubkey, &database).await?;
     let (mut challenge, authz, order) = load_owned_challenge(&id, &account, &database).await?;
 
     // An empty payload only reads the owned challenge; it never starts work.
@@ -232,7 +232,7 @@ async fn trigger_validation(
 ) -> Result<Option<Response>, Problem> {
     // Claimed and queued — never awaited. The check reaches an address the
     // client named, so awaiting it here held an admission permit for the length
-    // of `challenge.timeout_ms`. The challenge now answers `processing`, which
+    // of `challenge.timeout`. The challenge now answers `processing`, which
     // §7.1.6 defines for exactly this ("transitions to the `processing` state
     // when the client responds to the challenge") and §8.2 pairs with the
     // `Retry-After` below.

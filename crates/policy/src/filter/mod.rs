@@ -194,14 +194,14 @@ pub(crate) fn require_client_ip(client_ip: Option<IpAddr>) -> Result<IpAddr, Ver
 /// for, while the shared resolver is deliberately uncached so a `dns-01` record
 /// published moments before a trigger is not defeated by a cached negative.
 ///
-/// `eab_enabled` is the profile's `eab.enabled`: an `eab` check under an endpoint
+/// `eab_enabled` is the endpoint's `eab.enabled`: an `eab` check under an endpoint
 /// that does not require EAB could only ever refuse, which is a startup error
 /// rather than a policy.
 ///
-/// `ipam` is the profile's already-built inventory — `None` when `ipam.backend`
+/// `ipam` is the endpoint's already-built inventory — `None` when `ipam.backend`
 /// is unset, which is a startup error if any selected rule names an `ipam`
 /// check. It is built by
-/// `server::profile::build_all` rather than here
+/// `server::endpoint::build_all` rather than here
 /// because it is its own configuration section with its own selector, and this
 /// policy is one of its consumers rather than its owner.
 pub fn from_config(

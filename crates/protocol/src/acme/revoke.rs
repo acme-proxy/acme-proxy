@@ -13,11 +13,11 @@
 //! ([`Revoker::Queued`], waiting on the job for the answer). The backend itself
 //! ([`Revoker::Backend`]) is reached only from [`SignerRevokeJob`], in the
 //! process that built it. [`Revoker::for_route`] is the choice every front end
-//! makes, from the profile's [`RevocationRoute`].
+//! makes, from the endpoint's [`RevocationRoute`].
 //!
 //! Deliberately not an [`OrderService`](super::OrderService) method: that
-//! bundle carries a mounted [`Profile`](crate::profile::Profile), and the host
-//! CLI revokes with no profile mounted. What revocation needs is narrower —
+//! bundle carries a mounted [`Endpoint`](crate::endpoint::Endpoint), and the host
+//! CLI revokes with no endpoint mounted. What revocation needs is narrower —
 //! whatever withdraws trust, and whom to tell — so that is what
 //! [`Revocations`] holds.
 
@@ -75,7 +75,7 @@ pub enum Revoker<'a> {
 }
 
 impl<'a> Revoker<'a> {
-    /// What a front end with no backend uses for a profile whose read side
+    /// What a front end with no backend uses for an endpoint whose read side
     /// answered `route`: a local CA's ledger, or the queue.
     #[must_use]
     pub fn for_route(route: &'a RevocationRoute, jobs: &'a JobQueue, wait: Duration) -> Self {
@@ -145,13 +145,15 @@ pub enum RevokeError {
 
 /// How a [`SignerError`] reads inside a [`RevokeError`].
 ///
-/// `BadCsr` is not a thing `revoke` can legitimately answer — the hook takes a
-/// certificate, not a CSR — so it is reported as the contract violation it is
-/// rather than passed through as if it meant something here.
+/// `BadCsr` and `InvalidProfile` are not things `revoke` can legitimately
+/// answer — the hook takes a certificate, not an order — so each is reported as
+/// the contract violation it is rather than passed through as if it meant
+/// something here.
 pub fn signer_detail(error: &SignerError) -> String {
     match error {
         SignerError::Internal(detail) => detail.clone(),
         SignerError::BadCsr => "unexpected badCsr from revoke".to_string(),
+        SignerError::InvalidProfile(_) => "unexpected invalidProfile from revoke".to_string(),
     }
 }
 
@@ -188,7 +190,7 @@ impl From<RevokeError> for Problem {
 pub struct Revocations<'a> {
     pub database: &'a Arc<Database>,
     pub audit: &'a Auditor,
-    /// The certificate's profile's dispatcher, when this process has one — a
+    /// The certificate's endpoint's dispatcher, when this process has one — a
     /// `certificate_revoked` notification is about the certificate, so it goes
     /// out however the revocation was asked for.
     pub notify: Option<&'a NotifyDispatcher>,
@@ -207,7 +209,7 @@ enum Refusals {
 
 impl Revocations<'_> {
     /// `POST /revokeCert`: revokes the certificate `cert_der` issued at
-    /// `profile`, for a request signed by `pubkey`.
+    /// `endpoint`, for a request signed by `pubkey`.
     ///
     /// Authorized by either the order's own account (RFC 8555 §7.6's `kid`
     /// case, `account` being the one the JWS named) or the certificate's key
@@ -215,7 +217,7 @@ impl Revocations<'_> {
     /// serial is known is an audit row.
     pub async fn revoke_certificate(
         &self,
-        profile: &str,
+        endpoint: &str,
         cert_der: &[u8],
         reason: Option<u32>,
         pubkey: &[u8],
@@ -228,7 +230,7 @@ impl Revocations<'_> {
             RevokeError::Refused(Problem::malformed("certificate is unparsable"))
         })?;
 
-        let order = Order::find_by_cert_serial(profile, &serial_hex, database)
+        let order = Order::find_by_cert_serial(endpoint, &serial_hex, database)
             .await
             .map_err(|error| {
                 error!(event = "certificate_revoke_lookup_failed", outcome = "failure", cert_serial = %serial_hex, error = %error);
@@ -256,7 +258,7 @@ impl Revocations<'_> {
         let client = Client::Request(request).resolve(self.audit).await;
         let revoke_failed = |reason: &'static str, detail: &str| {
             refusal(
-                profile,
+                endpoint,
                 actor.clone(),
                 &serial_hex,
                 client.clone(),
@@ -308,7 +310,7 @@ impl Revocations<'_> {
         } else {
             match account {
                 Some(cached) => cached.id == order.account_id,
-                None => Account::find_by_pubkey(profile, pubkey, database)
+                None => Account::find_by_pubkey(endpoint, pubkey, database)
                     .await
                     .map_err(|error| {
                         error!(event = "certificate_revoke_account_lookup_failed", outcome = "failure", error = %error);
@@ -409,7 +411,7 @@ impl Revocations<'_> {
     ) -> Result<Order, RevokeError> {
         let refused = |order: &Order, reason: &'static str, detail: &str| {
             refusal(
-                &order.profile,
+                &order.endpoint,
                 actor.clone(),
                 &serial_hex,
                 client.clone(),
@@ -518,7 +520,7 @@ impl Revocations<'_> {
         }
 
         info!(event = "certificate_revoked", outcome = "success", order_id = %order.id, cert_serial = %serial_hex);
-        let revoked = AuditRecord::new(AuditEvent::CertificateRevoked, &order.profile, actor)
+        let revoked = AuditRecord::new(AuditEvent::CertificateRevoked, &order.endpoint, actor)
             .with_order(order.id, order.account_id, &order.identifiers)
             .with_serial(&serial_hex)
             .with_client(client.clone());
@@ -535,7 +537,7 @@ impl Revocations<'_> {
         if let Some(dispatcher) = self.notify {
             dispatcher
                 .dispatch(NotifyEvent::CertificateRevoked(CertificateRevokedData {
-                    profile: order.profile.clone(),
+                    endpoint: order.endpoint.clone(),
                     order_id: order.id.to_string(),
                     account_id: order.account_id.to_string(),
                     cert_serial: serial_hex,
@@ -677,14 +679,14 @@ enum Recorded {
 
 /// One `certificate_revoke_failed` row.
 fn refusal(
-    profile: &str,
+    endpoint: &str,
     actor: Actor,
     serial: &str,
     client: ClientContext,
     reason: &'static str,
     detail: &str,
 ) -> AuditRecord {
-    AuditRecord::new(AuditEvent::CertificateRevokeFailed, profile, actor)
+    AuditRecord::new(AuditEvent::CertificateRevokeFailed, endpoint, actor)
         .with_serial(serial)
         .with_client(client)
         .with_reason(reason)
@@ -719,7 +721,7 @@ pub fn signer_revoke_spec(
 }
 
 /// How long a request waits for a revocation it queued: its own deadline,
-/// `server.request_timeout_ms`, less a second to answer in — so a slow worker
+/// `server.request_timeout`, less a second to answer in — so a slow worker
 /// is told as [`RevokeError::Pending`] rather than cut off as a timeout that
 /// says nothing about the job still running.
 #[must_use]
@@ -739,7 +741,7 @@ pub enum JobSettled {
 }
 
 /// How often [`await_job`] reads the row. A worker in another process picks a
-/// row up within `jobs.poll_interval_ms`, so reading faster than this would
+/// row up within `jobs.poll_interval`, so reading faster than this would
 /// only cost queries.
 const AWAIT_PACE: Duration = Duration::from_millis(100);
 
@@ -777,10 +779,10 @@ pub async fn await_job(
 /// Revokes, at the backend that issued it, a certificate somebody asked to
 /// revoke from a process holding no backend — `revokeCert` in the `acme` role,
 /// the panel in the `admin` role, the host CLI — for a `relay` or `custom`
-/// profile, whose revocation is a call to an upstream CA or a script.
+/// endpoint, whose revocation is a call to an upstream CA or a script.
 ///
-/// **One handler over every profile**, the `RelayJob` shape: a row names its
-/// order, the order names its profile, and the profile names the backend.
+/// **One handler over every endpoint**, the `RelayJob` shape: a row names its
+/// order, the order names its endpoint, and the endpoint names the backend.
 pub struct SignerRevokeJob {
     database: Arc<Database>,
     audit: Arc<Auditor>,
@@ -789,7 +791,7 @@ pub struct SignerRevokeJob {
 }
 
 impl SignerRevokeJob {
-    /// `signers` is this generation's backend per profile name.
+    /// `signers` is this generation's backend per endpoint name.
     #[must_use]
     pub fn new(
         database: Arc<Database>,
@@ -825,7 +827,7 @@ impl JobHandler for SignerRevokeJob {
     }
 
     /// What is worth asking again (`Retry`): a backend that failed, a database
-    /// that did, a profile this process does not mount — another process, or
+    /// that did, an endpoint this process does not mount — another process, or
     /// the next generation of this one, may. What is not (`Failed`): an order
     /// that is gone, never issued, or a reason code no backend accepts. An
     /// order already revoked is `Done`: the operator's intent holds.
@@ -843,13 +845,13 @@ impl JobHandler for SignerRevokeJob {
             Ok(None) => return JobOutcome::Failed("the order no longer exists".to_string()),
             Err(error) => return JobOutcome::Retry(format!("reading the order failed: {error}")),
         };
-        let Some(signer) = super::mounted(&self.signers, &order.profile) else {
+        let Some(signer) = super::mounted(&self.signers, &order.endpoint) else {
             return JobOutcome::Retry(format!(
-                "profile `{}` is not mounted by this process",
-                order.profile
+                "endpoint `{}` is not mounted by this process",
+                order.endpoint
             ));
         };
-        let dispatcher = self.notifiers.get(&order.profile);
+        let dispatcher = self.notifiers.get(&order.endpoint);
         let revocations = Revocations {
             database: &self.database,
             audit: &self.audit,
@@ -890,7 +892,7 @@ mod tests {
     use acme_proxy_core::identifier::Identifier;
     use acme_proxy_jobs::jobs::JobHandler;
     use acme_proxy_signer::IssueOutcome;
-    use acme_proxy_signer::RequestedValidity;
+    use acme_proxy_signer::OrderRequest;
 
     /// A backend whose `revoke` always fails.
     struct Failing;
@@ -902,7 +904,7 @@ mod tests {
             _order_id: &str,
             _csr_der: &[u8],
             _identifiers: &[Identifier],
-            _validity: RequestedValidity,
+            _validity: OrderRequest,
         ) -> Result<IssueOutcome, SignerError> {
             Err(SignerError::Internal("not here".into()))
         }
@@ -973,7 +975,7 @@ mod tests {
             _order_id: &str,
             _csr_der: &[u8],
             _identifiers: &[Identifier],
-            _validity: RequestedValidity,
+            _validity: OrderRequest,
         ) -> Result<IssueOutcome, SignerError> {
             Err(SignerError::Internal("not here".into()))
         }
@@ -991,10 +993,10 @@ mod tests {
         max_attempts: u32,
     ) -> (JobQueue, tokio::sync::watch::Sender<bool>) {
         let config = acme_proxy_core::config::JobsConfig {
-            poll_interval_ms: 10,
+            poll_interval: acme_proxy_core::config::ConfigDuration::from_millis(10),
             max_attempts,
-            retry_base_seconds: 0,
-            retry_max_seconds: 0,
+            retry_base: acme_proxy_core::config::ConfigDuration::from_secs(0),
+            retry_max: acme_proxy_core::config::ConfigDuration::from_secs(0),
             ..acme_proxy_core::config::JobsConfig::default()
         };
         let queue = JobQueue::new(database.clone(), &config);

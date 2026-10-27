@@ -82,7 +82,7 @@ async fn bypass_triggers_the_offered_challenge() {
             order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
-            RequestedValidity::default(),
+            OrderRequest::default(),
         )
         .await
         .unwrap();
@@ -123,7 +123,7 @@ async fn bypass_triggers_a_challenge_of_any_type() {
             order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
-            RequestedValidity::default(),
+            OrderRequest::default(),
         )
         .await
         .unwrap();
@@ -157,7 +157,7 @@ async fn bypass_fails_the_order_when_the_upstream_rejects() {
             order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
-            RequestedValidity::default(),
+            OrderRequest::default(),
         )
         .await
         .unwrap();
@@ -194,7 +194,7 @@ async fn dns01_publishes_triggers_and_cleans_up() {
             order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
-            RequestedValidity::default(),
+            OrderRequest::default(),
         )
         .await
         .unwrap();
@@ -274,7 +274,7 @@ async fn dns01_publishes_at_the_alias_when_set() {
             order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
-            RequestedValidity::default(),
+            OrderRequest::default(),
         )
         .await
         .unwrap();
@@ -370,7 +370,7 @@ async fn dns01_waits_the_configured_delay_before_triggering() {
             order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
-            RequestedValidity::default(),
+            OrderRequest::default(),
         )
         .await
         .unwrap();
@@ -388,7 +388,7 @@ async fn dns01_waits_the_configured_delay_before_triggering() {
 
 /// A propagation setting that cannot work stops the server, before any
 /// round trip to the upstream: an unknown mode, and a delay the attempt budget
-/// (`poll_timeout_secs`, the job's lease) could never let finish.
+/// (`poll_timeout`, the job's lease) could never let finish.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_unworkable_propagation_setting_is_a_startup_error() {
     let upstream = testsrv::start(Script::default()).await;
@@ -396,16 +396,13 @@ async fn an_unworkable_propagation_setting_is_a_startup_error() {
 
     for (mode, delay_secs, expected) in [
         ("sometimes", 30, "propagation.mode: sometimes"),
-        (
-            "delay",
-            5,
-            "must be less than signer.relay.poll_timeout_secs",
-        ),
+        ("delay", 5, "must be less than signer.relay.poll_timeout"),
     ] {
         let mut cfg = config(&upstream, &dir);
         cfg.challenge_strategy = "dns01".to_string();
         cfg.dns01.propagation.mode = mode.to_string();
-        cfg.dns01.propagation.delay_secs = delay_secs;
+        cfg.dns01.propagation.delay =
+            acme_proxy_core::config::ConfigDuration::from_secs(delay_secs);
 
         let error = startup_error(RelaySigner::from_config(
             &cfg,
@@ -452,7 +449,7 @@ async fn dns01_cleans_up_after_a_rejected_challenge() {
             order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
-            RequestedValidity::default(),
+            OrderRequest::default(),
         )
         .await
         .unwrap();
@@ -494,7 +491,7 @@ async fn dns01_refuses_an_upstream_offering_only_http01() {
             order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
-            RequestedValidity::default(),
+            OrderRequest::default(),
         )
         .await
         .unwrap();
@@ -537,7 +534,7 @@ async fn dns01_fails_when_the_record_cannot_be_published() {
             order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
-            RequestedValidity::default(),
+            OrderRequest::default(),
         )
         .await
         .unwrap();
@@ -589,7 +586,7 @@ async fn dns01_answers_past_a_challenge_type_carrying_no_token() {
             order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
-            RequestedValidity::default(),
+            OrderRequest::default(),
         )
         .await
         .unwrap();
@@ -643,7 +640,7 @@ async fn bypass_prefers_a_challenge_it_could_answer() {
             order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
-            RequestedValidity::default(),
+            OrderRequest::default(),
         )
         .await
         .unwrap();

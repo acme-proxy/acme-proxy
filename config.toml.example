@@ -15,16 +15,16 @@
 # empty item is refused. A regex containing a literal comma — a quantifier such
 # as `{2,3}` — can only be written in this file.
 #
-# Profiles:
-# The server serves ACME only through the [profiles.<name>] tables at the bottom
+# Endpoints:
+# The server serves ACME only through the [endpoints.<name>] tables at the bottom
 # of this file — at least one is required, or startup fails. Each is mounted at
-# /profile/<name>, so a profile named `default` answers at
-# {base_url}/profile/default/directory. See that section for what a profile
+# /endpoint/<name>, so an endpoint named `default` answers at
+# {base_url}/endpoint/default/directory. See that section for what an endpoint
 # inherits and what it can override.
 #
 # ---------------------------------------------------------------------------
-# Sections in this file, in order. Sections marked [per-profile] may also
-# appear inside a [profiles.<name>] block, where they override the value set
+# Sections in this file, in order. Sections marked [per-endpoint] may also
+# appear inside an [endpoints.<name>] block, where they override the value set
 # here; everything else is process-wide, one setting for the whole server.
 #
 #   [database]                          the SQLite file or PostgreSQL server
@@ -40,8 +40,8 @@
 #   [jobs]                              the durable background-work queue
 #   [metrics]                           the Prometheus listener
 #   [logging]                           filter, format, target
-#   [order]                    [per-profile]  the order object's lifetime
-#   [signer]                   [per-profile]  how a certificate is obtained
+#   [order]                    [per-endpoint]  the order object's lifetime
+#   [signer]                   [per-endpoint]  how a certificate is obtained
 #     [signer.local_ca]                 the embedded CA
 #     [signer.local_ca.subject]         its self-generated certificate's subject
 #     [signer.local_ca.pkcs11]          its key in a token (--features hsm)
@@ -51,29 +51,29 @@
 #     [signer.relay.dns01.rfc2136]      the TSIG-authenticated DNS update
 #     [signer.relay.dns01.propagation]  waiting before the upstream looks
 #     [signer.custom]                   shelling out to a script
-#   [challenge]                [per-profile]  how control of a name is proven
+#   [challenge]                [per-endpoint]  how control of a name is proven
 #     [challenge.http_01]               (there is no [challenge.dns_01])
 #     [challenge.tls_alpn_01]
-#   [filter]                   [per-profile]  who may ask, and for what
+#   [filter]                   [per-endpoint]  who may ask, and for what
 #     [filter.check.<name>]             one named check, of one `type`
 #     [filter.rule.<name>]              a condition over checks, and its effect
-#   [ipam]                     [per-profile]  the inventory `ipam` checks read
+#   [ipam]                     [per-endpoint]  the inventory `ipam` checks read
 #     [ipam.netbox]
 #     [ipam.phpipam]
 #     [ipam.custom]
-#   [eab]                      [per-profile]  External Account Binding
-#   [meta]                     [per-profile]  directory `meta` members
-#   [notify]                   [per-profile]  outbound notifications
+#   [eab]                      [per-endpoint]  External Account Binding
+#   [meta]                     [per-endpoint]  directory `meta` members
+#   [notify]                   [per-endpoint]  outbound notifications
 #     [notify.email]
 #     [notify.expiry]                   the periodic expiry digest
 #     [notify.webhook.<name>]           one table per named HTTP target
 #     [notify.custom.<name>]            one table per named script hook
 #   [dns]                               the resolver every lookup goes through
 #   [proxy]                             the forward proxy outbound clients use
-#   [profiles.<name>]                   an ACME endpoint — at least one required
+#   [endpoints.<name>]                   an ACME endpoint — at least one required
 #
-# The eight [per-profile] sections are exactly those a profile may override,
-# and inheritance is per *key*, not per section: a profile setting only
+# The eight [per-endpoint] sections are exactly those an endpoint may override,
+# and inheritance is per *key*, not per section: an endpoint setting only
 # challenge.bypass keeps the global challenge.enabled. Arrays replace
 # wholesale, never append.
 # ---------------------------------------------------------------------------
@@ -96,20 +96,20 @@ base_url = "http://localhost:3000"  # ACME_PROXY_SERVER__BASE_URL
 # all of it: a health probe is asked for exactly when the server is saturated.
 #
 # How many ACME requests may be in flight at once. Past this, a request waits
-# admission_wait_ms for a slot and is then refused with 503 + Retry-After rather
+# admission_wait for a slot and is then refused with 503 + Retry-After rather
 # than queued — an unbounded queue only converts a slow server into a backlog of
 # clients that gave up long ago but still cost a slot when their turn comes.
 max_concurrent_requests = 100       # ACME_PROXY_SERVER__MAX_CONCURRENT_REQUESTS
 # How long to wait for a slot before refusing. Long enough to absorb a burst,
 # short enough that the queue can never be deeper than this in time.
-admission_wait_ms = 50              # ACME_PROXY_SERVER__ADMISSION_WAIT_MS
+admission_wait = "50ms"             # ACME_PROXY_SERVER__ADMISSION_WAIT
 # Whole-request deadline. It must exceed every hook that still runs inside a
 # request, or work that was going to succeed is cut off and reported to the
 # client as a server failure. Challenge validation runs in the job queue, so
-# that is now only signer.custom.timeout_ms, and only while a custom signer
+# that is now only signer.custom.timeout, and only while a custom signer
 # answers `GET /crl` (supports_crl) or renewal information
 # (supports_renewal_info); startup refuses a configuration where it does not.
-request_timeout_ms = 60000          # ACME_PROXY_SERVER__REQUEST_TIMEOUT_MS
+request_timeout = "1m"              # ACME_PROXY_SERVER__REQUEST_TIMEOUT
 # Largest request body accepted, in bytes. An ACME body is a JWS carrying at
 # most a CSR; the default here replaces axum's implicit 2 MiB.
 max_body_bytes = 131072             # ACME_PROXY_SERVER__MAX_BODY_BYTES
@@ -130,7 +130,7 @@ cert_path = "server.pem"            # ACME_PROXY_SERVER__TLS__CERT_PATH
 key_path  = "server.key"            # ACME_PROXY_SERVER__TLS__KEY_PATH
 # Budget for one TLS handshake. A client that stalls part-way through is dropped
 # once it elapses; handshakes run concurrently, so this never delays anyone else.
-handshake_timeout_ms = 10000        # ACME_PROXY_SERVER__TLS__HANDSHAKE_TIMEOUT_MS
+handshake_timeout = "10s"           # ACME_PROXY_SERVER__TLS__HANDSHAKE_TIMEOUT
 
 [admin]
 # The web admin interface: a SECOND listener, on its own socket, serving no
@@ -157,16 +157,16 @@ bind_address = "127.0.0.1:3001"     # ACME_PROXY_ADMIN__BIND_ADDRESS
 base_url = "http://localhost:3001"  # ACME_PROXY_ADMIN__BASE_URL
 # Absolute session lifetime (12h). Never extended by activity: past it, the
 # operator signs in again.
-session_ttl_seconds = 43200         # ACME_PROXY_ADMIN__SESSION_TTL_SECONDS
+session_ttl = "12h"                 # ACME_PROXY_ADMIN__SESSION_TTL
 # Idle session lifetime (1h), advanced on use — at most once a minute, so a
 # polling page is not a stream of database writes.
-session_idle_timeout_seconds = 3600 # ACME_PROXY_ADMIN__SESSION_IDLE_TIMEOUT_SECONDS
+session_idle_timeout = "1h"         # ACME_PROXY_ADMIN__SESSION_IDLE_TIMEOUT
 # Failed logins allowed from one address per window, then 503-style refusal with
 # a Retry-After. The password hash is deliberately expensive (PBKDF2-HMAC-SHA256
 # at 600k iterations), so this is an availability control as much as a
 # credential one — over the limit, the hash is not computed at all.
 login_max_attempts = 5              # ACME_PROXY_ADMIN__LOGIN_MAX_ATTEMPTS
-login_window_seconds = 300          # ACME_PROXY_ADMIN__LOGIN_WINDOW_SECONDS
+login_window = "5m"                 # ACME_PROXY_ADMIN__LOGIN_WINDOW
 # Require a second factor (TOTP) of every operator.
 #
 # An operator who already has one is challenged whether this is set or not; what
@@ -200,7 +200,7 @@ template_dir = ""                   # ACME_PROXY_ADMIN__TEMPLATE_DIR
 # [admin.notify] — where web-admin operator security events go (a sign-in from
 # an unfamiliar address, a correct password then a refused second factor, a
 # lockout, a credential change — ASVS V6.3.5 / V6.3.7). Exactly the shape of the
-# per-profile [notify] section below (email / webhook / custom / template_dir /
+# per-endpoint [notify] section below (email / webhook / custom / template_dir /
 # per-backend events), but process-wide and built only when [admin] is enabled.
 # Email delivery goes to each operator's own contact address
 # (`acme-proxy admin user create --contact` / `admin user contact`), falling
@@ -251,7 +251,7 @@ enabled = false                     # ACME_PROXY_ADMIN__TLS__ENABLED
 cert_path = "admin.pem"             # ACME_PROXY_ADMIN__TLS__CERT_PATH
 key_path  = "admin.key"             # ACME_PROXY_ADMIN__TLS__KEY_PATH
 # Budget for one TLS handshake, as [server.tls].
-handshake_timeout_ms = 10000        # ACME_PROXY_ADMIN__TLS__HANDSHAKE_TIMEOUT_MS
+handshake_timeout = "10s"           # ACME_PROXY_ADMIN__TLS__HANDSHAKE_TIMEOUT
 
 [admin.auth]
 # Who may sign in to the panel, and who vouches for them. Operators signing in
@@ -277,7 +277,7 @@ local = true                        # ACME_PROXY_ADMIN__AUTH__LOCAL
 #   required_acr = []
 #   required_amr = []                           # ["mfa"] to insist on one
 #   ca_cert_path = ""
-#   timeout_ms = 10000
+#   timeout = "10s"
 #   [admin.auth.oidc.corp.roles]
 #   admin = ["acme-admins"]
 #   operator = ["acme-operators"]
@@ -300,14 +300,14 @@ local = true                        # ACME_PROXY_ADMIN__AUTH__LOCAL
 #   group_search_base = ""                      # set for nested_groups
 #   group_filter = "(member={dn})"
 #   nested_groups = false
-#   timeout_ms = 5000
+#   timeout = "5s"
 #   [admin.auth.ldap.ad.roles]
 #   admin = ["CN=ACME Admins,OU=Groups,DC=example,DC=com"]
 
 [nonce]
 # Lifetime of nonces in seconds. Shorter TTLs improve security against replay
 # attacks, while longer TTLs provide more leeway for slow clients.
-ttl_seconds = 300                   # ACME_PROXY_NONCE__TTL_SECONDS
+ttl = "5m"                          # ACME_PROXY_NONCE__TTL
 
 [audit]
 # Traceability and the CA's audit trail.
@@ -324,12 +324,12 @@ reverse_dns = true                  # ACME_PROXY_AUDIT__REVERSE_DNS
 # Budget for one PTR lookup. Deliberately small: this runs inside a request
 # that has already done its real work, so a slow nameserver must cost a NULL in
 # one column, never latency on issuance.
-reverse_dns_timeout_ms = 2000       # ACME_PROXY_AUDIT__REVERSE_DNS_TIMEOUT_MS
-# Delete audit_log rows older than this many days. 0 keeps everything for ever,
+reverse_dns_timeout = "2s"          # ACME_PROXY_AUDIT__REVERSE_DNS_TIMEOUT
+# Delete audit_log rows older than this. "0s" keeps everything for ever,
 # which is the right default for a trail whose value is that it is complete;
 # set it where a retention policy says otherwise. `acme-proxy audit cleanup
 # --older-than <days>` is the same sweep run by hand.
-retention_days = 0                  # ACME_PROXY_AUDIT__RETENTION_DAYS
+retention = "0s"                    # ACME_PROXY_AUDIT__RETENTION
 
 [jobs]
 # The durable background-work queue: the `jobs` table plus the one runner that
@@ -341,7 +341,7 @@ retention_days = 0                  # ACME_PROXY_AUDIT__RETENTION_DAYS
 # *scheduled* work: a backoff coming due, a periodic sweep firing. An enqueue
 # wakes the runner directly, so a relay queued by finalize starts immediately
 # whatever this says.
-poll_interval_ms = 1000             # ACME_PROXY_JOBS__POLL_INTERVAL_MS
+poll_interval = "1s"                # ACME_PROXY_JOBS__POLL_INTERVAL
 # How many jobs may run at once. A restart after an upstream outage that left a
 # few thousand orders in flight would otherwise become a few thousand concurrent
 # pollers against one CA, which is how a recoverable backlog turns into a
@@ -355,19 +355,19 @@ max_concurrent = 8                  # ACME_PROXY_JOBS__MAX_CONCURRENT
 # backlog already waiting.
 max_attempts = 5                    # ACME_PROXY_JOBS__MAX_ATTEMPTS
 # The first retry delay; each subsequent one doubles, up to the ceiling below.
-retry_base_seconds = 30             # ACME_PROXY_JOBS__RETRY_BASE_SECONDS
+retry_base = "30s"                  # ACME_PROXY_JOBS__RETRY_BASE
 # Where the doubling stops. An hour sits well under the default order lifetime,
 # which keeps a job's own deadline the binding constraint rather than this.
-retry_max_seconds = 3600            # ACME_PROXY_JOBS__RETRY_MAX_SECONDS
+retry_max = "1h"                    # ACME_PROXY_JOBS__RETRY_MAX
 # The default budget for one attempt, and therefore how long a claim is held
 # before another runner may take the row. A handler needing a different one says
-# so itself; the relay asks for signer.relay.poll_timeout_secs.
-lease_seconds = 300                 # ACME_PROXY_JOBS__LEASE_SECONDS
-# Delete settled job rows older than this many days. Unlike audit.retention_days
+# so itself; the relay asks for signer.relay.poll_timeout.
+lease = "5m"                        # ACME_PROXY_JOBS__LEASE
+# Delete settled job rows older than this. Unlike audit.retention
 # this defaults to non-zero: a finished job is a receipt, not evidence, and the
-# trail that has to be complete is audit_log's. 0 keeps everything for ever and
+# trail that has to be complete is audit_log's. "0s" keeps everything for ever and
 # stops the sweep being scheduled at all.
-retention_days = 7                  # ACME_PROXY_JOBS__RETENTION_DAYS
+retention = "7d"                    # ACME_PROXY_JOBS__RETENTION
 
 [metrics]
 # The Prometheus exposition, on a listener of its own -- a third socket, not a
@@ -407,10 +407,10 @@ span_events = "none"                # ACME_PROXY_LOGGING__SPAN_EVENTS
 # format's reserved keys.
 flatten_event = false               # ACME_PROXY_LOGGING__FLATTEN_EVENT
 
-[order]   # [per-profile] — a [profiles.<name>] block may override these
+[order]   # [per-endpoint] — an [endpoints.<name>] block may override these
 # Validity window for ACME order objects in seconds (RFC 8555 §7.1.3).
 # This defines the order's lifetime, not the resulting certificate's validity.
-validity_seconds = 604800           # ACME_PROXY_ORDER__VALIDITY_SECONDS
+validity = "7d"                     # ACME_PROXY_ORDER__VALIDITY
 # Most identifiers one newOrder may name. The only other bound is
 # server.max_body_bytes, which at ~30 bytes per identifier admits some four
 # thousand names in one request -- and each becomes an authorization plus a
@@ -420,17 +420,17 @@ validity_seconds = 604800           # ACME_PROXY_ORDER__VALIDITY_SECONDS
 # is refused as `malformed`.
 max_identifiers = 100               # ACME_PROXY_ORDER__MAX_IDENTIFIERS
 # Days an order is kept AFTER it expires, before the daily retention sweep
-# deletes it and cascades to its authorizations and challenges. 0 keeps
+# deletes it and cascades to its authorizations and challenges. "0s" keeps
 # everything for ever.
 #
 # A `valid` order is NEVER swept, whatever its age: its row is how revokeCert
 # and the CRL find a certificate by serial, and what RFC 9773 renewal
 # information is derived from. Only orders that ended some other way -- invalid,
 # or abandoned pending/ready/processing -- are eligible, and only once their own
-# `expires` is this many days behind, by which point no client can act on them.
-retention_days = 30                 # ACME_PROXY_ORDER__RETENTION_DAYS
+# `expires` is this far behind, by which point no client can act on them.
+retention = "30d"                   # ACME_PROXY_ORDER__RETENTION
 
-[signer]   # [per-profile] — a [profiles.<name>] block may override these
+[signer]   # [per-endpoint] — an [endpoints.<name>] block may override these
 # The issuance backend to use.
 #   "local_ca" — this server IS the CA: it signs every certificate itself.
 #   "relay"    — this server RELAYS to an upstream ACME server, becoming a
@@ -448,9 +448,10 @@ cert_path = "ca.pem"                # ACME_PROXY_SIGNER__LOCAL_CA__CERT_PATH
 key_path  = "ca.key"                # ACME_PROXY_SIGNER__LOCAL_CA__KEY_PATH
 # Key algorithm for the CA (e.g., "ecdsa-p256").
 key_type  = "ecdsa-p256"            # ACME_PROXY_SIGNER__LOCAL_CA__KEY_TYPE
-# The validity period of issued LEAF certificates in days.
+# The validity period of issued LEAF certificates: a ceiling no client can
+# raise, so "160h" issues only short-lived certificates. "1h" at least.
 # Distinct from the order's lifetime defined in [order].
-leaf_validity_days = 90             # ACME_PROXY_SIGNER__LOCAL_CA__LEAF_VALIDITY_DAYS
+leaf_validity = "90d"               # ACME_PROXY_SIGNER__LOCAL_CA__LEAF_VALIDITY
 # Where the CA's certificate revocation list (RFC 5280) is written; served at
 # GET /crl and regenerated on every revocation and on every startup.
 crl_path = "ca.crl"                 # ACME_PROXY_SIGNER__LOCAL_CA__CRL_PATH
@@ -459,13 +460,13 @@ crl_path = "ca.crl"                 # ACME_PROXY_SIGNER__LOCAL_CA__CRL_PATH
 # is why a leaf says nothing about revocation until this is set.
 #
 # Nothing derives it: the URL is frozen into every certificate signed while it
-# is set, and this server's own CRL lives at {base_url}/profile/<name>/crl
-# BEHIND that profile's filter chain — an address-based policy would refuse it
+# is set, and this server's own CRL lives at {base_url}/endpoint/<name>/crl
+# BEHIND that endpoint's filter chain — an address-based policy would refuse it
 # to exactly the relying parties meant to read it. Name a URL you know is
 # publicly reachable (a webroot or CDN copy of crl_path is the usual answer).
 # Several entries mean one CRL reachable at several places, not several CRLs.
 # http:// is fine and idiomatic here: fetching a signed CRL over TLS invites a
-# validation loop. Two profiles sharing one CA share this list too.
+# validation loop. Two endpoints sharing one CA share this list too.
 crl_distribution_points = []        # ACME_PROXY_SIGNER__LOCAL_CA__CRL_DISTRIBUTION_POINTS
 # Where a relying party can fetch THIS CA's own certificate, written into every
 # issued leaf as authorityInfoAccess / caIssuers (RFC 5280 §4.2.2.1). Empty
@@ -483,6 +484,17 @@ ca_issuer_urls = []                 # ACME_PROXY_SIGNER__LOCAL_CA__CA_ISSUER_URL
 #              error, never a silent fallback to the file key.
 # Anything else is a startup error.
 key_source = "file"                 # ACME_PROXY_SIGNER__LOCAL_CA__KEY_SOURCE
+# The ACME profile (below) an order naming none is issued under. Empty issues
+# it under leaf_validity, with no profile recorded. Must name a defined profile.
+default_profile = ""                # ACME_PROXY_SIGNER__LOCAL_CA__DEFAULT_PROFILE
+
+# ACME profiles (draft-ietf-acme-profiles): named lifetimes a client may pick
+# in newOrder, listed in the directory's meta.profiles. None by default. A
+# client naming one not defined here is refused (invalidProfile), so defining
+# only "shortlived" and making it the default_profile issues nothing else.
+#   [signer.local_ca.profiles.shortlived]
+#   description   = "160-hour certificate"  # ..._PROFILES__<NAME>__DESCRIPTION
+#   leaf_validity = "160h"                  # ..._PROFILES__<NAME>__LEAF_VALIDITY
 
 [signer.local_ca.subject]
 # Overrides for the autogenerated CA's X.509 Subject (Distinguished Name).
@@ -587,10 +599,15 @@ contact = []                        # ACME_PROXY_SIGNER__RELAY__CONTACT
 challenge_strategy = "bypass"       # ACME_PROXY_SIGNER__RELAY__CHALLENGE_STRATEGY
 # How often to poll the upstream order while it resolves. The upstream's own
 # Retry-After takes precedence when it sends one.
-poll_interval_ms = 2000             # ACME_PROXY_SIGNER__RELAY__POLL_INTERVAL_MS
+poll_interval = "2s"                # ACME_PROXY_SIGNER__RELAY__POLL_INTERVAL
 # Total budget for one upstream issuance. On expiry the local order is marked
 # invalid with an explicit timeout reason, never left processing forever.
-poll_timeout_secs = 300             # ACME_PROXY_SIGNER__RELAY__POLL_TIMEOUT_SECS
+poll_timeout = "5m"                 # ACME_PROXY_SIGNER__RELAY__POLL_TIMEOUT
+# The ACME profile (draft-ietf-acme-profiles) every upstream order asks for,
+# whatever a client named — e.g. "shortlived" at Let's Encrypt. It must be one
+# the upstream's directory advertises, or the worker refuses to start. Empty
+# relays the upstream's own profiles to clients and passes each choice through.
+profile = ""                        # ACME_PROXY_SIGNER__RELAY__PROFILE
 
 [signer.relay.eab]
 # This proxy's own upstream External Account Binding credential (RFC 8555
@@ -653,14 +670,14 @@ tsig_algorithm = "hmac-sha256"      # ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__
 # authorization invalid for good, and the client's order fails with it.
 #   "none"  — trigger right after the update (the default). Right when the
 #             update server is itself what the CA asks.
-#   "delay" — sleep delay_secs first. For a provider that accepts an update
+#   "delay" — sleep delay first. For a provider that accepts an update
 #             before serving it (an API behind an RFC 2136 bridge), or
 #             secondaries that lag the primary.
 mode = "none"                       # ACME_PROXY_SIGNER__RELAY__DNS01__PROPAGATION__MODE
-# Only read under mode = "delay". Must be less than poll_timeout_secs, which
+# Only read under mode = "delay". Must be less than poll_timeout, which
 # bounds the whole attempt — and the delay runs once PER NAME in the order, so
-# raise poll_timeout_secs for a multi-name order.
-delay_secs = 30                     # ACME_PROXY_SIGNER__RELAY__DNS01__PROPAGATION__DELAY_SECS
+# raise poll_timeout for a multi-name order.
+delay = "30s"                       # ACME_PROXY_SIGNER__RELAY__DNS01__PROPAGATION__DELAY
 
 [signer.custom]
 # Only read when backend = "custom" (above). Delegates issuance and
@@ -669,7 +686,7 @@ delay_secs = 30                     # ACME_PROXY_SIGNER__RELAY__DNS01__PROPAGATI
 #
 # An empty script_path is a startup error, the same as a `custom` filter check.
 script_path = ""                    # ACME_PROXY_SIGNER__CUSTOM__SCRIPT_PATH
-timeout_ms = 5000                   # ACME_PROXY_SIGNER__CUSTOM__TIMEOUT_MS
+timeout = "5s"                      # ACME_PROXY_SIGNER__CUSTOM__TIMEOUT
 args = []                           # ACME_PROXY_SIGNER__CUSTOM__ARGS
 #
 # Whether the script also answers the "crl" hook (GET /crl) and the
@@ -747,19 +764,19 @@ supports_renewal_info = false        # ACME_PROXY_SIGNER__CUSTOM__SUPPORTS_RENEW
 # a custom signer script has no business reading it.
 #
 # One process is spawned per invocation. A script still running when
-# timeout_ms expires is killed, not left behind.
+# timeout expires is killed, not left behind.
 #
 # Example (commented out, so this file still describes the all-defaults
 # configuration, i.e. backend = "local_ca" and script_path = ""):
 #
 # [signer.custom]
 # script_path = "/etc/acme-proxy/signer/issue.sh"
-# timeout_ms = 5000
+# timeout = "5s"
 # args = []
 # supports_crl = true
 # supports_renewal_info = false
 
-[challenge]   # [per-profile] — a [profiles.<name>] block may override these
+[challenge]   # [per-endpoint] — an [endpoints.<name>] block may override these
 # Which challenge types each new authorization offers, in the order they appear
 # in the authorization object. The client picks one of them to satisfy.
 # Known names: "http-01", "dns-01", "tls-alpn-01".
@@ -795,7 +812,7 @@ enabled = ["http-01"]               # ACME_PROXY_CHALLENGE__ENABLED
 bypass = false                      # ACME_PROXY_CHALLENGE__BYPASS
 # Budget for one validation attempt. The trigger queues the work and answers
 # `processing`, so this bounds a job attempt in the runner rather than a request.
-timeout_ms = 5000                   # ACME_PROXY_CHALLENGE__TIMEOUT_MS
+timeout = "5s"                      # ACME_PROXY_CHALLENGE__TIMEOUT
 # How many of one account's challenges may be validating at once; 0 is no limit.
 # A trigger over the cap is answered 429 rateLimited with a Retry-After, and the
 # challenge stays pending, so the client simply asks again.
@@ -815,7 +832,7 @@ https_port = 443                    # ACME_PROXY_CHALLENGE__HTTP_01__HTTPS_PORT
 #
 # It does mean the server issues requests wherever a client points a Location
 # header. Three things keep that contained: only http/https and only the two
-# ports above are followed, the whole chain shares timeout_ms, and a mismatching
+# ports above are followed, the whole chain shares timeout, and a mismatching
 # response body is NEVER echoed back to the client — so a redirect cannot be used
 # to read internal pages. On a network where even the request is unwelcome, set
 # this to false.
@@ -839,7 +856,7 @@ max_response_bytes = 4096           # ACME_PROXY_CHALLENGE__HTTP_01__MAX_RESPONS
 # that is already there.
 port = 443                          # ACME_PROXY_CHALLENGE__TLS_ALPN_01__PORT
 
-[filter]   # [per-profile] — a [profiles.<name>] block may override these
+[filter]   # [per-endpoint] — an [endpoints.<name>] block may override these
 # Request filtering: which clients may reach the server, and which names they
 # may have certified. Independent of [challenge] above, and the only access
 # control left when challenge.bypass is on — with it set, anyone who can reach
@@ -890,7 +907,7 @@ forwarded_header = "x-forwarded-for"  # ACME_PROXY_FILTER__FORWARDED_HEADER
 #   custom        shell out to an operator-supplied script
 #
 # Each name must match ^[a-z0-9-]+$ — lowercase letters, digits and `-`, the
-# same restriction profile names have. Reason: a name is also an environment
+# same restriction endpoint names have. Reason: a name is also an environment
 # variable segment (ACME_PROXY_FILTER__CHECK__<NAME>__...), and the config crate
 # lowercases those, so e.g. "MgmtNet" in this file and
 # "ACME_PROXY_FILTER__CHECK__MGMTNET__..." would silently become TWO different
@@ -900,7 +917,7 @@ forwarded_header = "x-forwarded-for"  # ACME_PROXY_FILTER__FORWARDED_HEADER
 # A check defined here but named by no selected rule is never built: it opens no
 # connection, validates nothing, and is reported once at startup as
 # `filter_check_unused`. That is deliberate — a global [filter] section can hold
-# a library of checks and each profile pick the subset its `rules` names.
+# a library of checks and each endpoint pick the subset its `rules` names.
 #
 # Setting a key that belongs to another type is a STARTUP ERROR naming both, so
 # `script_path` on an `allowed_ip` check stops the server rather than being read
@@ -961,7 +978,7 @@ forwarded_header = "x-forwarded-for"  # ACME_PROXY_FILTER__FORWARDED_HEADER
 # rules = ["public", "mgmt-bypass", "inventory-owned"]
 #
 # # Relying parties fetching the CRL are not the ACME clients you allowlisted,
-# # and /crl is served by the profile router — so an address-based policy
+# # and /crl is served by the endpoint router — so an address-based policy
 # # without this makes revocation checking fail for everyone outside it.
 # [filter.check.public-paths]
 # type  = "path"
@@ -995,12 +1012,12 @@ forwarded_header = "x-forwarded-for"  # ACME_PROXY_FILTER__FORWARDED_HEADER
 # [filter.check.has-ptr]
 # type                    = "reverse_dns"
 # require_forward_confirm = true
-# timeout_ms              = 2000
+# timeout              = "2s"
 #
 # [filter.check.check-network]
 # type        = "custom"
 # script_path = "/etc/acme-proxy/filters/check-network.sh"
-# timeout_ms  = 5000
+# timeout  = "5s"
 # pass_stdin  = true
 # args        = []
 #
@@ -1053,10 +1070,10 @@ forwarded_header = "x-forwarded-for"  # ACME_PROXY_FILTER__FORWARDED_HEADER
 #
 # One process is spawned per custom check per hook invocation, i.e. per
 # non-exempt request for the connection hook: keep each script cheap, and keep
-# timeout_ms tight. A script still running when timeout_ms expires is killed,
+# timeout tight. A script still running when timeout expires is killed,
 # not left behind.
 
-[ipam]   # [per-profile] — a [profiles.<name>] block may override these
+[ipam]   # [per-endpoint] — an [endpoints.<name>] block may override these
 # The IP address management inventory an `ipam` filter check consults.
 #
 # Where an `identifiers` check answers "may anyone here have this name?", an
@@ -1091,7 +1108,7 @@ backend = ""                        # ACME_PROXY_IPAM__BACKEND
 # open. Reported as a server error rather than a denial, since the server
 # failed to decide. This runs inside newOrder and finalize, so it is also part
 # of those requests' worst case.
-timeout_ms = 5000                   # ACME_PROXY_IPAM__TIMEOUT_MS
+timeout = "5s"                      # ACME_PROXY_IPAM__TIMEOUT
 
 [ipam.netbox]
 # Where the names come from. Empty, or an unknown entry, is a startup error —
@@ -1213,7 +1230,7 @@ insecure_skip_verify = false        # ACME_PROXY_IPAM__PHPIPAM__INSECURE_SKIP_VE
 #             ignored.
 #   anything  the script failed, which is the SERVER failing to decide: a
 #   else      retryable 500, never a denial. Same for a script that cannot be
-#             spawned or that runs past timeout_ms. The first non-empty line of
+#             spawned or that runs past timeout. The first non-empty line of
 #             stdout (else stderr) is the reason logged.
 #
 # An empty script_path is a startup error, the same as [signer.custom] and
@@ -1226,10 +1243,10 @@ script_path = ""                    # ACME_PROXY_IPAM__CUSTOM__SCRIPT_PATH
 # One script can serve several deployments by branching on them.
 args = []                           # ACME_PROXY_IPAM__CUSTOM__ARGS
 #
-# There is deliberately NO timeout_ms here: ipam.timeout_ms above is the budget
+# There is deliberately NO timeout here: ipam.timeout above is the budget
 # the whole lookup runs under, and it is what kills the child at the deadline.
 
-[eab]   # [per-profile] — a [profiles.<name>] block may override these
+[eab]   # [per-endpoint] — an [endpoints.<name>] block may override these
 # Require External Account Binding (RFC 8555 §7.3.4) on every newAccount that
 # would create an account. A request missing it gets 400
 # externalAccountRequired; one that is malformed, unknown, revoked, or fails to
@@ -1245,11 +1262,11 @@ args = []                           # ACME_PROXY_IPAM__CUSTOM__ARGS
 # never through this file: a credential must be revocable without a restart.
 enabled = false                     # ACME_PROXY_EAB__ENABLED
 
-[meta]   # [per-profile] — a [profiles.<name>] block may override these
+[meta]   # [per-endpoint] — an [endpoints.<name>] block may override these
 # The optional `meta` members of the directory object (RFC 8555 §7.1.1). All
 # empty by default; an empty one is omitted from the directory rather than
-# advertised blank. Like every other profile section, these can be overridden
-# per profile ([profiles.<name>.meta]) — two endpoints on one process can have
+# advertised blank. Like every other endpoint section, these can be overridden
+# per endpoint ([endpoints.<name>.meta]) — two endpoints on one process can have
 # different terms.
 
 # A URL identifying this endpoint's current terms of service (§7.1.1).
@@ -1272,8 +1289,8 @@ website = ""                        # ACME_PROXY_META__WEBSITE
 # private networks where public CAA policy is not the trust anchor.
 caa_identities = []                 # ACME_PROXY_META__CAA_IDENTITIES
 
-[notify]   # [per-profile] — a [profiles.<name>] block may override these
-# Operator notifications on lifecycle events: a profile mounting at startup,
+[notify]   # [per-endpoint] — an [endpoints.<name>] block may override these
+# Operator notifications on lifecycle events: an endpoint mounting at startup,
 # account creation/deactivation, certificate issuance/revocation, and a
 # challenge validation failure. Dispatch is fire-and-forget — a notify
 # backend can never fail or delay the ACME response that triggered it; any
@@ -1316,22 +1333,22 @@ to = []                             # ACME_PROXY_NOTIFY__EMAIL__TO
 # list field in this file treats empty as OFF, so reusing that convention
 # here would silently mean "no events" the moment this is set to [].
 # "certificates_expiring" is the periodic digest below, which sends nothing
-# until notify.expiry.lead_days is set, so leaving it listed costs nothing.
+# until notify.expiry.lead is set, so leaving it listed costs nothing.
 # "account_certificates_expiring" is its per-account cut, sent only with
 # notify.expiry.contact set, and only ever by this email backend.
 # "admin_sign_in" / "admin_credential_changed" fire only on the process-wide
-# [admin.notify] dispatcher (see below), never on a profile's, so listing them
-# on a per-profile backend costs nothing either.
-events = ["profile_mounted", "account_created", "account_deactivated",
+# [admin.notify] dispatcher (see below), never on an endpoint's, so listing them
+# on a per-endpoint backend costs nothing either.
+events = ["endpoint_mounted", "account_created", "account_deactivated",
           "certificate_issued", "certificate_revoked", "challenge_failed",
           "certificates_expiring", "account_certificates_expiring",
           "admin_sign_in", "admin_credential_changed"]
                                      # ACME_PROXY_NOTIFY__EMAIL__EVENTS
-timeout_ms = 5000                   # ACME_PROXY_NOTIFY__EMAIL__TIMEOUT_MS
+timeout = "5s"                      # ACME_PROXY_NOTIFY__EMAIL__TIMEOUT
 
 [notify.expiry]
 # The periodic digest of certificates approaching their expiry: ONE message
-# per profile per interval_days, listing what lapses inside lead_days.
+# per endpoint per interval, listing what lapses inside lead.
 #
 # Deliberately not one message per certificate. A renewal is a new order, so
 # the certificate it replaced still expires on schedule — a per-certificate
@@ -1340,12 +1357,13 @@ timeout_ms = 5000                   # ACME_PROXY_NOTIFY__EMAIL__TIMEOUT_MS
 # The digest lists the already-replaced ones too, annotated, so the entries
 # nobody has renewed are the ones that stand out.
 #
-# 0 (the default) is OFF — the job is never scheduled at all, the same shape
-# as audit.retention_days and jobs.retention_days.
-lead_days = 0                       # ACME_PROXY_NOTIFY__EXPIRY__LEAD_DAYS
-# How often the digest is sent. There is deliberately no per-certificate rate
-# limit beside it: the digest is the rate limit.
-interval_days = 7                   # ACME_PROXY_NOTIFY__EXPIRY__INTERVAL_DAYS
+# "0s" (the default) is OFF — the job is never scheduled at all, the same
+# shape as audit.retention and jobs.retention. Keep it well under the leaf
+# lifetime: with short-lived certificates a lead of days lists every live one.
+lead = "0s"                         # ACME_PROXY_NOTIFY__EXPIRY__LEAD
+# How often the digest is sent, at least once a day. There is deliberately no
+# per-certificate rate limit beside it: the digest is the rate limit.
+interval = "7d"                     # ACME_PROXY_NOTIFY__EXPIRY__INTERVAL
 # The most certificates one message lists. The number that matched is carried
 # whole regardless, so a truncated digest still says how many it did not name.
 max_entries = 50                    # ACME_PROXY_NOTIFY__EXPIRY__MAX_ENTRIES
@@ -1389,7 +1407,7 @@ contact_domains = []                # ACME_PROXY_NOTIFY__EXPIRY__CONTACT_DOMAINS
 # method = "POST"                     # POST (default), PUT or PATCH
 # body = '{"text": {{ message | tojson }}}'
 # events = ["certificate_issued", "certificate_revoked"]
-# timeout_ms = 5000
+# timeout = "5s"
 #
 # [notify.webhook.matrix.headers]     # ACME_PROXY_NOTIFY__WEBHOOK__MATRIX__HEADERS__AUTHORIZATION
 # Authorization = "Bearer syt_xxxxx"
@@ -1404,7 +1422,7 @@ contact_domains = []                # ACME_PROXY_NOTIFY__EXPIRY__CONTACT_DOMAINS
 #
 # Context via environment variables:
 #   ACME_NOTIFY_HOOK          - event kind, e.g. "certificate_issued"
-#   ACME_NOTIFY_PROFILE       - the profile name
+#   ACME_NOTIFY_ENDPOINT       - the endpoint name
 #   ACME_NOTIFY_CLIENT_IP     - client IP (or empty — always empty for the
 #                               asynchronous relay completion path,
 #                               which has no request in scope at all)
@@ -1425,14 +1443,14 @@ contact_domains = []                # ACME_PROXY_NOTIFY__EXPIRY__CONTACT_DOMAINS
 # script has no business reading them.
 #
 # One process is spawned per enabled script per event. A script still
-# running when timeout_ms expires is killed, not left behind.
+# running when timeout expires is killed, not left behind.
 #
 # Example (commented out, so this file still describes the all-defaults
 # configuration, i.e. custom_enabled = [] and no scripts configured):
 #
 # [notify.custom.slack]
 # script_path = "/etc/acme-proxy/notify/slack.sh"
-# timeout_ms = 5000
+# timeout = "5s"
 # args = []
 # events = ["certificate_issued", "certificate_revoked"]
 
@@ -1494,40 +1512,40 @@ contact_domains = []                # ACME_PROXY_NOTIFY__EXPIRY__CONTACT_DOMAINS
 # no_proxy = ["10.0.0.0/8", ".internal.example"]  # ACME_PROXY_PROXY__NO_PROXY
 
 # ---------------------------------------------------------------------------
-# Profiles: the ACME endpoints this server actually serves.
+# Endpoints: the ACME endpoints this server actually serves.
 # ---------------------------------------------------------------------------
 #
-# Everything above is the *base*. A profile is one ACME endpoint built from it:
+# Everything above is the *base*. An endpoint is one ACME endpoint built from it:
 # it inherits every [signer] / [filter] / [ipam] / [challenge] / [eab] /
 # [order] / [meta] / [notify] value above, key by key, and overrides only what
 # it states. So the
 # empty table below is a complete endpoint, identical to the configuration
 # above.
 #
-# At least one enabled profile is required — without one the server has nothing
+# At least one enabled endpoint is required — without one the server has nothing
 # to serve, and it says so at startup rather than answering 404 to everything.
 #
-# Each profile is mounted at /profile/<name>, derived from the name and never
+# Each endpoint is mounted at /endpoint/<name>, derived from the name and never
 # configured: that namespace is reserved, so an endpoint can never collide with
 # a server route (/health) present or future. The name is therefore public API
 # — renaming it invalidates every account and order URL its clients hold. Use
 # lowercase letters, digits and `-`.
 #
-# From the environment: ACME_PROXY_PROFILES__<NAME>__<SECTION>__<KEY>, e.g.
-# `ACME_PROXY_PROFILES__LE__SIGNER__BACKEND=relay`. A profile that
+# From the environment: ACME_PROXY_ENDPOINTS__<NAME>__<SECTION>__<KEY>, e.g.
+# `ACME_PROXY_ENDPOINTS__LE__SIGNER__BACKEND=relay`. An endpoint that
 # overrides nothing still needs one variable to exist at all — set
-# `ACME_PROXY_PROFILES__DEFAULT__ENABLED=true`.
+# `ACME_PROXY_ENDPOINTS__DEFAULT__ENABLED=true`.
 
-[profiles.default]
-# Mount this profile. Default true; set it to false to park an endpoint without
+[endpoints.default]
+# Mount this endpoint. Default true; set it to false to park an endpoint without
 # deleting its configuration.
-enabled = true                      # ACME_PROXY_PROFILES__DEFAULT__ENABLED
+enabled = true                      # ACME_PROXY_ENDPOINTS__DEFAULT__ENABLED
 
 # A second endpoint, relaying to a real upstream CA while keeping the filters
 # and challenge settings from the base above. Commented out because the example
 # must match the defaults it documents; uncomment and adapt.
 #
-# [profiles.le]
+# [endpoints.le]
 # signer.backend = "relay"
 # signer.relay.directory_url = "https://acme-v02.api.letsencrypt.org/directory"
 # signer.relay.account_key_path = "le_upstream.key"

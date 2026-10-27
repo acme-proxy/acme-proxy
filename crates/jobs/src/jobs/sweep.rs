@@ -92,24 +92,24 @@ const DAILY: Duration = Duration::from_secs(24 * 60 * 60);
 /// Which table a sweep deletes from, and what it needs to know to do it.
 ///
 /// `Clone` but not `Copy`: the order sweep carries one entry per mounted
-/// profile, `order.retention_days` being a per-profile key.
+/// endpoint, `order.retention` being a per-endpoint key.
 #[derive(Debug, Clone)]
 enum SweepTarget {
     /// Expired nonces.
     Nonces { ttl: Duration },
-    /// Audit rows past `audit.retention_days`.
-    AuditLog { retention_days: u64 },
+    /// Audit rows past `audit.retention`.
+    AuditLog { retention: Duration },
     /// Admin sessions past their absolute or idle deadline, and the login
     /// counters whose window has run out.
     AdminSessions {
         idle_timeout: Duration,
         login_window: Duration,
     },
-    /// Settled job rows past `jobs.retention_days`.
-    Jobs { retention_days: u64 },
-    /// Expired, non-`valid` orders past each profile's `order.retention_days`,
-    /// as `(profile, retention_days)`.
-    Orders { retention: Vec<(String, u64)> },
+    /// Settled job rows past `jobs.retention`.
+    Jobs { retention: Duration },
+    /// Expired, non-`valid` orders past each endpoint's `order.retention`, as
+    /// `(endpoint, retention)`.
+    Orders { retention: Vec<(String, Duration)> },
     /// http-01 key authorizations past their deadline.
     Http01Tokens,
 }
@@ -127,7 +127,7 @@ impl SweepJob {
     /// Runs every half TTL rather than every TTL: sweeping once per lifetime
     /// leaves a row alive for up to *twice* its TTL, so the table sits at roughly
     /// two TTLs' worth of traffic. Halving that costs one query per period.
-    /// Floored at 30s so a very short `nonce.ttl_seconds` cannot turn this into a
+    /// Floored at 30s so a very short `nonce.ttl` cannot turn this into a
     /// busy loop taking the WAL writer lock.
     #[must_use]
     pub fn nonces(database: Arc<Database>, ttl: Duration) -> Self {
@@ -139,13 +139,13 @@ impl SweepJob {
     }
 
     /// The audit-retention sweep. Registered only when
-    /// `audit.retention_days` is non-zero — `0` means "keep everything", which
+    /// `audit.retention` is non-zero — `"0s"` means "keep everything", which
     /// is a handler not registered rather than a `DELETE` with a cutoff at the
     /// epoch.
     #[must_use]
-    pub fn audit(database: Arc<Database>, retention_days: u64) -> Self {
+    pub fn audit(database: Arc<Database>, retention: Duration) -> Self {
         Self {
-            target: SweepTarget::AuditLog { retention_days },
+            target: SweepTarget::AuditLog { retention },
             interval: DAILY,
             database,
         }
@@ -174,16 +174,16 @@ impl SweepJob {
         }
     }
 
-    /// The order-retention sweep, one handler covering every mounted profile.
+    /// The order-retention sweep, one handler covering every mounted endpoint.
     ///
-    /// One handler and not one per profile because `JobRegistry::register`
+    /// One handler and not one per endpoint because `JobRegistry::register`
     /// refuses a second handler for a kind — the same constraint that makes
-    /// `SignerBackend::crl_refresher` hands over state rather than a job. Profiles
-    /// whose `order.retention_days` is `0` are simply absent from `retention`,
-    /// so "keep everything" stays a profile the sweep never touches rather than
+    /// `SignerBackend::crl_refresher` hands over state rather than a job. Endpoints
+    /// whose `order.retention` is zero are simply absent from `retention`,
+    /// so "keep everything" stays an endpoint the sweep never touches rather than
     /// a `DELETE` with a cutoff at the epoch.
     #[must_use]
-    pub fn orders(database: Arc<Database>, retention: Vec<(String, u64)>) -> Self {
+    pub fn orders(database: Arc<Database>, retention: Vec<(String, Duration)>) -> Self {
         Self {
             target: SweepTarget::Orders { retention },
             interval: DAILY,
@@ -191,7 +191,7 @@ impl SweepJob {
         }
     }
 
-    /// The expired http-01 token sweep. Registered only when some profile's
+    /// The expired http-01 token sweep. Registered only when some endpoint's
     /// signer backend publishes tokens, the way the CRL refresh is registered
     /// only when some backend keeps a CRL.
     #[must_use]
@@ -203,12 +203,12 @@ impl SweepJob {
         }
     }
 
-    /// The queue's own sweep. Registered only when `jobs.retention_days` is
+    /// The queue's own sweep. Registered only when `jobs.retention` is
     /// non-zero, for the same reason as the audit one.
     #[must_use]
-    pub fn jobs(database: Arc<Database>, retention_days: u64) -> Self {
+    pub fn jobs(database: Arc<Database>, retention: Duration) -> Self {
         Self {
-            target: SweepTarget::Jobs { retention_days },
+            target: SweepTarget::Jobs { retention },
             interval: DAILY,
             database,
         }
@@ -240,10 +240,10 @@ impl SweepJob {
                     }
                 }
             }
-            SweepTarget::AuditLog { retention_days } => {
+            SweepTarget::AuditLog { retention } => {
                 // The same cutoff arithmetic `audit cleanup --older-than` uses,
                 // so "older than N days" means one thing in the process.
-                let cutoff = acme_proxy_store::audit::audit_cutoff(*retention_days);
+                let cutoff = acme_proxy_store::audit::cutoff_before(*retention);
                 match acme_proxy_store::audit::AuditEntry::cleanup(cutoff, &self.database).await {
                     Ok(removed) => info!(
                         event = "audit_reaper_swept",
@@ -312,8 +312,8 @@ impl SweepJob {
                     }
                 }
             }
-            SweepTarget::Jobs { retention_days } => {
-                let cutoff = acme_proxy_store::audit::audit_cutoff(*retention_days);
+            SweepTarget::Jobs { retention } => {
+                let cutoff = acme_proxy_store::audit::cutoff_before(*retention);
                 if let Err(error) = Job::cleanup(cutoff, &self.database).await {
                     warn!(event = "job_retention_sweep_failed", outcome = "failure", error = %error);
                 }
@@ -334,23 +334,23 @@ impl SweepJob {
                 }
             }
             SweepTarget::Orders { retention } => {
-                // One statement per profile rather than one over all of them:
-                // the retention is per-profile, and a profile whose delete
+                // One statement per endpoint rather than one over all of them:
+                // the retention is per-endpoint, and an endpoint whose delete
                 // fails must not stop the others being swept.
-                for (profile, retention_days) in retention {
-                    let cutoff = acme_proxy_store::audit::audit_cutoff(*retention_days);
-                    match acme_proxy_store::order::Order::cleanup(profile, cutoff, &self.database)
+                for (endpoint, retention) in retention {
+                    let cutoff = acme_proxy_store::audit::cutoff_before(*retention);
+                    match acme_proxy_store::order::Order::cleanup(endpoint, cutoff, &self.database)
                         .await
                     {
                         Ok(removed) => info!(
                             event = "order_reaper_swept",
                             outcome = "success",
-                            profile = %profile,
+                            endpoint = %endpoint,
                             rows_removed = removed,
                             cutoff
                         ),
                         Err(error) => {
-                            error!(event = "order_reaper_failed", outcome = "failure", profile = %profile, error = %error);
+                            error!(event = "order_reaper_failed", outcome = "failure", endpoint = %endpoint, error = %error);
                         }
                     }
                 }
@@ -435,7 +435,7 @@ mod tests {
         let (database, _queue) = setup().await;
         let kinds = [
             SweepJob::nonces(database.clone(), Duration::from_secs(300)).kind(),
-            SweepJob::audit(database.clone(), 7).kind(),
+            SweepJob::audit(database.clone(), DAILY * 7).kind(),
             SweepJob::admin_sessions(
                 database.clone(),
                 Duration::from_secs(3600),
@@ -443,8 +443,8 @@ mod tests {
                 Duration::from_secs(300),
             )
             .kind(),
-            SweepJob::jobs(database.clone(), 7).kind(),
-            SweepJob::orders(database.clone(), vec![("default".to_string(), 30)]).kind(),
+            SweepJob::jobs(database.clone(), DAILY * 7).kind(),
+            SweepJob::orders(database.clone(), vec![("default".to_string(), DAILY * 30)]).kind(),
             SweepJob::http01_tokens(database).kind(),
         ];
         let unique: std::collections::BTreeSet<_> = kinds.iter().copied().collect();
@@ -496,8 +496,14 @@ mod tests {
         );
 
         // Daily, both of them.
-        assert_eq!(SweepJob::audit(database.clone(), 7).interval(), DAILY);
-        assert_eq!(SweepJob::jobs(database.clone(), 7).interval(), DAILY);
+        assert_eq!(
+            SweepJob::audit(database.clone(), DAILY * 7).interval(),
+            DAILY
+        );
+        assert_eq!(
+            SweepJob::jobs(database.clone(), DAILY * 7).interval(),
+            DAILY
+        );
 
         assert_eq!(SweepJob::http01_tokens(database).interval(), HOURLY);
     }
@@ -583,7 +589,7 @@ mod tests {
             .await
             .unwrap();
 
-        let handler = SweepJob::audit(database.clone(), 7);
+        let handler = SweepJob::audit(database.clone(), DAILY * 7);
         assert!(matches!(
             handler.run(&row(AUDIT_SWEEP_KIND)).await,
             JobOutcome::Reschedule(_)
@@ -684,7 +690,7 @@ mod tests {
              proves nothing"
         );
 
-        let handler = SweepJob::jobs(database.clone(), 7);
+        let handler = SweepJob::jobs(database.clone(), DAILY * 7);
         match handler.run(&row(RETENTION_JOB_KIND)).await {
             JobOutcome::Reschedule(delay) => assert_eq!(delay, DAILY),
             other => panic!("{other:?}"),
@@ -720,15 +726,15 @@ mod tests {
 
         for handler in [
             SweepJob::nonces(database.clone(), Duration::from_secs(300)),
-            SweepJob::audit(database.clone(), 7),
+            SweepJob::audit(database.clone(), DAILY * 7),
             SweepJob::admin_sessions(
                 database.clone(),
                 Duration::from_secs(3600),
                 43200,
                 Duration::from_secs(300),
             ),
-            SweepJob::jobs(database.clone(), 7),
-            SweepJob::orders(database.clone(), vec![("default".to_string(), 30)]),
+            SweepJob::jobs(database.clone(), DAILY * 7),
+            SweepJob::orders(database.clone(), vec![("default".to_string(), DAILY * 30)]),
             SweepJob::http01_tokens(database.clone()),
         ] {
             let kind = handler.kind();
@@ -827,10 +833,10 @@ mod tests {
         );
     }
 
-    /// A profile keeps its own history: the sweep is one handler, so a second
-    /// profile's rows must not go out with the first's.
+    /// An endpoint keeps its own history: the sweep is one handler, so a second
+    /// endpoint's rows must not go out with the first's.
     #[tokio::test]
-    async fn the_order_sweep_is_scoped_to_one_profile() {
+    async fn the_order_sweep_is_scoped_to_one_endpoint() {
         use acme_proxy_core::identifier::Identifier;
         use acme_proxy_store::account::Account;
         use acme_proxy_store::order::Order;
@@ -838,9 +844,9 @@ mod tests {
         let (database, _queue) = setup().await;
         let ancient = now_secs() - 400 * 24 * 60 * 60;
         let mut ids = Vec::new();
-        for (index, profile) in ["default", "other"].iter().enumerate() {
+        for (index, endpoint) in ["default", "other"].iter().enumerate() {
             let (account, _) = Account::find_or_create(
-                profile,
+                endpoint,
                 &[index as u8 + 40; 8],
                 vec![],
                 &acme_proxy_core::audit::ClientContext::default(),
@@ -849,7 +855,7 @@ mod tests {
             .await
             .unwrap();
             let order = Order::create(
-                profile,
+                endpoint,
                 account.id,
                 vec![Identifier::dns("example.com")],
                 ancient,
@@ -882,7 +888,7 @@ mod tests {
                 .await
                 .unwrap()
                 .is_some(),
-            "another profile's orders are not this profile's to delete"
+            "another endpoint's orders are not this endpoint's to delete"
         );
     }
 }

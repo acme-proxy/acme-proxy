@@ -869,8 +869,8 @@ mod tests {
             assert_eq!(row.actor_kind, "cli");
             assert_eq!(row.outcome, "success");
             assert_eq!(
-                row.profile, "",
-                "an operator action is not scoped to a profile"
+                row.endpoint, "",
+                "an operator action is not scoped to an endpoint"
             );
         }
     }

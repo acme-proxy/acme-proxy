@@ -26,7 +26,7 @@ body:
       label: Steps to reproduce
       description: The client command, if there was one, and what you did before it.
       placeholder: |
-        1. certbot certonly --server http://localhost:3000/profile/default/directory ...
+        1. certbot certonly --server http://localhost:3000/endpoint/default/directory ...
         2. ...
     validations:
       required: true
@@ -35,7 +35,7 @@ body:
     id: backend
     attributes:
       label: Signer backend
-      description: "`signer.backend` for the profile involved."
+      description: "`signer.backend` for the endpoint involved."
       options:
         - local_ca
         - relay (to an upstream ACME CA)

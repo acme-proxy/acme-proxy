@@ -57,10 +57,10 @@ struct RunnerConfig {
 impl RunnerConfig {
     fn from(config: &JobsConfig) -> Self {
         Self {
-            poll_interval: Duration::from_millis(config.poll_interval_ms),
-            lease: Duration::from_secs(config.lease_seconds),
-            retry_base: Duration::from_secs(config.retry_base_seconds),
-            retry_max: Duration::from_secs(config.retry_max_seconds),
+            poll_interval: config.poll_interval.as_std(),
+            lease: config.lease.as_std(),
+            retry_base: config.retry_base.as_std(),
+            retry_max: config.retry_max.as_std(),
             // Clamped rather than trusted: `Semaphore` panics above its own
             // ceiling, and this value now arrives from a reload as well as from
             // startup — a panic taking the runner down mid-flight is a great
@@ -140,8 +140,8 @@ pub fn spawn_runner(
 ///
 /// The reload path publishes into both cells rather than restarting the runner,
 /// and they carry different halves of `[jobs]`. The **registry** carries the
-/// values a handler captured: sweep cutoffs (`nonce.ttl_seconds`,
-/// `audit.retention_days`, `jobs.retention_days`) are built into `SweepJob`s, so
+/// values a handler captured: sweep cutoffs (`nonce.ttl`,
+/// `audit.retention`, `jobs.retention`) are built into `SweepJob`s, so
 /// a changed retention only takes effect through a new registry — and one going
 /// `0 → N` registers a handler that did not exist at all, which is why
 /// [`recover`](JobHandler::recover) runs again for kinds the previous generation
@@ -224,7 +224,7 @@ async fn run_loop(
 
         // Idle: whichever comes first. `notified()` is what keeps a job queued
         // by a request from waiting on `poll_interval`; the two cell arms are
-        // what make a *lowered* `poll_interval_ms` land at once rather than
+        // what make a *lowered* `poll_interval` land at once rather than
         // after one more sleep at the old, longer value; and the permit arm is
         // how a saturated pool resumes the moment a slot frees.
         //
@@ -414,7 +414,7 @@ async fn drain_ready(
 ///
 /// The task is what contains a **panic**: without it, a handler that panics
 /// unwinds this whole future, nothing settles the row, and the job sits
-/// `running` until its lease expires — up to `jobs.lease_seconds` of a
+/// `running` until its lease expires — up to `jobs.lease` of a
 /// concurrency slot spent on work that has already failed. Caught here it is an
 /// ordinary retry, and the panic is logged as the bug it always is.
 ///
@@ -647,7 +647,7 @@ async fn stop(runner_id: &str, database: &Database, permits: &Permits) {
 /// into a repeating thundering herd against the service that is already
 /// struggling. A quarter of the window is enough to spread a few hundred rows.
 ///
-/// It only ever subtracts, so `jobs.retry_max_seconds` is an honest ceiling: a
+/// It only ever subtracts, so `jobs.retry_max` is an honest ceiling: a
 /// key documented as "where the doubling stops" must not be exceeded by the
 /// jitter that follows it, and a retry that comes marginally early costs
 /// nothing.
@@ -854,9 +854,9 @@ mod tests {
 
     fn fast() -> JobsConfig {
         JobsConfig {
-            poll_interval_ms: 5,
-            retry_base_seconds: 0,
-            retry_max_seconds: 0,
+            poll_interval: acme_proxy_core::config::ConfigDuration::from_millis(5),
+            retry_base: acme_proxy_core::config::ConfigDuration::from_secs(0),
+            retry_max: acme_proxy_core::config::ConfigDuration::from_secs(0),
             ..JobsConfig::default()
         }
     }
@@ -979,8 +979,8 @@ mod tests {
     #[tokio::test]
     async fn a_retry_that_would_fall_past_the_deadline_retires_instead() {
         let config = JobsConfig {
-            retry_base_seconds: 600,
-            retry_max_seconds: 600,
+            retry_base: acme_proxy_core::config::ConfigDuration::from_secs(600),
+            retry_max: acme_proxy_core::config::ConfigDuration::from_secs(600),
             ..fast()
         };
         let queue = queue_with(&config).await;
@@ -1031,7 +1031,7 @@ mod tests {
     /// A panic must land as an ordinary retry **immediately**, not wedge the
     /// lease until it expires. Without the task boundary in `run_attempt` the
     /// unwind takes the runner's own future with it, nothing settles the row,
-    /// and a concurrency slot is spent for a full `lease_seconds` on work that
+    /// and a concurrency slot is spent for a full `lease` on work that
     /// has already failed.
     #[tokio::test]
     async fn a_panicking_handler_is_retried_without_waiting_out_its_lease() {
@@ -1067,14 +1067,14 @@ mod tests {
         );
     }
 
-    /// A handler budget longer than `jobs.lease_seconds` must reach the row
+    /// A handler budget longer than `jobs.lease` must reach the row
     /// before the attempt starts, or the row expires mid-attempt and another
     /// runner reclaims it while this one still works it.
     #[tokio::test]
     async fn a_budget_past_the_default_lease_stretches_the_row_s_lease() {
         let config = fast();
         let queue = queue_with(&config).await;
-        let budget = Duration::from_secs(config.lease_seconds * 3);
+        let budget = Duration::from_secs(config.lease.as_secs() * 3);
         let handler =
             Scripted::with_budget("test", vec![Script::Sleep(Duration::from_secs(30))], budget);
         queue.enqueue(JobSpec::now("test", "k")).await.unwrap();
@@ -1152,7 +1152,7 @@ mod tests {
     async fn an_enqueue_wakes_the_runner_without_waiting_for_a_tick() {
         let config = JobsConfig {
             // Long enough that a tick cannot be what ran the job.
-            poll_interval_ms: 60_000,
+            poll_interval: acme_proxy_core::config::ConfigDuration::from_millis(60_000),
             ..JobsConfig::default()
         };
         let queue = queue_with(&config).await;
@@ -1187,7 +1187,7 @@ mod tests {
     async fn a_swapped_registry_claims_a_kind_the_previous_one_did_not_have() {
         let config = JobsConfig {
             // Long enough that a poll tick cannot be what noticed the swap.
-            poll_interval_ms: 60_000,
+            poll_interval: acme_proxy_core::config::ConfigDuration::from_millis(60_000),
             ..JobsConfig::default()
         };
         let queue = queue_with(&config).await;
@@ -1269,7 +1269,7 @@ mod tests {
         assert_eq!(permits.semaphore.available_permits(), 1);
     }
 
-    /// A lowered `jobs.poll_interval_ms` must not have to wait out the old one.
+    /// A lowered `jobs.poll_interval` must not have to wait out the old one.
     ///
     /// This is the whole reason the config cell has a `select!` arm rather than
     /// only being read at the top of the pass: an operator who drops the interval
@@ -1283,7 +1283,7 @@ mod tests {
     #[tokio::test]
     async fn a_lowered_poll_interval_lands_without_waiting_out_the_old_one() {
         let config = JobsConfig {
-            poll_interval_ms: 600_000,
+            poll_interval: acme_proxy_core::config::ConfigDuration::from_millis(600_000),
             ..JobsConfig::default()
         };
         let queue = queue_with(&config).await;
@@ -1310,7 +1310,7 @@ mod tests {
         );
 
         config_tx.send_replace(Arc::new(JobsConfig {
-            poll_interval_ms: 5,
+            poll_interval: acme_proxy_core::config::ConfigDuration::from_millis(5),
             ..JobsConfig::default()
         }));
 
@@ -1336,7 +1336,7 @@ mod tests {
     #[tokio::test]
     async fn a_raised_max_concurrent_reaches_a_saturated_pool() {
         let config = JobsConfig {
-            poll_interval_ms: 600_000,
+            poll_interval: acme_proxy_core::config::ConfigDuration::from_millis(600_000),
             max_concurrent: 1,
             ..JobsConfig::default()
         };
@@ -1357,7 +1357,7 @@ mod tests {
         assert_eq!(handler.peak(), 1, "one slot means one job at a time");
 
         config_tx.send_replace(Arc::new(JobsConfig {
-            poll_interval_ms: 600_000,
+            poll_interval: acme_proxy_core::config::ConfigDuration::from_millis(600_000),
             max_concurrent: 4,
             ..JobsConfig::default()
         }));
@@ -1393,9 +1393,9 @@ mod tests {
     #[tokio::test]
     async fn a_runner_over_fixed_cells_does_not_spin() {
         let config = JobsConfig {
-            poll_interval_ms: 600_000,
-            retry_base_seconds: 0,
-            retry_max_seconds: 0,
+            poll_interval: acme_proxy_core::config::ConfigDuration::from_millis(600_000),
+            retry_base: acme_proxy_core::config::ConfigDuration::from_secs(0),
+            retry_max: acme_proxy_core::config::ConfigDuration::from_secs(0),
             ..JobsConfig::default()
         };
         let queue = queue_with(&config).await;
@@ -1425,7 +1425,7 @@ mod tests {
     #[tokio::test]
     async fn shutdown_releases_the_leases_this_runner_holds() {
         let config = JobsConfig {
-            poll_interval_ms: 5,
+            poll_interval: acme_proxy_core::config::ConfigDuration::from_millis(5),
             ..JobsConfig::default()
         };
         let queue = queue_with(&config).await;
@@ -1539,7 +1539,7 @@ mod tests {
         }
     }
 
-    /// `retry_max_seconds` is documented as where the doubling stops, so no
+    /// `retry_max` is documented as where the doubling stops, so no
     /// amount of jitter or attempts may produce a delay past it.
     #[test]
     fn backoff_never_exceeds_the_ceiling_however_many_attempts_have_gone() {

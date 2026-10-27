@@ -159,7 +159,7 @@ async fn issue_relays_the_order_and_finalizes_it_locally() {
             order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
-            RequestedValidity::default(),
+            OrderRequest::default(),
         )
         .await
         .unwrap();
@@ -279,11 +279,11 @@ async fn an_unusable_upstream_chain_fails_the_order_permanently() {
 
 /// This is what actually proves the async-completion notification
 /// mechanism works, not just compiles: one shared backend serves two
-/// profiles, and `settle()` must dispatch `CertificateIssued` to the
-/// *owning* profile's dispatcher only — the other profile's recorder must
+/// endpoints, and `settle()` must dispatch `CertificateIssued` to the
+/// *owning* endpoint's dispatcher only — the other endpoint's recorder must
 /// stay empty.
 #[tokio::test(flavor = "multi_thread")]
-async fn settle_notifies_only_the_owning_profile() {
+async fn settle_notifies_only_the_owning_endpoint() {
     let chain = real_chain().await;
     let upstream = testsrv::start(Script {
         chain: chain.clone(),
@@ -297,11 +297,11 @@ async fn settle_notifies_only_the_owning_profile() {
     let recorder_a = Arc::new(RecordingNotifyBackend::new());
     let recorder_b = Arc::new(RecordingNotifyBackend::new());
     let mut notifiers: HashMap<String, Arc<NotifyDispatcher>> = HashMap::new();
-    for (profile, recorder) in [("a", &recorder_a), ("b", &recorder_b)] {
+    for (endpoint, recorder) in [("a", &recorder_a), ("b", &recorder_b)] {
         notifiers.insert(
-            profile.to_string(),
+            endpoint.to_string(),
             Arc::new(NotifyDispatcher::new(
-                profile,
+                endpoint,
                 vec![recording_slot(recorder.clone())],
                 queue.clone(),
             )),
@@ -324,7 +324,7 @@ async fn settle_notifies_only_the_owning_profile() {
             order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
-            RequestedValidity::default(),
+            OrderRequest::default(),
         )
         .await
         .unwrap();
@@ -347,11 +347,11 @@ async fn settle_notifies_only_the_owning_profile() {
     assert_eq!(
         events_a.len(),
         1,
-        "profile `a` must be notified exactly once"
+        "endpoint `a` must be notified exactly once"
     );
     match &events_a[0] {
         NotifyEvent::CertificateIssued(data) => {
-            assert_eq!(data.profile, "a");
+            assert_eq!(data.endpoint, "a");
             assert_eq!(data.order_id, order.id.to_string());
             assert!(data.client_ip.is_none(), "no request is in scope here");
         }
@@ -360,7 +360,7 @@ async fn settle_notifies_only_the_owning_profile() {
 
     assert!(
         recorder_b.events.lock().unwrap().is_empty(),
-        "profile `b` must not be notified of another profile's order"
+        "endpoint `b` must not be notified of another endpoint's order"
     );
 }
 
@@ -392,7 +392,7 @@ async fn issue_polls_until_the_upstream_settles() {
             order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
-            RequestedValidity::default(),
+            OrderRequest::default(),
         )
         .await
         .unwrap();
@@ -443,7 +443,7 @@ async fn an_upstream_order_missing_its_next_url_fails_the_order() {
                 order.id.to_string().as_str(),
                 &csr_der(),
                 &identifiers(),
-                RequestedValidity::default(),
+                OrderRequest::default(),
             )
             .await
             .unwrap();
@@ -480,7 +480,7 @@ async fn a_failing_upstream_marks_the_order_invalid() {
             order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
-            RequestedValidity::default(),
+            OrderRequest::default(),
         )
         .await
         .unwrap();
@@ -533,7 +533,7 @@ async fn a_transient_upstream_outage_is_retried_into_a_certificate() {
             order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
-            RequestedValidity::default(),
+            OrderRequest::default(),
         )
         .await
         .unwrap();
@@ -583,7 +583,7 @@ async fn an_upstream_that_refuses_the_order_is_not_retried() {
             order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
-            RequestedValidity::default(),
+            OrderRequest::default(),
         )
         .await
         .unwrap();
@@ -620,7 +620,7 @@ async fn a_stalled_upstream_times_out_and_invalidates_the_order() {
     let dir = TempDir::new("upstream");
     let db = database().await;
     let mut cfg = config(&upstream, &dir);
-    cfg.poll_timeout_secs = 1;
+    cfg.poll_timeout = acme_proxy_core::config::ConfigDuration::from_secs(1);
     let queue = test_queue(db.clone());
     let signer = RelaySigner::from_config(
         &cfg,
@@ -635,7 +635,7 @@ async fn a_stalled_upstream_times_out_and_invalidates_the_order() {
             order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
-            RequestedValidity::default(),
+            OrderRequest::default(),
         )
         .await
         .unwrap();
@@ -682,7 +682,7 @@ async fn an_upstream_bad_csr_surfaces_as_bad_csr() {
             order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
-            RequestedValidity::default(),
+            OrderRequest::default(),
         )
         .await
         .unwrap();
@@ -863,7 +863,7 @@ mod handler {
     /// Builds a backend with no runner: these tests call the handler by hand.
     ///
     /// The signer comes back beside the handler because `RelayJob` no longer
-    /// *is* one backend — it routes to whichever one the row's profile names —
+    /// *is* one backend — it routes to whichever one the row's endpoint names —
     /// so the tests that reach past the handler into `Inner` take it from here.
     async fn handler_for(db: Arc<Database>) -> (RelayJob, RelaySigner, Upstream, TempDir) {
         let upstream = testsrv::start(Script::default()).await;
@@ -877,13 +877,13 @@ mod handler {
         (handler, signer, upstream, dir)
     }
 
-    /// A claimed row for the one profile [`handler_for`] mounts.
+    /// A claimed row for the one endpoint [`handler_for`] mounts.
     ///
-    /// The `profile` member is what tells the handler which backend owns the
+    /// The `endpoint` member is what tells the handler which backend owns the
     /// row; a payload without it takes the order-row fallback instead, which
-    /// `multi_profile` covers on its own.
+    /// `multi_endpoint` covers on its own.
     fn job_on_default(order_id: &str) -> Job {
-        job(serde_json::json!({"order_id": order_id, "profile": "default"}))
+        job(serde_json::json!({"order_id": order_id, "endpoint": "default"}))
     }
 
     /// A claimed row, as the runner would hand one over.
@@ -975,8 +975,8 @@ mod handler {
     }
 
     /// The order context is best-effort on **both** members: an order that
-    /// cannot be read yields no bound and no profile, rather than refusing to
-    /// queue the work at all. A payload with no profile then takes the
+    /// cannot be read yields no bound and no endpoint, rather than refusing to
+    /// queue the work at all. A payload with no endpoint then takes the
     /// order-row fallback, which is the same read, later.
     #[tokio::test(flavor = "multi_thread")]
     async fn an_unreadable_order_yields_no_context_rather_than_a_refusal() {
@@ -985,14 +985,14 @@ mod handler {
 
         let missing = OrderContext::read(&super::order_id("ord-missing"), &signer.0).await;
         assert!(
-            missing.deadline.is_none() && missing.profile.is_none(),
+            missing.deadline.is_none() && missing.endpoint.is_none(),
             "a missing order names neither an expiry nor an endpoint"
         );
 
         db.close().await;
         let unreadable = OrderContext::read(&super::order_id("ord-1"), &signer.0).await;
         assert!(
-            unreadable.deadline.is_none() && unreadable.profile.is_none(),
+            unreadable.deadline.is_none() && unreadable.endpoint.is_none(),
             "an unreadable order degrades to no context, not to a refusal"
         );
     }
@@ -1012,7 +1012,7 @@ mod handler {
     /// With no mapping row the audit trail cannot name who asked, and says so:
     /// `Actor::system` and an empty client context, rather than inventing one.
     ///
-    /// Its payload deliberately names no profile, so this doubles as `abandon`
+    /// Its payload deliberately names no endpoint, so this doubles as `abandon`
     /// taking the order-row fallback all the way to a written audit row.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_retirement_with_no_mapping_row_is_attributed_to_the_system() {
@@ -1096,7 +1096,7 @@ async fn a_second_issue_for_one_order_does_not_open_a_second_upstream_order() {
                     order.id.to_string().as_str(),
                     &csr_der(),
                     &identifiers(),
-                    RequestedValidity::default(),
+                    OrderRequest::default(),
                 )
                 .await
                 .unwrap(),

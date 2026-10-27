@@ -11,8 +11,8 @@
 //! builds a backend, so the process parsing untrusted JWS and CSRs never holds
 //! one. This is the one place a backend is asked to issue.
 //!
-//! **One handler over every profile**, the [`SignerRevokeJob`] shape: a row names
-//! its order, the order names its profile, and the profile names the backend.
+//! **One handler over every endpoint**, the [`SignerRevokeJob`] shape: a row names
+//! its order, the order names its endpoint, and the endpoint names the backend.
 //!
 //! How each answer settles the row:
 //!
@@ -50,7 +50,7 @@ use acme_proxy_jobs::jobs::JobHandler;
 use acme_proxy_jobs::jobs::JobOutcome;
 use acme_proxy_jobs::jobs::JobSpec;
 use acme_proxy_signer::IssueOutcome;
-use acme_proxy_signer::RequestedValidity;
+use acme_proxy_signer::OrderRequest;
 use acme_proxy_signer::SignerBackend;
 use acme_proxy_signer::SignerError;
 use acme_proxy_signer::issuance::IssuanceError;
@@ -92,7 +92,7 @@ pub fn signer_issue_spec(
     JobSpec::now(SIGNER_ISSUE_KIND, order.id.to_string())
         .with_payload(serde_json::json!({
             "order_id": order.id.to_string(),
-            "profile": order.profile,
+            "endpoint": order.endpoint,
             "csr": BASE64_URL_SAFE_NO_PAD.encode(csr_der),
             "client": client.to_json(),
             "client_ip": client_ip.map(|ip| acme_proxy_core::client::canonical(ip).to_string()),
@@ -101,7 +101,7 @@ pub fn signer_issue_spec(
 }
 
 /// Issues the certificate a finalize request queued, at the backend of the
-/// order's profile.
+/// order's endpoint.
 pub struct SignerIssueJob {
     database: Arc<Database>,
     audit: Arc<Auditor>,
@@ -110,7 +110,7 @@ pub struct SignerIssueJob {
 }
 
 impl SignerIssueJob {
-    /// `signers` is this generation's backend per profile name — empty in a
+    /// `signers` is this generation's backend per endpoint name — empty in a
     /// process that runs no worker, which never claims a row.
     #[must_use]
     pub fn new(
@@ -127,9 +127,9 @@ impl SignerIssueJob {
         }
     }
 
-    /// The backend this process mounts for `profile`, if any.
-    fn signer(&self, profile: &str) -> Option<&Arc<dyn SignerBackend>> {
-        super::mounted(&self.signers, profile)
+    /// The backend this process mounts for `endpoint`, if any.
+    fn signer(&self, endpoint: &str) -> Option<&Arc<dyn SignerBackend>> {
+        super::mounted(&self.signers, endpoint)
     }
 
     /// A verdict on the order — its authority withdrawn, its CSR refused —
@@ -172,7 +172,7 @@ async fn authority_withdrawn(
     database: &Database,
 ) -> Result<Option<&'static str>, sqlx::Error> {
     let account =
-        Account::find_by_id(&order.profile, &order.account_id.to_string(), database).await?;
+        Account::find_by_id(&order.endpoint, &order.account_id.to_string(), database).await?;
     if account.is_none_or(|account| account.is_deactivated()) {
         return Ok(Some(
             "the account was deactivated before the certificate was issued",
@@ -247,23 +247,25 @@ impl JobHandler for SignerIssueJob {
                 return JobOutcome::Retry(format!("reading the order's authority failed: {error}"));
             }
         }
-        let Some(signer) = self.signer(&order.profile) else {
+        let Some(signer) = self.signer(&order.endpoint) else {
             return JobOutcome::Retry(format!(
-                "profile `{}` is not mounted by this process",
-                order.profile
+                "endpoint `{}` is not mounted by this process",
+                order.endpoint
             ));
         };
 
         let client = payload_client(job);
         // The order's own `notBefore`/`notAfter` (RFC 8555 §7.4), which the
-        // order object has always echoed back. The backend clamps or ignores
-        // them; see `RequestedValidity`.
-        let validity = RequestedValidity {
+        // order object has always echoed back, and the ACME profile `newOrder`
+        // accepted it under. The backend clamps or ignores the window; see
+        // `OrderRequest`.
+        let request = OrderRequest {
             not_before: order.not_before,
             not_after: order.not_after,
+            profile: order.profile.clone(),
         };
         let issued = signer
-            .issue(order_id, &csr_der, &order.identifiers, validity)
+            .issue(order_id, &csr_der, &order.identifiers, request)
             .await;
 
         match issued {
@@ -271,7 +273,7 @@ impl JobHandler for SignerIssueJob {
                 match record_issuance(&mut order, chain, &self.database).await {
                     Ok(serial) => {
                         info!(event = "order_finalized", outcome = "success", order_id = %order_id, cert_serial = %serial);
-                        let dispatcher = self.notifiers.get(&order.profile);
+                        let dispatcher = self.notifiers.get(&order.endpoint);
                         announce_issuance(
                             &order,
                             &serial,
@@ -348,6 +350,22 @@ impl JobHandler for SignerIssueJob {
                 )
                 .await
             }
+            // A profile the backend stopped offering between `newOrder` and
+            // now (a reload): a verdict on the order, like a bad CSR, rather
+            // than a certificate issued under some other policy.
+            Err(SignerError::InvalidProfile(profile)) => {
+                warn!(event = "order_finalize_invalid_profile", outcome = "failure", order_id = %order_id, profile = %profile);
+                self.refuse(
+                    &mut order,
+                    &Problem::invalid_profile(format!(
+                        "ACME profile `{profile}` is no longer offered here"
+                    )),
+                    "invalidProfile",
+                    "the signer backend no longer offers the order's profile",
+                    client,
+                )
+                .await
+            }
             // Nothing decided anything about this CSR — a token, a script or
             // an upstream that did not answer — so ask again, and let `abandon`
             // retire the order once the budget is spent.
@@ -412,6 +430,7 @@ mod tests {
     /// A signer answering `issue` with whatever the test set.
     enum Answer {
         BadCsr,
+        InvalidProfile,
         Internal,
         Chain(&'static str),
         Deferred,
@@ -426,10 +445,11 @@ mod tests {
             _order_id: &str,
             _csr_der: &[u8],
             _identifiers: &[Identifier],
-            _validity: RequestedValidity,
+            _validity: OrderRequest,
         ) -> Result<IssueOutcome, SignerError> {
             match &self.0 {
                 Answer::BadCsr => Err(SignerError::BadCsr),
+                Answer::InvalidProfile => Err(SignerError::InvalidProfile("shortlived".into())),
                 Answer::Internal => Err(SignerError::Internal("the token is gone".into())),
                 Answer::Chain(chain) => Ok(IssueOutcome::Issued((*chain).to_string())),
                 Answer::Deferred => Ok(IssueOutcome::Processing),
@@ -555,6 +575,34 @@ mod tests {
         assert_eq!(rows[0].event, "certificate_issue_failed");
         assert_eq!(rows[0].reason.as_deref(), Some("badCSR"));
         assert_eq!(rows[0].client_ip.as_deref(), Some("203.0.113.9"));
+    }
+
+    /// A profile a reload removed between `newOrder` and finalize is a verdict
+    /// like a bad CSR — `invalid` with `invalidProfile`, once — never a
+    /// certificate issued under some other lifetime.
+    #[tokio::test]
+    async fn a_profile_the_backend_no_longer_offers_invalidates_the_order_once() {
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let (order, job) = claimed(&database).await;
+
+        assert!(matches!(
+            handler(&database, Arc::new(Scripted(Answer::InvalidProfile)))
+                .run(&job)
+                .await,
+            JobOutcome::Done
+        ));
+        let stored = reload(&database, &order).await;
+        assert_eq!(stored.status, OrderStatus::Invalid);
+        let error = stored.error.unwrap();
+        assert_eq!(error["type"], "urn:ietf:params:acme:error:invalidProfile");
+        assert!(
+            error["detail"].as_str().unwrap().contains("shortlived"),
+            "{error}"
+        );
+
+        let rows = audit_rows(&database).await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].reason.as_deref(), Some("invalidProfile"));
     }
 
     /// A backend that did not answer decided nothing: the job retries and the
@@ -712,11 +760,11 @@ mod tests {
         assert_eq!(reload(&database, &order).await.status, OrderStatus::Invalid);
     }
 
-    /// A profile this process does not mount is a question for another
+    /// An endpoint this process does not mount is a question for another
     /// process — or the next generation of this one — so it is asked again;
     /// a row that cannot be read is not.
     #[tokio::test]
-    async fn an_unmounted_profile_retries_and_a_broken_row_fails() {
+    async fn an_unmounted_endpoint_retries_and_a_broken_row_fails() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         let (_, job) = claimed(&database).await;
         let (_tx, notifiers) = acme_proxy_jobs::notify::notifiers_channel(

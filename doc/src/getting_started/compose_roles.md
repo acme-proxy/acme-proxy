@@ -59,7 +59,7 @@ one an all-in-one deployment would use. A minimal one:
 [server]
 base_url = "https://acme.example.com"
 
-[profiles.default]
+[endpoints.default]
 ```
 
 [`server.base_url`](../configuration/reference.md#server) is the public URL the
@@ -210,14 +210,14 @@ docker compose logs init
 docker compose ps -a
 ```
 
-`init` should end with ``Profile `default` is ready.`` and `Initialisation
+`init` should end with ``Endpoint `default` is ready.`` and `Initialisation
 complete.`, then show as `Exited (0)`; the other services are `Up`. Each of the
 three roles logs `server_startup` with its `roles` field. `acme` and `admin`
 also log the advisory `server_role_no_worker` — expected here, since the worker
 is the third container.
 
 The CA certificate to distribute to clients is served at
-`https://acme.example.com/profile/default/ca.pem`, or copied out of the volume:
+`https://acme.example.com/endpoint/default/ca.pem`, or copied out of the volume:
 
 ```bash
 docker compose cp worker:/data/ca/ca.pem ./ca.pem

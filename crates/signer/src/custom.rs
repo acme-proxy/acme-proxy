@@ -17,7 +17,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use super::{
-    IssueOutcome, RenewalWindow, RequestedValidity, RevocationRoute, SignerBackend, SignerError,
+    IssueOutcome, OrderRequest, RenewalWindow, RevocationRoute, SignerBackend, SignerError,
     SignerInfo,
 };
 use acme_proxy_core::config::CustomSignerConfig;
@@ -76,7 +76,7 @@ struct CachedCrl {
 
 /// The hook `cfg` describes, or the refusal of an empty `script_path`.
 fn hook_from(cfg: &CustomSignerConfig) -> anyhow::Result<ScriptHook> {
-    ScriptHook::new(&cfg.script_path, &cfg.args, cfg.timeout_ms).ok_or_else(|| {
+    ScriptHook::new(&cfg.script_path, &cfg.args, cfg.timeout.as_millis()).ok_or_else(|| {
         anyhow::anyhow!(
             "signer.backend is \"custom\" but signer.custom.script_path is empty; \
              provide a path to an executable script"
@@ -93,7 +93,7 @@ impl CustomScriptSigner {
             event = "signer_custom_loaded",
             outcome = "success",
             script_path = %hook.path().display(),
-            timeout_ms = cfg.timeout_ms,
+            timeout_ms = acme_proxy_core::logfields::millis(cfg.timeout.as_std()),
             supports_crl = cfg.supports_crl,
             supports_renewal_info = cfg.supports_renewal_info,
             // The count, not the values: an argument may carry a credential
@@ -169,7 +169,7 @@ impl SignerBackend for CustomScriptSigner {
         order_id: &str,
         csr_der: &[u8],
         identifiers: &[Identifier],
-        validity: RequestedValidity,
+        validity: OrderRequest,
     ) -> Result<IssueOutcome, SignerError> {
         // The script decides its own validity; there is no contract for passing
         // a requested window to it, and inventing one would break every existing
@@ -402,7 +402,7 @@ mod tests {
                 "ord-1",
                 &[0x30, 0x00],
                 &identifiers(),
-                RequestedValidity::default(),
+                OrderRequest::default(),
             )
             .await
         {
@@ -444,7 +444,7 @@ mod tests {
                 "ord-1",
                 &[0x30, 0x00],
                 &identifiers(),
-                RequestedValidity::default(),
+                OrderRequest::default(),
             )
             .await
             .unwrap();
@@ -479,7 +479,7 @@ mod tests {
                 "ord-1",
                 &[0x30, 0x00],
                 &identifiers(),
-                RequestedValidity::default(),
+                OrderRequest::default(),
             )
             .await
             .unwrap();
@@ -508,7 +508,7 @@ mod tests {
                 "ord-1",
                 &[0x30, 0x00],
                 &identifiers(),
-                RequestedValidity::default(),
+                OrderRequest::default(),
             )
             .await;
         assert!(matches!(result, Err(SignerError::BadCsr)));
@@ -529,7 +529,7 @@ mod tests {
                 "ord-1",
                 &[0x30, 0x00],
                 &identifiers(),
-                RequestedValidity::default(),
+                OrderRequest::default(),
             )
             .await;
         match result {
@@ -563,7 +563,7 @@ exit 0
                 "ord-42",
                 &[0x30, 0x00],
                 &identifiers(),
-                RequestedValidity::default(),
+                OrderRequest::default(),
             )
             .await
             .unwrap();
@@ -854,7 +854,7 @@ exit 0
                 "ord-1",
                 &[0x30, 0x00],
                 &identifiers(),
-                RequestedValidity::default(),
+                OrderRequest::default(),
             )
             .await
             .unwrap();
@@ -865,7 +865,7 @@ exit 0
     async fn script_timeout_returns_internal() {
         let dir = TempDir::new("signer-custom");
         let cfg = CustomSignerConfig {
-            timeout_ms: 100,
+            timeout: acme_proxy_core::config::ConfigDuration::from_millis(100),
             ..write_script(
                 &dir,
                 "sleep.sh",
@@ -879,7 +879,7 @@ exit 0
                 "ord-1",
                 &[0x30, 0x00],
                 &identifiers(),
-                RequestedValidity::default(),
+                OrderRequest::default(),
             )
             .await
         {
@@ -895,7 +895,7 @@ exit 0
         let dir = TempDir::new("signer-custom");
         let marker = dir.path().join("survived");
         let cfg = CustomSignerConfig {
-            timeout_ms: 50,
+            timeout: acme_proxy_core::config::ConfigDuration::from_millis(50),
             ..write_script(
                 &dir,
                 "slow.sh",
@@ -912,7 +912,7 @@ exit 0
                 "ord-1",
                 &[0x30, 0x00],
                 &identifiers(),
-                RequestedValidity::default(),
+                OrderRequest::default(),
             )
             .await
         {

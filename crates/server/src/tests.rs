@@ -8,7 +8,7 @@ use tokio::net::{TcpListener, TcpStream};
 
 use super::*;
 
-/// A single-profile configuration whose CA and TLS material all live
+/// A single-endpoint configuration whose CA and TLS material all live
 /// under `dir`, so a test never touches the repository.
 fn config_in(dir: impl AsRef<std::path::Path>, tls: bool) -> Config {
     let dir = dir.as_ref();
@@ -24,7 +24,7 @@ fn config_in(dir: impl AsRef<std::path::Path>, tls: bool) -> Config {
         cert_path = "{dir}/server.pem"
         key_path = "{dir}/server.key"
 
-        [profiles.default]
+        [endpoints.default]
         signer.local_ca.cert_path = "{ca}.pem"
         signer.local_ca.key_path = "{ca}.key"
         signer.local_ca.crl_path = "{ca}.crl"
@@ -54,13 +54,13 @@ fn load_config(dir: &std::path::Path, body: &str) -> Config {
     config
 }
 
-/// Two profiles, each relaying to an upstream of its own.
+/// Two endpoints, each relaying to an upstream of its own.
 ///
 /// The two `[signer]` sections must genuinely differ — different
 /// `directory_url` *and* `account_key_path` — or `build_backends`
 /// collapses them to one shared backend and the case under test never
 /// arises. `signer_paths` would refuse a shared account key outright.
-fn two_relay_profiles(
+fn two_relay_endpoints(
     dir: impl AsRef<std::path::Path>,
     first: &acme_proxy_signer::relay::testsrv::Upstream,
     second: &acme_proxy_signer::relay::testsrv::Upstream,
@@ -75,12 +75,12 @@ fn two_relay_profiles(
         bind_address = "127.0.0.1:0"
         base_url = "http://localhost:3000"
 
-        [profiles.first]
+        [endpoints.first]
         signer.backend = "relay"
         signer.relay.directory_url = "{first_url}"
         signer.relay.account_key_path = "{dir}/first.key"
 
-        [profiles.second]
+        [endpoints.second]
         signer.backend = "relay"
         signer.relay.directory_url = "{second_url}"
         signer.relay.account_key_path = "{dir}/second.key"
@@ -191,7 +191,7 @@ async fn a_tls_server_answers_over_a_real_handshake() {
 /// `shutdown` future was consumed once and only one listener stopped —
 /// and now also for the metrics listener being genuinely *separate*:
 /// `/metrics` answering on the ACME port would put issuance volume and
-/// every profile name on the public socket, which is exactly what
+/// every endpoint name on the public socket, which is exactly what
 /// giving it its own port is for.
 #[tokio::test]
 async fn all_three_listeners_serve_and_one_signal_stops_them() {
@@ -240,9 +240,9 @@ async fn all_three_listeners_serve_and_one_signal_stops_them() {
     assert!(acme.starts_with("HTTP/1.1 404"), "{acme}");
 
     // And the converse: ACME is on the ACME socket only.
-    let directory = get(acme_addr, "/profile/default/directory").await;
+    let directory = get(acme_addr, "/endpoint/default/directory").await;
     assert!(directory.starts_with("HTTP/1.1 200 OK"), "{directory}");
-    let no_directory = get(admin_addr, "/profile/default/directory").await;
+    let no_directory = get(admin_addr, "/endpoint/default/directory").await;
     assert!(no_directory.starts_with("HTTP/1.1 404"), "{no_directory}");
 
     // The exposition is on its own socket...
@@ -461,25 +461,25 @@ async fn get(addr: SocketAddr, path: &str) -> String {
     response
 }
 
-/// Two profiles relaying to **different** upstreams start.
+/// Two endpoints relaying to **different** upstreams start.
 ///
-/// The whole shape of the reported bug: each profile's `[signer]`
+/// The whole shape of the reported bug: each endpoint's `[signer]`
 /// section differs, so `build_backends` keeps them apart, so there are
 /// two relay backends — and asking each for its own job handler made
 /// `JobRegistry::register` refuse the second for kind
 /// `signer_relay_issue`, taking the process down before the socket was
 /// ever served. This is the end-to-end form of
-/// `signer::relay::tests::multi_profile`, and the only test here that
+/// `signer::relay::tests::multi_endpoint`, and the only test here that
 /// exercises `build_generation` assembling the registry from more than
 /// one relay.
 #[tokio::test(flavor = "multi_thread")]
-async fn two_profiles_relaying_to_different_upstreams_start() {
+async fn two_endpoints_relaying_to_different_upstreams_start() {
     use acme_proxy_signer::relay::testsrv;
 
     let first = testsrv::start(testsrv::Script::default()).await;
     let second = testsrv::start(testsrv::Script::default()).await;
     let dir = temp_dir();
-    let config = two_relay_profiles(&dir, &first, &second);
+    let config = two_relay_endpoints(&dir, &first, &second);
 
     let (addr, shutdown, handle) = boot(config).await;
     let mut stream = TcpStream::connect(addr).await.unwrap();
@@ -495,13 +495,13 @@ async fn two_profiles_relaying_to_different_upstreams_start() {
     handle
         .await
         .unwrap()
-        .expect("two relay profiles must not refuse to start");
+        .expect("two relay endpoints must not refuse to start");
 }
 
 /// A configuration mounting nothing fails before the socket is ever
 /// served, rather than starting a server that answers 404 everywhere.
 #[tokio::test]
-async fn a_configuration_with_no_profile_refuses_to_serve() {
+async fn a_configuration_with_no_endpoint_refuses_to_serve() {
     let database = Arc::new(Database::connect_in_memory().await.unwrap());
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let error = serve_on(
@@ -512,7 +512,7 @@ async fn a_configuration_with_no_profile_refuses_to_serve() {
     )
     .await
     .expect_err("a server with no endpoint must not start");
-    assert!(error.to_string().contains("profile"), "{error}");
+    assert!(error.to_string().contains("endpoint"), "{error}");
 }
 
 /// Unreadable TLS material stops startup instead of silently falling
@@ -612,12 +612,12 @@ async fn a_shutdown_waits_for_the_runner_to_release_its_leases() {
             base_url = "http://localhost:3000"
 
             [jobs]
-            poll_interval_ms = 10
+            poll_interval = "10ms"
 
-            [profiles.default]
+            [endpoints.default]
             signer.backend = "custom"
             signer.custom.script_path = "{script}"
-            signer.custom.timeout_ms = 60000
+            signer.custom.timeout = "60000ms"
             "#,
             script = script.display(),
         ),
@@ -693,13 +693,13 @@ async fn a_shutdown_waits_for_the_runner_to_release_its_leases() {
 
 /// Only the `worker` role builds a backend: a process running `acme` and
 /// `admin` alone has an empty backend set — so no job handler of its holds a
-/// key — and serves every profile from a read side over the CA's certificate,
+/// key — and serves every endpoint from a read side over the CA's certificate,
 /// without ever reading, or generating, the key.
 #[tokio::test]
 async fn a_process_without_the_worker_role_builds_no_backend() {
     let dir = temp_dir();
     let config = config_in(dir.path(), false);
-    let resolved = config.resolve_profiles().unwrap();
+    let resolved = config.resolve_endpoints().unwrap();
     let database = Arc::new(
         acme_proxy_store::db::Database::connect_in_memory()
             .await
@@ -732,14 +732,14 @@ async fn a_process_without_the_worker_role_builds_no_backend() {
     std::fs::rename(dir.join("ca.key"), dir.join("elsewhere.key")).unwrap();
     let (_, serving) = Assembly::new(roles, &resolved, database, jobs, &config).unwrap();
     assert!(serving.signers.is_empty(), "no backend outside the worker");
-    assert_eq!(serving.infos.len(), 1, "every profile has its read side");
+    assert_eq!(serving.infos.len(), 1, "every endpoint has its read side");
     assert!(
         !dir.join("ca.key").exists(),
         "a process without the worker role must not generate a key"
     );
-    let profiles = crate::profile::build_all_with(&config, &resolved, &serving).unwrap();
+    let endpoints = crate::endpoint::build_all_with(&config, &resolved, &serving).unwrap();
     assert_eq!(
-        profiles[0].signer_info.ca_chain_pem().await,
+        endpoints[0].signer_info.ca_chain_pem().await,
         Some(std::fs::read_to_string(dir.join("ca.pem")).unwrap())
     );
 }
@@ -754,12 +754,12 @@ async fn a_generation_registers_the_sweeps_its_configuration_asks_for() {
     let dir = temp_dir();
     for retention_days in [0, 30] {
         let mut config = config_in(dir.path(), false);
-        config.audit.retention_days = retention_days;
-        config.jobs.retention_days = retention_days;
+        config.audit.retention = acme_proxy_core::config::ConfigDuration::from_days(retention_days);
+        config.jobs.retention = acme_proxy_core::config::ConfigDuration::from_days(retention_days);
         let config = Arc::new(config);
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         let queue = acme_proxy_jobs::jobs::JobQueue::new(database.clone(), &config.jobs);
-        let resolved = config.resolve_profiles().unwrap();
+        let resolved = config.resolve_endpoints().unwrap();
         let (assembly, parts) = Assembly::new(
             RoleSet::default(),
             &resolved,
@@ -780,8 +780,8 @@ async fn a_generation_registers_the_sweeps_its_configuration_asks_for() {
         let kinds = generation.job_registry.kinds();
 
         let nonces = SweepJob::nonces(database.clone(), Duration::from_secs(60)).kind();
-        let audit = SweepJob::audit(database.clone(), 1).kind();
-        let jobs = SweepJob::jobs(database.clone(), 1).kind();
+        let audit = SweepJob::audit(database.clone(), Duration::from_secs(86_400)).kind();
+        let jobs = SweepJob::jobs(database.clone(), Duration::from_secs(86_400)).kind();
         assert!(kinds.contains(&nonces), "always swept: {kinds:?}");
         for kind in [audit, jobs] {
             assert_eq!(

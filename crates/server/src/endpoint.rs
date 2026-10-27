@@ -1,9 +1,9 @@
-//! How a configuration generation builds every [`Profile`] it mounts.
+//! How a configuration generation builds every [`Endpoint`] it mounts.
 //!
-//! [`build_all`] resolves the profiles, gives each its filter policy, challenge
+//! [`build_all`] resolves the endpoints, gives each its filter policy, challenge
 //! registry and signer handle, and fails as a whole: a configuration with one
 //! broken endpoint mounts none, at startup and on a reload alike. The startup
-//! checks that span sections — `server.request_timeout_ms` against a custom
+//! checks that span sections — `server.request_timeout` against a custom
 //! signer's timeout — live here too.
 
 use std::sync::Arc;
@@ -13,8 +13,8 @@ use acme_proxy_core::config::Config;
 use acme_proxy_net::challenge;
 use acme_proxy_policy::filter;
 use acme_proxy_policy::ipam;
-use acme_proxy_protocol::profile::Profile;
-use acme_proxy_protocol::profile::ProfileParts;
+use acme_proxy_protocol::endpoint::Endpoint;
+use acme_proxy_protocol::endpoint::EndpointParts;
 use acme_proxy_store::db::Database;
 
 use super::{Assembly, GenerationParts};
@@ -22,27 +22,27 @@ use super::{Assembly, GenerationParts};
 /// Builds every endpoint this configuration mounts, ready to serve.
 ///
 /// Lives here rather than in `server::serve_on` because it is the assembly
-/// step, not dispatch: it resolves the profiles, builds the signer backends
+/// step, not dispatch: it resolves the endpoints, builds the signer backends
 /// (deduplicated by configuration — see
 /// [`signer::build_backends`](acme_proxy_signer::build_backends)), and gives
-/// each profile its own filter chain and challenge registry. Every failure
+/// each endpoint its own filter chain and challenge registry. Every failure
 /// is fatal at startup, so they come back as one error for the caller to
 /// report and exit on.
 ///
-/// Each profile's subsystems are built inside a span naming it, so the
+/// Each endpoint's subsystems are built inside a span naming it, so the
 /// warnings they emit at build time (`filter_disabled`,
 /// `challenge_validation_bypassed`) say *which* endpoint is wide open —
 /// with several mounted, an unattributed warning is worse than none.
 /// `jobs` is the enqueue side of the durable queue, handed in rather than
 /// built here for the reason the `Auditor` is built in `serve_on_with`:
-/// `[jobs]` is process-wide, one queue drained by one runner, and a profile
+/// `[jobs]` is process-wide, one queue drained by one runner, and an endpoint
 /// is not the thing that owns it.
 pub fn build_all(
     config: &Config,
     database: Arc<Database>,
     jobs: &acme_proxy_jobs::jobs::JobQueue,
-) -> anyhow::Result<Vec<Arc<Profile>>> {
-    let resolved = config.resolve_profiles()?;
+) -> anyhow::Result<Vec<Arc<Endpoint>>> {
+    let resolved = config.resolve_endpoints()?;
     // All roles: this builder is the CLI's and the tests' path, where the
     // process is doing everything it is going to do.
     let (_assembly, first) = Assembly::new(
@@ -55,57 +55,57 @@ pub fn build_all(
     build_all_with(config, &resolved, &first)
 }
 
-/// One generation of profiles, over an [`Assembly`] that outlives it.
+/// One generation of endpoints, over an [`Assembly`] that outlives it.
 ///
 /// The half of [`build_all`] a configuration reload runs
 /// again. Everything it touches is cheap and side-effect-free to rebuild —
 /// a filter policy, an IPAM client, a challenge registry — which is exactly
-/// why the *stateful* half lives in the `Assembly` instead. A profile takes
+/// why the *stateful* half lives in the `Assembly` instead. An endpoint takes
 /// its signer's read side from `generation.infos` — built, like the
 /// backends, only where the configuration moved (see
 /// [`signer::build_infos`](acme_proxy_signer::build_infos)) — and never the
 /// backend itself, which stays with the job handlers.
 pub fn build_all_with(
     config: &Config,
-    resolved: &[config::ProfileConfig],
+    resolved: &[config::EndpointConfig],
     generation: &GenerationParts,
-) -> anyhow::Result<Vec<Arc<Profile>>> {
+) -> anyhow::Result<Vec<Arc<Endpoint>>> {
     let egress = &generation.egress;
     let dispatchers = &generation.dispatchers;
 
-    let mut profiles = Vec::with_capacity(resolved.len());
-    for profile in resolved {
-        let sections = &profile.sections;
-        let span = tracing::info_span!("profile", profile = %profile.name);
+    let mut endpoints = Vec::with_capacity(resolved.len());
+    for endpoint in resolved {
+        let sections = &endpoint.sections;
+        let span = tracing::info_span!("endpoint", endpoint = %endpoint.name);
         let (filter, challenges) = span.in_scope(|| {
-            // Built per profile with no dedup pass, unlike
+            // Built per endpoint with no dedup pass, unlike
             // `signer::build_backends`. Sharing a signer backend is a
             // correctness requirement — two `LocalCa` over one CRL file
             // would clobber each other's ledger — whereas an IPAM client
-            // owns no files and holds no mutable state, so two profiles
+            // owns no files and holds no mutable state, so two endpoints
             // naming the same inventory each building one costs nothing
             // but a `rustls::ClientConfig`.
             let ipam = ipam::from_config(&sections.ipam, egress.outbound())
-                .map_err(|error| anyhow::anyhow!("profile `{}`: {error}", profile.name))?;
+                .map_err(|error| anyhow::anyhow!("endpoint `{}`: {error}", endpoint.name))?;
             let filter =
                 filter::from_config(&sections.filter, &config.dns, ipam, sections.eab.enabled)
-                    .map_err(|error| anyhow::anyhow!("profile `{}`: {error}", profile.name))?;
+                    .map_err(|error| anyhow::anyhow!("endpoint `{}`: {error}", endpoint.name))?;
             let challenges =
                 challenge::from_config(&sections.challenge, &config.dns, egress.proxies.clone())
-                    .map_err(|error| anyhow::anyhow!("profile `{}`: {error}", profile.name))?;
-            check_request_timeout(config, profile.name.as_str(), sections)?;
+                    .map_err(|error| anyhow::anyhow!("endpoint `{}`: {error}", endpoint.name))?;
+            check_request_timeout(config, endpoint.name.as_str(), sections)?;
             Ok::<_, anyhow::Error>((filter, challenges))
         })?;
 
-        profiles.push(Arc::new(Profile::new(
-            &profile.name,
+        endpoints.push(Arc::new(Endpoint::new(
+            &endpoint.name,
             &config.server.base_url,
-            ProfileParts {
+            EndpointParts {
                 signer_info: generation
                     .infos
-                    .get(&profile.name)
+                    .get(&endpoint.name)
                     .ok_or_else(|| {
-                        anyhow::anyhow!("profile `{}`: no signer read side", profile.name)
+                        anyhow::anyhow!("endpoint `{}`: no signer read side", endpoint.name)
                     })?
                     .clone(),
                 filter,
@@ -113,14 +113,14 @@ pub fn build_all_with(
                 order: sections.order.clone(),
                 eab: sections.eab.clone(),
                 meta: sections.meta.clone(),
-                notify: dispatchers[&profile.name].clone(),
+                notify: dispatchers[&endpoint.name].clone(),
             },
         )));
     }
-    Ok(profiles)
+    Ok(endpoints)
 }
 
-/// Refuses a `server.request_timeout_ms` shorter than the work the server does
+/// Refuses a `server.request_timeout` shorter than the work the server does
 /// *inside* a request.
 ///
 /// One hook still runs inline in a handler: a `custom` signer's read-only
@@ -132,33 +132,33 @@ pub fn build_all_with(
 /// start and say which two numbers disagree.
 ///
 /// **Two budgets used to be checked here and deliberately are not any more.**
-/// `challenge.timeout_ms` went when validation moved into the job queue
+/// `challenge.timeout` went when validation moved into the job queue
 /// (`acme::validate`), and the script's `issue` hook when finalize did
 /// (`acme::issue`): both now bound a job attempt rather than a request. A
-/// revocation a `custom` profile delegates waits on its job for at most the
+/// revocation a `custom` endpoint delegates waits on its job for at most the
 /// request's own deadline, so it needs no check either.
 fn check_request_timeout(
     config: &Config,
     name: &str,
-    sections: &config::ProfileSections,
+    sections: &config::EndpointSections,
 ) -> anyhow::Result<()> {
-    let deadline = config.server.request_timeout_ms;
+    let deadline = config.server.request_timeout;
     let custom = &sections.signer.custom;
     // Only when that backend is the one installed, and only for the hooks a
     // request runs; an unused `[signer.custom]` section, or one whose read
-    // hooks are off, says nothing about how long this profile's requests take.
+    // hooks are off, says nothing about how long this endpoint's requests take.
     let budget = if sections.signer.backend == "custom"
         && (custom.supports_crl || custom.supports_renewal_info)
     {
-        custom.timeout_ms
+        custom.timeout
     } else {
-        0
+        config::ConfigDuration::ZERO
     };
 
     anyhow::ensure!(
         deadline > budget,
-        "profile `{name}`: server.request_timeout_ms ({deadline}) must exceed \
-         signer.custom.timeout_ms ({budget}) — the script's `crl`/`renewal_info` hooks run inside \
+        "endpoint `{name}`: server.request_timeout (\"{deadline}\") must exceed \
+         signer.custom.timeout (\"{budget}\") — the script's `crl`/`renewal_info` hooks run inside \
          the request, so a shorter deadline would cut off an answer that was coming and report it \
          to the client as a server failure",
     );
@@ -169,8 +169,8 @@ fn check_request_timeout(
 mod tests {
     use super::*;
 
-    /// Loads a whole configuration file, the only way profile resolution can be
-    /// exercised (it reads the raw sources — see `Config::resolve_profiles`).
+    /// Loads a whole configuration file, the only way endpoint resolution can be
+    /// exercised (it reads the raw sources — see `Config::resolve_endpoints`).
     ///
     /// Holds the crate-wide `ENV_LOCK` while it does: this points
     /// `ACME_PROXY_CONFIG` at its own file, and the environment is process-wide.
@@ -193,7 +193,7 @@ mod tests {
 
     /// `body` over a global `[signer.local_ca]` whose files live in `dir`.
     ///
-    /// A `local_ca` profile left on the default paths generates `ca.pem` and
+    /// A `local_ca` endpoint left on the default paths generates `ca.pem` and
     /// `ca.key` in the crate directory, and nextest runs every test in its own
     /// process at once: one reads the certificate of one generation beside the
     /// key of another, and fails only when the files were absent to begin with.
@@ -211,8 +211,8 @@ mod tests {
     }
 
     /// A CA-material-free configuration: `local_ca` writes files at startup, so
-    /// each profile gets its own throwaway directory.
-    fn two_profiles_config(dir: impl AsRef<std::path::Path>) -> Config {
+    /// each endpoint gets its own throwaway directory.
+    fn two_endpoints_config(dir: impl AsRef<std::path::Path>) -> Config {
         let dir = dir.as_ref();
         let a = dir.join("a");
         let b = dir.join("b");
@@ -222,12 +222,12 @@ mod tests {
             enabled = ["http-01"]
             bypass = true
 
-            [profiles.a]
+            [endpoints.a]
             signer.local_ca.cert_path = "{a}.pem"
             signer.local_ca.key_path = "{a}.key"
             signer.local_ca.crl_path = "{a}.crl"
 
-            [profiles.b]
+            [endpoints.b]
             challenge.bypass = false
             signer.local_ca.cert_path = "{b}.pem"
             signer.local_ca.key_path = "{b}.key"
@@ -245,30 +245,30 @@ mod tests {
     #[tokio::test]
     async fn build_all_assembles_every_endpoint_from_its_own_configuration() {
         let dir = acme_proxy_core::testutil::TempDir::new("build");
-        let config = two_profiles_config(&dir);
+        let config = two_endpoints_config(&dir);
 
-        let profiles = crate::profile::build_all(
+        let endpoints = crate::endpoint::build_all(
             &config,
             database().await,
             &acme_proxy_jobs::testutil::idle_job_queue(database().await),
         )
         .unwrap();
-        assert_eq!(profiles.len(), 2);
+        assert_eq!(endpoints.len(), 2);
 
-        assert_eq!(profiles[0].name, "a");
-        assert_eq!(profiles[0].path, "/profile/a");
-        assert_eq!(profiles[0].base_url, "http://localhost:3000/profile/a");
+        assert_eq!(endpoints[0].name, "a");
+        assert_eq!(endpoints[0].path, "/endpoint/a");
+        assert_eq!(endpoints[0].base_url, "http://localhost:3000/endpoint/a");
         // `a` inherits the global challenge section wholesale…
-        assert!(profiles[0].challenges.is_bypassed());
+        assert!(endpoints[0].challenges.is_bypassed());
         // …while `b` overrides one key of it and keeps the rest.
-        assert!(!profiles[1].challenges.is_bypassed());
-        assert_eq!(profiles[1].challenges.enabled_types(), ["http-01"]);
+        assert!(!endpoints[1].challenges.is_bypassed());
+        assert_eq!(endpoints[1].challenges.enabled_types(), ["http-01"]);
     }
 
     #[tokio::test]
     async fn build_all_refuses_a_configuration_that_mounts_nothing() {
         let config = config_from("[server]\nbase_url = \"http://acme.test\"\n");
-        let error = match crate::profile::build_all(
+        let error = match crate::endpoint::build_all(
             &config,
             database().await,
             &acme_proxy_jobs::testutil::idle_job_queue(database().await),
@@ -276,22 +276,22 @@ mod tests {
             Err(error) => error.to_string(),
             Ok(_) => panic!("a server with no endpoint must not start"),
         };
-        assert!(error.contains("[profiles.default]"), "{error}");
+        assert!(error.contains("[endpoints.default]"), "{error}");
     }
 
     /// A subsystem that cannot be built names the endpoint it belongs to —
     /// with several mounted, "unknown challenge type" alone would not say where.
     #[tokio::test]
-    async fn build_all_names_the_profile_a_failure_came_from() {
+    async fn build_all_names_the_endpoint_a_failure_came_from() {
         let dir = acme_proxy_core::testutil::TempDir::new("names");
         let config = config_with_ca_in(
             &dir,
             r#"
-            [profiles.le]
+            [endpoints.le]
             challenge.enabled = ["not-a-challenge"]
             "#,
         );
-        let error = match crate::profile::build_all(
+        let error = match crate::endpoint::build_all(
             &config,
             database().await,
             &acme_proxy_jobs::testutil::idle_job_queue(database().await),
@@ -299,7 +299,7 @@ mod tests {
             Err(error) => error.to_string(),
             Ok(_) => panic!("an unknown challenge type is a startup error"),
         };
-        assert!(error.contains("profile `le`"), "{error}");
+        assert!(error.contains("endpoint `le`"), "{error}");
         assert!(error.contains("not-a-challenge"), "{error}");
     }
 
@@ -312,45 +312,45 @@ mod tests {
         let config = config_from(
             r#"
             [server]
-            request_timeout_ms = 1000
+            request_timeout = "1000ms"
 
-            [profiles.le]
+            [endpoints.le]
             signer.backend = "custom"
             signer.custom.script_path = "/bin/true"
-            signer.custom.timeout_ms = 5000
+            signer.custom.timeout = "5000ms"
             signer.custom.supports_crl = true
             "#,
         );
-        let error = match crate::profile::build_all(
+        let error = match crate::endpoint::build_all(
             &config,
             database().await,
             &acme_proxy_jobs::testutil::idle_job_queue(database().await),
         ) {
             Err(error) => error.to_string(),
-            Ok(_) => panic!("a deadline below signer.custom.timeout_ms is a startup error"),
+            Ok(_) => panic!("a deadline below signer.custom.timeout is a startup error"),
         };
-        assert!(error.contains("profile `le`"), "{error}");
-        assert!(error.contains("request_timeout_ms"), "{error}");
-        assert!(error.contains("signer.custom.timeout_ms"), "{error}");
+        assert!(error.contains("endpoint `le`"), "{error}");
+        assert!(error.contains("server.request_timeout (\"1s\")"), "{error}");
+        assert!(error.contains("signer.custom.timeout"), "{error}");
     }
 
     /// The script's `issue` hook runs in the `signer_issue` job now, so a
-    /// `custom` profile whose read hooks are off has nothing inline for the
+    /// `custom` endpoint whose read hooks are off has nothing inline for the
     /// deadline to cut off. A configuration the old check refused must start.
     #[tokio::test]
     async fn a_custom_issue_hook_above_the_deadline_is_no_longer_refused() {
         let config = config_from(
             r#"
             [server]
-            request_timeout_ms = 1000
+            request_timeout = "1000ms"
 
-            [profiles.le]
+            [endpoints.le]
             signer.backend = "custom"
             signer.custom.script_path = "/bin/true"
-            signer.custom.timeout_ms = 5000
+            signer.custom.timeout = "5000ms"
             "#,
         );
-        crate::profile::build_all(
+        crate::endpoint::build_all(
             &config,
             database().await,
             &acme_proxy_jobs::testutil::idle_job_queue(database().await),
@@ -358,7 +358,7 @@ mod tests {
         .expect("issuance no longer runs inside the request");
     }
 
-    /// `challenge.timeout_ms` is deliberately **not** checked against the
+    /// `challenge.timeout` is deliberately **not** checked against the
     /// request deadline any more: validation runs in the job queue, so that
     /// budget bounds an attempt rather than a request and the two numbers are
     /// independent. A configuration the old check refused must now start.
@@ -369,13 +369,13 @@ mod tests {
             &dir,
             r#"
             [server]
-            request_timeout_ms = 1000
+            request_timeout = "1000ms"
 
-            [profiles.le]
-            challenge.timeout_ms = 5000
+            [endpoints.le]
+            challenge.timeout = "5000ms"
             "#,
         );
-        crate::profile::build_all(
+        crate::endpoint::build_all(
             &config,
             database().await,
             &acme_proxy_jobs::testutil::idle_job_queue(database().await),
@@ -383,9 +383,9 @@ mod tests {
         .expect("challenge validation no longer runs inside the request");
     }
 
-    /// The same check must not fire on `signer.custom.timeout_ms` when that
+    /// The same check must not fire on `signer.custom.timeout` when that
     /// backend is not the one installed — an unused `[signer.custom]` section
-    /// says nothing about how long this profile's requests take.
+    /// says nothing about how long this endpoint's requests take.
     #[tokio::test]
     async fn an_unused_custom_signer_timeout_does_not_constrain_the_deadline() {
         let dir = acme_proxy_core::testutil::TempDir::new("unused");
@@ -393,18 +393,18 @@ mod tests {
             &dir,
             r#"
             [server]
-            request_timeout_ms = 2000
+            request_timeout = "2000ms"
 
             [signer.custom]
             script_path = "/bin/true"
-            timeout_ms = 30000
+            timeout = "30000ms"
 
-            [profiles.le]
-            challenge.timeout_ms = 1000
+            [endpoints.le]
+            challenge.timeout = "1000ms"
             "#,
         );
         assert!(
-            crate::profile::build_all(
+            crate::endpoint::build_all(
                 &config,
                 database().await,
                 &acme_proxy_jobs::testutil::idle_job_queue(database().await)

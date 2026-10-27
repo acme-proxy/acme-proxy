@@ -4,8 +4,8 @@ Get `acme-proxy` running in a couple of minutes with an auto-generated Local CA.
 
 ## Step 1 — Write a configuration file
 
-`acme-proxy` serves ACME only through **profiles**, so at least one enabled
-profile is required — the server refuses to start without one. Everything else
+`acme-proxy` serves ACME only through **endpoints**, so at least one enabled
+endpoint is required — the server refuses to start without one. Everything else
 has a working default.
 
 By default the server also performs real domain-control validation (HTTP-01). To
@@ -19,12 +19,12 @@ Create `config.toml` in your current directory:
 # Testing only. See "Moving to production" below.
 bypass = true
 
-[profiles.default]
+[endpoints.default]
 ```
 
-> `[profiles.default]` is not empty by accident — a profile's `enabled` key
-> defaults to `true`, so naming the profile is all that is required. The profile
-> name becomes part of the URL, and of every `kid` a client stores.
+> `[endpoints.default]` is not empty by accident — an endpoint's `enabled` key
+> defaults to `true`, so naming the endpoint is all that is required. The
+> endpoint name becomes part of the URL, and of every `kid` a client stores.
 
 ## Step 2 — Run the server
 
@@ -49,18 +49,18 @@ Individual keys can also be overridden with `ACME_PROXY_*` environment
 variables; see the [Configuration Reference](../configuration/reference.md).
 
 The server binds `[::]:3000` and serves the ACME directory at
-`http://localhost:3000/profile/default/directory`. On first run it creates
+`http://localhost:3000/endpoint/default/directory`. On first run it creates
 `sqlite.db`, `ca.pem` and `ca.key` in the working directory.
 
 ## Step 3 — Request a certificate
 
-Point any standard ACME client at the profile's directory URL. Examples for
+Point any standard ACME client at the endpoint's directory URL. Examples for
 `internal.example.com`:
 
 ### certbot
 ```bash
 certbot certonly \
-  --server http://localhost:3000/profile/default/directory \
+  --server http://localhost:3000/endpoint/default/directory \
   --standalone \
   --domain internal.example.com \
   --email admin@example.com \
@@ -71,14 +71,14 @@ certbot certonly \
 ### acme.sh
 ```bash
 acme.sh --issue \
-  --server http://localhost:3000/profile/default/directory \
+  --server http://localhost:3000/endpoint/default/directory \
   -d internal.example.com \
   --standalone
 ```
 
 ### lego
 ```bash
-lego --server http://localhost:3000/profile/default/directory \
+lego --server http://localhost:3000/endpoint/default/directory \
   --email admin@example.com \
   --domains internal.example.com \
   --http \
@@ -91,7 +91,7 @@ In Traefik's static configuration (`traefik.yml`):
 certificatesResolvers:
   myresolver:
     acme:
-      caServer: http://localhost:3000/profile/default/directory
+      caServer: http://localhost:3000/endpoint/default/directory
       email: admin@example.com
       httpChallenge:
         entryPoint: web
@@ -102,7 +102,7 @@ In your `Caddyfile`:
 ```caddyfile
 internal.example.com {
     tls admin@example.com {
-        ca http://localhost:3000/profile/default/directory
+        ca http://localhost:3000/endpoint/default/directory
     }
     respond "Hello, world!"
 }

@@ -9,16 +9,16 @@ silently degrading at runtime. The log line names the problem in each case.
 
 | Message | Cause | Fix |
 | --- | --- | --- |
-| `no enabled [profiles]` | No profile is defined, or all are `enabled = false`. The server serves ACME only through profiles. | Add `[profiles.default]`, or set `ACME_PROXY_PROFILES__DEFAULT__ENABLED=true`. |
+| `no enabled [endpoints]` | No endpoint is defined, or all are `enabled = false`. The server serves ACME only through endpoints. | Add `[endpoints.default]`, or set `ACME_PROXY_ENDPOINTS__DEFAULT__ENABLED=true`. |
 | Unknown or empty `challenge.enabled` | The list is empty or names a type that does not exist. This is fatal **even with `challenge.bypass = true`** — a bypassing server still has to advertise a challenge type. | Use one or more of `http-01`, `dns-01`, `tls-alpn-01`. |
 | `filter.check.<name> has neither allow nor deny entries` | An `allowed_ip` or `path` check with both lists empty permits everything, so it is a no-op and almost certainly a mistake. | Populate `filter.check.<name>.allow` or `.deny`, or delete the check and any rule naming it. |
-| `request_timeout_ms` too small | It must exceed `signer.custom.timeout_ms` when that backend is configured with its `crl` or `renewal_info` hook on — those hooks run *inline* inside a request, so a smaller whole-request deadline would cut them off every time. `challenge.timeout_ms` and the script's `issue` hook are **not** checked against it: both run in the job queue. | Raise `server.request_timeout_ms`. |
-| Two profiles sharing `ca.key` but differing elsewhere | One CA key under two `[signer]` configurations would issue under two policies from one identity. | Make the `[signer]` sections identical (they then share one backend), or give each profile its own CA files. |
-| An entry name with an underscore | `[filter.check.*]`, `[filter.rule.*]`, `[notify.custom.*]`, `[notify.webhook.*]` and profile names must match `^[a-z0-9-]+$`. The name is also an environment-variable segment, which the config crate lowercases. | Use hyphens: `threat-intel`, not `threat_intel`. |
+| `request_timeout` too small | It must exceed `signer.custom.timeout` when that backend is configured with its `crl` or `renewal_info` hook on — those hooks run *inline* inside a request, so a smaller whole-request deadline would cut them off every time. `challenge.timeout` and the script's `issue` hook are **not** checked against it: both run in the job queue. | Raise `server.request_timeout`. |
+| Two endpoints sharing `ca.key` but differing elsewhere | One CA key under two `[signer]` configurations would issue under two policies from one identity. | Make the `[signer]` sections identical (they then share one backend), or give each endpoint its own CA files. |
+| An entry name with an underscore | `[filter.check.*]`, `[filter.rule.*]`, `[notify.custom.*]`, `[notify.webhook.*]` and endpoint names must match `^[a-z0-9-]+$`. The name is also an environment-variable segment, which the config crate lowercases. | Use hyphens: `threat-intel`, not `threat_intel`. |
 | A `custom` notify backend enabled with no entries | `"custom"` is listed in `notify.enabled` while `notify.custom_enabled` is empty. | Populate `notify.custom_enabled`, or drop `"custom"`. |
 | `filter.enabled is no longer a setting` | A 0.1.x `[filter]` section. The flat all-must-pass chain was replaced wholesale by named checks and rules; `filter.exempt_paths` and `filter.custom_enabled` are refused the same way. | Declare each filter as a `[filter.check.<name>]` with a `type`, write a `[filter.rule.<name>]` whose `when` names them, and list the rules in `filter.rules`. See [Filters](../filters/index.md). |
-| `[filter.rule.<name>] is configured but filter.rules is empty` | A rule is declared but nothing selects it, so the policy it describes would never run. Inherited rules count: a profile that leaves `filter.rules` empty meets this too. | List the rule in `filter.rules`, or delete it. |
-| Upstream requires EAB, no `.kid` sidecar | The `relay` backend has never registered with the upstream. | Run `acme-proxy upstream register --profile <name> --eab-kid …`, or set `signer.relay.eab.kid`/`hmac_key` in configuration. |
+| `[filter.rule.<name>] is configured but filter.rules is empty` | A rule is declared but nothing selects it, so the policy it describes would never run. Inherited rules count: an endpoint that leaves `filter.rules` empty meets this too. | List the rule in `filter.rules`, or delete it. |
+| Upstream requires EAB, no `.kid` sidecar | The `relay` backend has never registered with the upstream. | Run `acme-proxy upstream register --endpoint <name> --eab-kid …`, or set `signer.relay.eab.kid`/`hmac_key` in configuration. |
 | `key_source = "pkcs11"` … `built without` | `signer.local_ca.key_source = "pkcs11"` on a binary with no PKCS#11 support. Deliberately fatal rather than falling back to the file key, which would silently leave the CA key on disk. | Rebuild with `cargo build --release --features hsm`. |
 | A PKCS#11 key that is not the certified one | The token key's public key does not match `cert_path` — almost always a wrong `key_label`. | See [Hardware Keys](../signers/local_ca_hsm.md#troubleshooting). |
 | `admin.bind_address … is not loopback while admin.tls.enabled is false` | The session cookie is always sent `Secure`, which a browser will not store over plain HTTP on anything but `localhost`. Refused rather than warned about, because the symptom is otherwise "signing in succeeds and then immediately signs you out" with nothing in any log to explain it. | Set `admin.tls.enabled = true`, or bind `127.0.0.1` and reach the panel through an SSH tunnel. |
@@ -126,7 +126,7 @@ ids as plain strings, and read the epoch-second columns with
 sqlite3 sqlite.db "SELECT version, description, success FROM _sqlx_migrations;"
 
 # Everything this server refused in the last day, and why.
-sqlite3 sqlite.db "SELECT datetime(created_at,'unixepoch'), event, profile, client_ip, reason
+sqlite3 sqlite.db "SELECT datetime(created_at,'unixepoch'), event, endpoint, client_ip, reason
                      FROM audit_log WHERE outcome = 'failure'
                       AND created_at > strftime('%s','now','-1 day');"
 
@@ -171,7 +171,7 @@ the way it is — is documented in [Database Schema](../dev/database.md).
 
 - **Symptoms** — Client receives an error stating `External Account Binding is
   required`.
-- **Cause** — The client is connecting to a profile that requires EAB, but did
+- **Cause** — The client is connecting to an endpoint that requires EAB, but did
   not provide the `kid` and `hmac` credentials.
 - **Fix** — Create EAB credentials using the `acme-proxy eab create` CLI command
   and configure the client to use them.
@@ -221,5 +221,5 @@ the way it is — is documented in [Database Schema](../dev/database.md).
   bursts.
 - **Cause** — The server's load shedder activated because the number of
   concurrent in-flight requests exceeded `server.max_concurrent_requests`.
-- **Fix** — Increase `max_concurrent_requests` and `admission_wait_ms`, or
+- **Fix** — Increase `max_concurrent_requests` and `admission_wait`, or
   configure your client to retry with exponential backoff.

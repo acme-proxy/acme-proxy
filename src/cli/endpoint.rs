@@ -1,13 +1,13 @@
-//! `profile list` — the ACME endpoints this configuration mounts — and
-//! `profile issuer accept`, the deliberate change of a profile's CA.
+//! `endpoint list` — the ACME endpoints this configuration mounts — and
+//! `endpoint issuer accept`, the deliberate change of an endpoint's CA.
 //!
-//! The terminal's half of `GET /api/profiles`. Both render
-//! [`acme_proxy_admin::admin::render_profile_json`], and they reach it from opposite
-//! directions: the API describes a **mounted** [`acme_proxy_protocol::profile::Profile`],
+//! The terminal's half of `GET /api/endpoints`. Both render
+//! [`acme_proxy_admin::admin::render_endpoint_json`], and they reach it from opposite
+//! directions: the API describes a **mounted** [`acme_proxy_protocol::endpoint::Endpoint`],
 //! where this describes what the configuration on disk *would* mount.
 //!
 //! That difference is deliberate rather than a shortcut. Building the real
-//! thing means `server::profile::build_all`, which constructs every signer backend —
+//! thing means `server::endpoint::build_all`, which constructs every signer backend —
 //! generating a CA key that does not exist yet, and contacting a relay's
 //! upstream — which is not a price a read-only listing should make an operator
 //! pay. `filter show` already draws the same line, and it cuts both ways: the
@@ -15,7 +15,7 @@
 //! that can be pointed at a configuration the server would refuse to start on.
 //!
 //! `issuer accept` is the one way to change the issuer the database records
-//! for a `local_ca` profile (`profile_issuers`), which every worker compares
+//! for a `local_ca` endpoint (`endpoint_issuers`), which every worker compares
 //! its CA against before signing — see `acme_proxy_signer::local_ca::identity`.
 //! It reads the configured CA *certificate* and nothing else: no key, no
 //! backend, so it runs as any uid that can read `ca.pem`.
@@ -28,23 +28,23 @@ use clap::Subcommand;
 use crate::cli::CliError;
 use crate::cli::render;
 use acme_proxy_admin::admin;
-use acme_proxy_admin::admin::ProfileSummary;
+use acme_proxy_admin::admin::EndpointSummary;
 use acme_proxy_core::config::Config;
 use acme_proxy_core::palette::Palette;
 use acme_proxy_jobs::auditor::admin as audit_admin;
 use acme_proxy_store::db::Database;
+use acme_proxy_store::endpoint_issuer::EndpointIssuer;
 use acme_proxy_store::nonce::now_secs;
-use acme_proxy_store::profile_issuer::ProfileIssuer;
 
 #[derive(Subcommand)]
-pub enum ProfileCommand {
+pub enum EndpointCommand {
     /// List the ACME endpoints this configuration mounts, name-sorted.
     List {
         /// Print it as JSON.
         #[arg(long)]
         json: bool,
     },
-    /// The CA a `local_ca` profile issues from, as the database records it.
+    /// The CA a `local_ca` endpoint issues from, as the database records it.
     Issuer {
         #[command(subcommand)]
         command: IssuerCommand,
@@ -53,16 +53,16 @@ pub enum ProfileCommand {
 
 #[derive(Subcommand)]
 pub enum IssuerCommand {
-    /// Record the CA the configuration names for a profile as the one it issues
+    /// Record the CA the configuration names for an endpoint as the one it issues
     /// from, replacing the recorded one. Every worker then refuses the old CA.
     Accept {
-        /// The profile whose CA changed.
+        /// The endpoint whose CA changed.
         name: String,
     },
 }
 
-pub async fn run_profile_command(
-    command: ProfileCommand,
+pub async fn run_endpoint_command(
+    command: EndpointCommand,
     yes: bool,
     palette: Palette,
     reader: &mut impl BufRead,
@@ -70,34 +70,34 @@ pub async fn run_profile_command(
     database: Arc<Database>,
 ) -> Result<(), CliError> {
     match command {
-        ProfileCommand::Issuer {
+        EndpointCommand::Issuer {
             command: IssuerCommand::Accept { name },
         } => accept_issuer(&name, yes, palette, reader, config, &database).await?,
-        ProfileCommand::List { json } => {
+        EndpointCommand::List { json } => {
             // The same call `serve` makes, so every startup refusal reaches an
             // operator here too -- `filter show`'s reason for building rather
-            // than reading back. `resolve_profiles` has already dropped anything
+            // than reading back. `resolve_endpoints` has already dropped anything
             // `enabled = false`, so there is no filter here: the list is the
             // mounted set.
             let resolved = config
-                .resolve_profiles()
+                .resolve_endpoints()
                 .map_err(|error| CliError::failed(format!("configuration error: {error}")))?;
 
-            let profiles: Vec<ProfileSummary> = resolved
+            let endpoints: Vec<EndpointSummary> = resolved
                 .iter()
-                .map(|profile| ProfileSummary::configured(&config.server.base_url, profile))
+                .map(|endpoint| EndpointSummary::configured(&config.server.base_url, endpoint))
                 .collect();
 
-            // Not `print_page`, and the one listing that is not paged: profiles
+            // Not `print_page`, and the one listing that is not paged: endpoints
             // are configuration an operator writes by hand in one file, not rows
             // a table grows, so there is no page and no total to report.
-            // `/api/profiles` answers the same bare array.
+            // `/api/endpoints` answers the same bare array.
             if json {
-                let rendered: Vec<_> = profiles.iter().map(admin::render_profile_json).collect();
+                let rendered: Vec<_> = endpoints.iter().map(admin::render_endpoint_json).collect();
                 println!("{}", serde_json::Value::Array(rendered));
             } else {
-                for profile in &profiles {
-                    println!("{}", render::render_profile_line(profile, palette));
+                for endpoint in &endpoints {
+                    println!("{}", render::render_endpoint_line(endpoint, palette));
                 }
             }
         }
@@ -105,7 +105,7 @@ pub async fn run_profile_command(
     Ok(())
 }
 
-/// `profile issuer accept <name>`.
+/// `endpoint issuer accept <name>`.
 async fn accept_issuer(
     name: &str,
     yes: bool,
@@ -115,15 +115,15 @@ async fn accept_issuer(
     database: &Arc<Database>,
 ) -> Result<(), CliError> {
     let resolved = config
-        .resolve_profiles()
+        .resolve_endpoints()
         .map_err(|error| CliError::failed(format!("configuration error: {error}")))?;
-    let Some(profile) = resolved.iter().find(|profile| profile.name == name) else {
-        return Err(CliError::failed(format!("no profile named `{name}`")));
+    let Some(endpoint) = resolved.iter().find(|endpoint| endpoint.name == name) else {
+        return Err(CliError::failed(format!("no endpoint named `{name}`")));
     };
-    let signer = &profile.sections.signer;
+    let signer = &endpoint.sections.signer;
     if signer.backend != "local_ca" {
         return Err(CliError::failed(format!(
-            "profile `{name}` uses the `{}` signer, which holds no CA here",
+            "endpoint `{name}` uses the `{}` signer, which holds no CA here",
             signer.backend
         )));
     }
@@ -134,26 +134,26 @@ async fn accept_issuer(
         // `revocation_route` answers `Ledger` for every `local_ca`; an error
         // rather than a panic if that ever stops being true.
         return Err(CliError::failed(format!(
-            "profile `{name}` has a local CA but no revocation ledger"
+            "endpoint `{name}` has a local CA but no revocation ledger"
         )));
     };
 
-    let previous = ProfileIssuer::find(name, database).await?;
+    let previous = EndpointIssuer::find(name, database).await?;
     if previous
         .as_ref()
         .is_some_and(|previous| previous.issuer == issuer)
     {
-        println!("Profile `{name}` already issues from CA {issuer}.");
+        println!("Endpoint `{name}` already issues from CA {issuer}.");
         return Ok(());
     }
     let prompt = match &previous {
         Some(previous) => format!(
-            "Profile `{name}`: record CA {issuer} (from `{}`) in place of {}? \
+            "Endpoint `{name}`: record CA {issuer} (from `{}`) in place of {}? \
              Every worker will then refuse the old CA.",
             signer.local_ca.cert_path, previous.issuer
         ),
         None => format!(
-            "Profile `{name}`: record CA {issuer} (from `{}`)?",
+            "Endpoint `{name}`: record CA {issuer} (from `{}`)?",
             signer.local_ca.cert_path
         ),
     };
@@ -162,15 +162,15 @@ async fn accept_issuer(
         return Ok(());
     }
 
-    ProfileIssuer::replace(name, &issuer, now_secs(), database).await?;
+    EndpointIssuer::replace(name, &issuer, now_secs(), database).await?;
     let previous = previous.map(|previous| previous.issuer);
     audit_admin::record_cli_action(database, |actor, client| {
-        audit_admin::profile_issuer_accepted(actor, client, name, previous.as_deref(), &issuer)
+        audit_admin::endpoint_issuer_accepted(actor, client, name, previous.as_deref(), &issuer)
     })
     .await;
     println!(
         "{}",
-        palette.ok(&format!("Profile `{name}` now issues from CA {issuer}."))
+        palette.ok(&format!("Endpoint `{name}` now issues from CA {issuer}."))
     );
     Ok(())
 }
@@ -180,14 +180,14 @@ mod tests {
     use super::*;
     use acme_proxy_core::config::ENV_LOCK;
 
-    /// Loads a `Config` the way the server does, so `resolve_profiles` has the
+    /// Loads a `Config` the way the server does, so `resolve_endpoints` has the
     /// raw sources per-key inheritance needs — `cli::upstream`'s helper, and
     /// for its reason.
     fn config_from(body: &str) -> Arc<Config> {
         let _lock = ENV_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let dir = acme_proxy_core::testutil::TempDir::new("profile");
+        let dir = acme_proxy_core::testutil::TempDir::new("endpoint");
         std::fs::write(dir.join("config.toml"), body).unwrap();
         // SAFETY: single-threaded test holding ENV_LOCK; removed before return.
         unsafe {
@@ -201,9 +201,9 @@ mod tests {
     }
 
     /// Name-sorted, `enabled = false` absent, and each summary carrying the
-    /// profile's *own* merged sections rather than the global ones.
+    /// endpoint's *own* merged sections rather than the global ones.
     #[test]
-    fn the_listing_is_the_profiles_this_configuration_would_mount() {
+    fn the_listing_is_the_endpoints_this_configuration_would_mount() {
         let config = config_from(
             r#"
             [server]
@@ -212,31 +212,31 @@ mod tests {
             [challenge]
             bypass = false
 
-            [profiles.staging]
+            [endpoints.staging]
             challenge.bypass = true
 
-            [profiles.le]
+            [endpoints.le]
             eab.enabled = true
 
-            [profiles.parked]
+            [endpoints.parked]
             enabled = false
             "#,
         );
 
-        let resolved = config.resolve_profiles().unwrap();
-        let summaries: Vec<ProfileSummary> = resolved
+        let resolved = config.resolve_endpoints().unwrap();
+        let summaries: Vec<EndpointSummary> = resolved
             .iter()
-            .map(|profile| ProfileSummary::configured(&config.server.base_url, profile))
+            .map(|endpoint| EndpointSummary::configured(&config.server.base_url, endpoint))
             .collect();
 
         let names: Vec<&str> = summaries.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["le", "staging"], "parked is not mounted");
 
         let le = &summaries[0];
-        assert_eq!(le.base_url, "https://ca.example.com/profile/le");
+        assert_eq!(le.base_url, "https://ca.example.com/endpoint/le");
         assert_eq!(
             le.directory_url(),
-            "https://ca.example.com/profile/le/directory"
+            "https://ca.example.com/endpoint/le/directory"
         );
         assert!(le.eab_enabled);
         // Inherited from the global section, not reverted to the compiled
@@ -245,17 +245,17 @@ mod tests {
         assert!(summaries[1].challenge_bypass, "staging overrode it");
     }
 
-    /// Both output shapes run, and a configuration that resolves no profiles is
-    /// reported in words rather than printing an empty list -- `resolve_profiles`
+    /// Both output shapes run, and a configuration that resolves no endpoints is
+    /// reported in words rather than printing an empty list -- `resolve_endpoints`
     /// refuses it, and this command is meant to surface exactly the startup
     /// refusals `serve` would hit.
     #[tokio::test]
-    async fn both_shapes_render_and_a_profileless_configuration_is_refused() {
-        let config = config_from("[profiles.default]\n");
+    async fn both_shapes_render_and_a_endpointless_configuration_is_refused() {
+        let config = config_from("[endpoints.default]\n");
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         for json in [false, true] {
-            run_profile_command(
-                ProfileCommand::List { json },
+            run_endpoint_command(
+                EndpointCommand::List { json },
                 true,
                 Palette::plain(),
                 &mut &b""[..],
@@ -267,8 +267,8 @@ mod tests {
         }
 
         let empty = Arc::new(Config::default());
-        let error = run_profile_command(
-            ProfileCommand::List { json: false },
+        let error = run_endpoint_command(
+            EndpointCommand::List { json: false },
             true,
             Palette::plain(),
             &mut &b""[..],
@@ -283,8 +283,8 @@ mod tests {
         );
     }
 
-    fn accept(name: &str) -> ProfileCommand {
-        ProfileCommand::Issuer {
+    fn accept(name: &str) -> EndpointCommand {
+        EndpointCommand::Issuer {
             command: IssuerCommand::Accept {
                 name: name.to_string(),
             },
@@ -315,15 +315,15 @@ mod tests {
     /// recorded.
     #[tokio::test]
     async fn issuer_accept_records_the_configured_ca_and_audits_it() {
-        let dir = acme_proxy_core::testutil::TempDir::new("profile-issuer");
+        let dir = acme_proxy_core::testutil::TempDir::new("endpoint-issuer");
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         let config = config_from(&format!(
-            "[profiles.default]\nsigner.local_ca.cert_path = \"{dir}/ca.pem\"\n\
-             [profiles.up]\nsigner.backend = \"relay\"\n",
+            "[endpoints.default]\nsigner.local_ca.cert_path = \"{dir}/ca.pem\"\n\
+             [endpoints.up]\nsigner.backend = \"relay\"\n",
             dir = dir.path().display()
         ));
         let run = async |command, yes, input: &[u8]| {
-            run_profile_command(
+            run_endpoint_command(
                 command,
                 yes,
                 Palette::plain(),
@@ -336,7 +336,7 @@ mod tests {
 
         let first = new_ca(&dir, &database).await;
         run(accept("default"), true, b"").await.unwrap();
-        let recorded = ProfileIssuer::find("default", &database).await.unwrap();
+        let recorded = EndpointIssuer::find("default", &database).await.unwrap();
         assert_eq!(recorded.unwrap().issuer, first);
         // Again: nothing to change, and nothing asked.
         run(accept("default"), false, b"").await.unwrap();
@@ -344,14 +344,14 @@ mod tests {
         // A new CA: declined, then accepted.
         let second = new_ca(&dir, &database).await;
         run(accept("default"), false, b"n\n").await.unwrap();
-        let recorded = ProfileIssuer::find("default", &database).await.unwrap();
+        let recorded = EndpointIssuer::find("default", &database).await.unwrap();
         assert_eq!(
             recorded.unwrap().issuer,
             first,
             "a declined prompt changes nothing"
         );
         run(accept("default"), false, b"y\n").await.unwrap();
-        let recorded = ProfileIssuer::find("default", &database).await.unwrap();
+        let recorded = EndpointIssuer::find("default", &database).await.unwrap();
         assert_eq!(recorded.unwrap().issuer, second);
 
         let (trail, _) = acme_proxy_store::audit::AuditEntry::search(
@@ -365,7 +365,7 @@ mod tests {
         .unwrap();
         let accepted: Vec<_> = trail
             .iter()
-            .filter(|row| row.event == "profile_issuer_accepted")
+            .filter(|row| row.event == "endpoint_issuer_accepted")
             .collect();
         assert_eq!(accepted.len(), 2, "one row per change that landed");
         assert!(
@@ -379,7 +379,7 @@ mod tests {
         // Refusals by name.
         let error = run(accept("nope"), true, b"").await.unwrap_err();
         assert!(
-            error.to_string().contains("no profile named `nope`"),
+            error.to_string().contains("no endpoint named `nope`"),
             "{error}"
         );
         let error = run(accept("up"), true, b"").await.unwrap_err();

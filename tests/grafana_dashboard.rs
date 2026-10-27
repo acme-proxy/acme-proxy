@@ -80,7 +80,7 @@ fn dashboard() -> (String, Value) {
 ///
 /// Deliberately over-broad — it scans the whole document rather than only the
 /// `expr` fields — because a metric name also appears in panel descriptions and
-/// in the `profile` variable's `label_values(...)` query, and a rename has to
+/// in the `endpoint` variable's `label_values(...)` query, and a rename has to
 /// reach those too.
 fn referenced_metrics(raw: &str) -> BTreeSet<String> {
     let mut found = BTreeSet::new();
@@ -203,12 +203,12 @@ fn every_panel_has_a_datasource_and_at_least_one_query() {
 /// The trap the dashboard exists partly to encode.
 ///
 /// `acme_proxy_database_pool_connections` is process-wide and carries **no
-/// `profile` label**, so scoping it to the dashboard's profile variable — which
+/// `endpoint` label**, so scoping it to the dashboard's endpoint variable — which
 /// is the reflex, since every other query does — would match nothing and leave
 /// the panel silently empty. Anyone editing these two panels will reach for the
 /// variable; this is what stops them.
 #[test]
-fn the_pool_gauge_is_never_scoped_to_the_profile_variable() {
+fn the_pool_gauge_is_never_scoped_to_the_endpoint_variable() {
     let (_, dashboard) = dashboard();
 
     for panel in dashboard["panels"].as_array().unwrap() {
@@ -217,9 +217,9 @@ fn the_pool_gauge_is_never_scoped_to_the_profile_variable() {
             let expr = target["expr"].as_str().unwrap_or("");
             if expr.contains("acme_proxy_database_pool_connections") {
                 assert!(
-                    !expr.contains("$profile"),
-                    "panel `{title}` filters the pool gauge by $profile, but \
-                     that gauge has no profile label -- the panel would be \
+                    !expr.contains("$endpoint"),
+                    "panel `{title}` filters the pool gauge by $endpoint, but \
+                     that gauge has no endpoint label -- the panel would be \
                      empty with no error shown. Query was:\n{expr}"
                 );
             }
@@ -255,5 +255,5 @@ fn the_dashboard_is_importable() {
         .filter_map(|v| v["name"].as_str())
         .collect();
     assert!(names.contains(&"datasource"), "variables: {names:?}");
-    assert!(names.contains(&"profile"), "variables: {names:?}");
+    assert!(names.contains(&"endpoint"), "variables: {names:?}");
 }

@@ -2,7 +2,7 @@
 //!
 //! There is no mutating route in this file and there is not meant to be one.
 //! The trail is pruned from the host (`acme-proxy audit cleanup`) or by
-//! `audit.retention_days`; a panel session that could delete audit history
+//! `audit.retention`; a panel session that could delete audit history
 //! would make the history prove nothing, since the first thing a stolen session
 //! would do is use it. That is also why neither handler here takes
 //! [`AuthenticatedWrite`](crate::webadmin::session::AuthenticatedWrite) and why
@@ -27,7 +27,7 @@ use acme_proxy_store::audit::AuditQuery;
 #[derive(Debug, Deserialize, Default)]
 pub struct AuditListParams {
     #[serde(default, deserialize_with = "empty_is_absent")]
-    pub profile: Option<String>,
+    pub endpoint: Option<String>,
     #[serde(rename = "accountId", default, deserialize_with = "empty_is_absent")]
     pub account_id: Option<String>,
     #[serde(rename = "orderId", default, deserialize_with = "empty_is_absent")]
@@ -51,7 +51,7 @@ impl AuditListParams {
     /// cannot reach one surface and not the other.
     pub fn query(&self, page: Page) -> AuditQuery {
         AuditQuery {
-            profile: self.profile.clone(),
+            endpoint: self.endpoint.clone(),
             account_id: self.account_id.clone(),
             order_id: self.order_id.clone(),
             cert_serial: self.cert_serial.clone(),
@@ -77,7 +77,7 @@ impl From<admin::AuditListError> for AdminError {
     }
 }
 
-/// `GET /api/audit?profile=&accountId=&orderId=&certSerial=&event=&outcome=&limit=&offset=`
+/// `GET /api/audit?endpoint=&accountId=&orderId=&certSerial=&event=&outcome=&limit=&offset=`
 pub async fn list_audit(
     State(state): State<AdminState>,
     Query(params): Query<AuditListParams>,

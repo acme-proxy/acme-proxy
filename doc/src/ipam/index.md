@@ -22,7 +22,7 @@ that, and it decides the same way whichever product answered.
 | `phpipam` | [phpIPAM](https://phpipam.net) | [phpIPAM](phpipam.md) |
 | `custom` | an operator script | [Custom Script](custom.md) |
 
-One backend per profile. `[ipam]` is a per-profile section, so two endpoints
+One backend per endpoint. `[ipam]` is a per-endpoint section, so two endpoints
 served by the same process may consult different inventories.
 
 ## Sources
@@ -98,9 +98,9 @@ looks like a permanent refusal.
 ## What it costs per request
 
 The lookup runs inline in `newOrder` and again at `finalize`, so it is part of
-those requests' worst case. `timeout_ms` is one budget covering the *whole*
+those requests' worst case. `timeout` is one budget covering the *whole*
 lookup however many requests the backend makes to answer it — not one per
-request — and it must stay below `server.request_timeout_ms`.
+request — and it must stay below `server.request_timeout`.
 
 ## Migrating from `filter.netbox`
 
@@ -115,7 +115,7 @@ the other two:
 
 | Was | Now |
 | --- | --- |
-| `filter.netbox.timeout_ms` | `ipam.timeout_ms` |
+| `filter.netbox.timeout` | `ipam.timeout` |
 | `filter.netbox.use_dns_name = true` | `"dns_name"` in `ipam.netbox.sources` |
 | `filter.netbox.device_fallback = true` | `"device"` in `ipam.netbox.sources` |
 
@@ -138,7 +138,7 @@ and are listed in the
 ```toml
 [ipam]
 backend = "netbox"
-timeout_ms = 5000
+timeout = "5s"
 
 [ipam.netbox]
 url = "https://netbox.internal.example.com"
@@ -157,7 +157,7 @@ Which inventory to consult: `netbox`, `phpipam`, `custom`, or empty for none.
 Anything else is a startup error rather than a silent fallback. Enabling the
 `ipam` filter while this is empty is also a startup error.
 
-**`timeout_ms`** (`Integer`) — *Default: `5000` | Env: `ACME_PROXY_IPAM__TIMEOUT_MS`*
+**`timeout`** (`Duration`) — *Default: `"5s"` | Env: `ACME_PROXY_IPAM__TIMEOUT`*
 
 Budget for one whole lookup, however many requests the backend makes to answer
 it — or, for `custom`, however long its script takes. Applied once around all

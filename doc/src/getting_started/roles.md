@@ -48,7 +48,7 @@ Three things to get right:
    revocations, notifications and the periodic sweeps are all queued work. A
    worker in another process picks a row up within the job poll interval, so
    clients see a second or so more `processing` than all-in-one; a revocation
-   for a relay or custom profile still running when its request's deadline
+   for a relay or custom endpoint still running when its request's deadline
    nears answers `503` with `Retry-After`, and asking again follows it.
 
 ## One systemd unit per role

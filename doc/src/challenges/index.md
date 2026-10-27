@@ -28,11 +28,11 @@ enabled = ["http-01", "dns-01"]
 bypass = false
 
 # Budget for one validation attempt.
-timeout_ms = 5000
+timeout = "5s"
 ```
 
-`[challenge]` is a **per-profile** section: each endpoint can offer a different
-set of types. See [Profiles & Routing](../core/profiles.md).
+`[challenge]` is a **per-endpoint** section: each endpoint can offer a different
+set of types. See [Endpoints & Routing](../core/endpoints.md).
 
 ### Reference
 
@@ -49,13 +49,13 @@ Mark a triggered challenge `valid` immediately, with no network check. With this
 on, `[filter]` is the **only** access control there is — which is why it is not
 the default.
 
-**`timeout_ms`** (`Integer`) — *Default: `5000` | Env: `ACME_PROXY_CHALLENGE__TIMEOUT_MS`*
+**`timeout`** (`Duration`) — *Default: `"5s"` | Env: `ACME_PROXY_CHALLENGE__TIMEOUT`*
 
 Budget for one validation attempt, applied at the registry level whatever the
 type. It bounds a job attempt in the runner, not a request — see
 [Validation runs in the job queue](#validation-runs-in-the-job-queue) — and it
-must stay below `server.request_timeout_ms`, which
-`server::profile::build_all` refuses to start otherwise.
+must stay below `server.request_timeout`, which
+`server::endpoint::build_all` refuses to start otherwise.
 
 **`max_in_flight_per_account`** (`Integer`) — *Default: `32` | Env:
 `ACME_PROXY_CHALLENGE__MAX_IN_FLIGHT_PER_ACCOUNT`*
@@ -160,7 +160,7 @@ sequenceDiagram
     P-->>C: 200 + challenge object (processing)<br/>+ Retry-After + Link: rel="up"
     W->>D: claim the job
     rect rgb(240, 240, 240)
-        Note over W,T: in the runner, under challenge.timeout_ms
+        Note over W,T: in the runner, under challenge.timeout
         W->>T: fetch token / query TXT / TLS handshake
         T-->>W: answer, or timeout
     end
@@ -172,8 +172,8 @@ sequenceDiagram
 
 Three consequences:
 
-- `challenge.timeout_ms` bounds a **job attempt**, not an HTTP request. It is
-  therefore independent of `server.request_timeout_ms`, and the server no
+- `challenge.timeout` bounds a **job attempt**, not an HTTP request. It is
+  therefore independent of `server.request_timeout`, and the server no
   longer refuses to start when it exceeds it.
 - A client that points a name at an unreachable host no longer occupies one of
   `server.max_concurrent_requests` while the server waits for it.
@@ -184,7 +184,7 @@ Three consequences:
 
 A validation is attempted **once**: a check that ran records its verdict, pass
 or fail. The job is retried only when the attempt could not happen at all — the
-database was unreachable, or the endpoint's profile is not mounted by the
+database was unreachable, or the endpoint's endpoint is not mounted by the
 process that picked the row up.
 
 ## Both outcomes are `200`

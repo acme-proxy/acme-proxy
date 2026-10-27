@@ -6,21 +6,21 @@
 //!
 //! The span names the client twice over, and both halves are load-bearing. This
 //! layer seeds `client_ip` from the peer address, which is the only source the
-//! routes outside every profile router have — `/health`, the http-01 responder
-//! and the admission-control refusals. The per-profile filter middleware then
+//! routes outside every endpoint router have — `/health`, the http-01 responder
+//! and the admission-control refusals. The per-endpoint filter middleware then
 //! overwrites it with the address `ProxyPolicy` resolved, since
-//! `filter.trusted_proxies` is per-profile configuration and a request through
+//! `filter.trusted_proxies` is per-endpoint configuration and a request through
 //! a trusted reverse proxy would otherwise be attributed to the proxy.
 //!
 //! Both halves live in one middleware on purpose. They used to be two — this
 //! `x-request-id` layer plus a `tower_http::trace::TraceLayer` built inside
-//! each profile's router — and the split cost three things:
+//! each endpoint's router — and the split cost three things:
 //!
 //! - the id never reached the span. `Span::current().record("request_id", …)`
 //!   ran here, *outside* the span `TraceLayer` had not created yet, so it wrote
 //!   to nothing;
 //! - the root routes (`/health`, `/`, the http-01 responder) and the
-//!   admission-control layer sat outside the profile routers entirely, so
+//!   admission-control layer sat outside the endpoint routers entirely, so
 //!   `request_shed` and `request_deadline_exceeded` — the two events an
 //!   operator most wants to correlate — carried no id at all;
 //! - `DefaultOnResponse` emits under the `tower_http::trace::on_response`
@@ -133,15 +133,15 @@ pub async fn add_access_middleware(mut request: Request<Body>, next: Next) -> im
         .get::<ConnectInfo<SocketAddr>>()
         .map(|ConnectInfo(addr)| acme_proxy_core::client::canonical(addr.ip()));
 
-    // `profile` is filled in by each profile router (see `build_router`): this
-    // layer is server-wide and mounted above the `/profile/<name>` nesting, so
+    // `endpoint` is filled in by each endpoint router (see `build_router`): this
+    // layer is server-wide and mounted above the `/endpoint/<name>` nesting, so
     // it is not yet known here.
     //
     // `client_ip` is seeded here with the *peer* and overwritten by the filter
     // middleware with the `ProxyPolicy`-resolved address, because
-    // `filter.trusted_proxies` is per-profile configuration this layer cannot
+    // `filter.trusted_proxies` is per-endpoint configuration this layer cannot
     // see. Seeding it is not redundant: `/health`, the http-01 responder and
-    // every admission-control refusal sit outside all profile routers, so
+    // every admission-control refusal sit outside all endpoint routers, so
     // without it the routes that never reach a filter would name nobody.
     //
     // The `ClientIp` *extension* is seeded from the same value and for the same
@@ -165,7 +165,7 @@ pub async fn add_access_middleware(mut request: Request<Body>, next: Next) -> im
         uri = %request.uri(),
         version = ?request.version(),
         request_id = %id_str,
-        profile = field::Empty,
+        endpoint = field::Empty,
         client_ip = field::Empty,
     );
     if let Some(peer) = peer {

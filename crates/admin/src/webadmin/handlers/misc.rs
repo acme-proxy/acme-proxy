@@ -1,7 +1,7 @@
-//! `/api/nonces` and `/api/profiles` — the two small read surfaces.
+//! `/api/nonces` and `/api/endpoints` — the two small read surfaces.
 //!
 //! Nonce values are bearer credentials, so `/api/nonces` answers a count and
-//! never a value. The profile list is what is *mounted*, which between an edit
+//! never a value. The endpoint list is what is *mounted*, which between an edit
 //! and its `SIGHUP` may differ from what the file says.
 
 use axum::Json;
@@ -20,7 +20,7 @@ use acme_proxy_store::nonce::Nonce;
 /// The optional body of `POST /api/nonces/cleanup`.
 #[derive(Debug, Deserialize, Default)]
 pub struct CleanupRequest {
-    /// Age past which a nonce is swept. Absent means `nonce.ttl_seconds`.
+    /// Age past which a nonce is swept. Absent means `nonce.ttl`.
     #[serde(rename = "ttlSeconds")]
     pub ttl_seconds: Option<u64>,
 }
@@ -36,7 +36,7 @@ pub async fn get_nonces(
     let count = Nonce::count(&state.database).await?;
     Ok(Json(admin::render_nonce_stats_json(
         count,
-        state.config.nonce.ttl_seconds,
+        state.config.nonce.ttl.as_secs(),
     )))
 }
 
@@ -49,7 +49,7 @@ pub async fn cleanup_nonces(
 ) -> Result<Json<Value>, AdminError> {
     let seconds = body
         .and_then(|Json(body)| body.ttl_seconds)
-        .unwrap_or(state.config.nonce.ttl_seconds);
+        .unwrap_or(state.config.nonce.ttl.as_secs());
 
     let removed =
         apply_cleanup_nonces(&state, &Caller::api(&auth, &request_context), seconds).await?;
@@ -82,42 +82,42 @@ pub(crate) async fn apply_cleanup_nonces(
     Ok(removed)
 }
 
-/// `GET /api/profiles` — the endpoints this process is serving.
+/// `GET /api/endpoints` — the endpoints this process is serving.
 ///
-/// Read straight from the mounted [`acme_proxy_protocol::profile::Profile`]s rather than from
-/// configuration, so it describes what is actually running: a profile parked
+/// Read straight from the mounted [`acme_proxy_protocol::endpoint::Endpoint`]s rather than from
+/// configuration, so it describes what is actually running: an endpoint parked
 /// with `enabled = false` is absent here, which is the honest answer.
-pub async fn list_profiles(State(state): State<AdminState>, _auth: Authenticated) -> Json<Value> {
-    Json(Value::Array(profile_rows(&state)))
+pub async fn list_endpoints(State(state): State<AdminState>, _auth: Authenticated) -> Json<Value> {
+    Json(Value::Array(endpoint_rows(&state)))
 }
 
 /// The mounted endpoints, name-sorted.
 ///
 /// Shared with the `/ui` pages, which show the same list on the overview, on
-/// its own page, and in the profile filter of every list -- one assembly, so
+/// its own page, and in the endpoint filter of every list -- one assembly, so
 /// the two front ends cannot come to describe an endpoint differently.
-pub(crate) fn profile_rows(state: &AdminState) -> Vec<Value> {
-    let mut names: Vec<&String> = state.profiles.keys().collect();
+pub(crate) fn endpoint_rows(state: &AdminState) -> Vec<Value> {
+    let mut names: Vec<&String> = state.endpoints.keys().collect();
     names.sort();
 
     names
         .into_iter()
-        .filter_map(|name| state.profiles.get(name))
-        .map(|profile| profile_row(profile))
+        .filter_map(|name| state.endpoints.get(name))
+        .map(|endpoint| endpoint_row(endpoint))
         .collect()
 }
 
 /// One endpoint, as every surface describes it.
 ///
-/// Split out of [`profile_rows`] for the filter-policy page, which shows one
+/// Split out of [`endpoint_rows`] for the filter-policy page, which shows one
 /// endpoint rather than the list and still has to say the same things about it
 /// -- `challengeBypass` above all, since that page is where the warning
 /// matters most.
 ///
-/// The document itself is [`admin::render_profile_json`], which
-/// `acme-proxy profile list` renders too. The two reach it from opposite
-/// directions -- a mounted profile here, a resolved configuration there -- and
-/// [`admin::ProfileSummary`] is where that difference is written down.
-pub(crate) fn profile_row(profile: &acme_proxy_protocol::profile::Profile) -> Value {
-    admin::render_profile_json(&admin::ProfileSummary::mounted(profile))
+/// The document itself is [`admin::render_endpoint_json`], which
+/// `acme-proxy endpoint list` renders too. The two reach it from opposite
+/// directions -- a mounted endpoint here, a resolved configuration there -- and
+/// [`admin::EndpointSummary`] is where that difference is written down.
+pub(crate) fn endpoint_row(endpoint: &acme_proxy_protocol::endpoint::Endpoint) -> Value {
+    admin::render_endpoint_json(&admin::EndpointSummary::mounted(endpoint))
 }

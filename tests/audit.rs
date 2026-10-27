@@ -32,9 +32,9 @@ use common::{
 
 const CLIENT: &str = "203.0.113.7:40000";
 const OTHER_CLIENT: &str = "198.51.100.4:40000";
-const NEW_ACCOUNT_URL: &str = "http://localhost:3000/profile/default/newAccount";
-const NEW_ORDER_URL: &str = "http://localhost:3000/profile/default/newOrder";
-const REVOKE_URL: &str = "http://localhost:3000/profile/default/revokeCert";
+const NEW_ACCOUNT_URL: &str = "http://localhost:3000/endpoint/default/newAccount";
+const NEW_ORDER_URL: &str = "http://localhost:3000/endpoint/default/newOrder";
+const REVOKE_URL: &str = "http://localhost:3000/endpoint/default/revokeCert";
 
 /// Every audit row, newest first.
 async fn rows(database: &Arc<Database>) -> Vec<AuditEntry> {
@@ -328,7 +328,7 @@ async fn an_order_records_the_address_it_was_placed_from() {
 }
 
 /// The row the whole feature exists for: one per certificate signed, naming the
-/// account, the profile, the address and the names covered.
+/// account, the endpoint, the address and the names covered.
 #[tokio::test]
 async fn issuing_a_certificate_writes_one_audit_row_with_the_requesters_address() {
     let (app, database) = test_app_with_db().await;
@@ -344,7 +344,7 @@ async fn issuing_a_certificate_writes_one_audit_row_with_the_requesters_address(
     let row = one_row(&database).await;
     assert_eq!(row.event, "certificate_issued");
     assert_eq!(row.outcome, "success");
-    assert_eq!(row.profile, "default");
+    assert_eq!(row.endpoint, "default");
     assert_eq!(row.actor_kind, "acme");
     assert_eq!(
         row.actor_id.as_deref(),

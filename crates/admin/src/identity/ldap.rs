@@ -85,7 +85,7 @@ impl LdapProvider {
             bind_password,
             roles: RoleMap::from_config(&config.roles),
             tls: Arc::new(tls),
-            timeout: Duration::from_millis(config.timeout_ms),
+            timeout: config.timeout.as_std(),
         })
     }
 
@@ -96,7 +96,7 @@ impl LdapProvider {
     }
 
     /// Checks `username` and `password` against the directory, answering who
-    /// they are. The whole exchange is bounded by `timeout_ms`.
+    /// they are. The whole exchange is bounded by `timeout`.
     pub async fn authenticate(
         &self,
         username: &str,

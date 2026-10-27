@@ -37,7 +37,7 @@
 //!
 //! [`JobQueue::enqueue`] notifies the runner directly, so a job queued by a
 //! request starts within microseconds rather than waiting for
-//! `jobs.poll_interval_ms`. That matters because the ACME client that triggered
+//! `jobs.poll_interval`. That matters because the ACME client that triggered
 //! it is already polling its order. The notification is a
 //! [`tokio::sync::Notify`], which is process-local: with two processes over one
 //! database, the second sees the first's enqueue at its next tick. That is a
@@ -155,14 +155,14 @@ pub trait JobHandler: Send + Sync {
     /// How long one attempt at *this row* may take, and therefore how long the
     /// lease is held.
     ///
-    /// `None` takes `jobs.lease_seconds`. The runner enforces it with a timeout
+    /// `None` takes `jobs.lease`. The runner enforces it with a timeout
     /// and writes a lease slightly longer, so the in-process deadline always
     /// fires before another runner could steal the row.
     ///
     /// Takes the job because a handler may serve several configurations of one
     /// subsystem — `signer::relay::flow::RelayJob` is one handler over every
-    /// relay profile in the process, and `signer.relay.poll_timeout_secs` is
-    /// per profile. The runner has the claimed row in hand when it asks, so
+    /// relay endpoint in the process, and `signer.relay.poll_timeout` is
+    /// per endpoint. The runner has the claimed row in hand when it asks, so
     /// this costs nothing; a handler with one budget ignores the argument.
     fn lease(&self, _job: &Job) -> Option<Duration> {
         None
@@ -267,7 +267,7 @@ impl JobQueue {
     }
 
     /// Tells this process's runner that a job is ready, rather than leaving it
-    /// to the next `jobs.poll_interval_ms` tick. A no-op in a process running
+    /// to the next `jobs.poll_interval` tick. A no-op in a process running
     /// no worker: the row is durable, and the worker's own poll finds it.
     pub fn wake(&self) {
         self.notify.notify_one();

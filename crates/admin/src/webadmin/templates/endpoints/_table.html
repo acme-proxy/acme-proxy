@@ -1,4 +1,4 @@
-{#- The mounted endpoints. Read from the live profiles, so a profile parked
+{#- The mounted endpoints. Read from the live endpoints, so an endpoint parked
     with `enabled = false` is simply absent -- the honest answer. -#}
 <div class="panel table-scroll">
   <table>
@@ -12,26 +12,26 @@
       </tr>
     </thead>
     <tbody>
-      {% for profile in profiles %}
+      {% for endpoint in endpoints %}
         <tr>
-          <td><code>{{ profile.name }}</code></td>
-          <td class="wrap-anywhere"><code>{{ profile.directory }}</code></td>
+          <td><code>{{ endpoint.name }}</code></td>
+          <td class="wrap-anywhere"><code>{{ endpoint.directory }}</code></td>
           <td>
-            {% if profile.challengeBypass %}
+            {% if endpoint.challengeBypass %}
               <span class="badge invalid">bypassed</span>
             {% else %}
               <span class="badge valid">validated</span>
             {% endif %}
           </td>
           <td>
-            {% if profile.eabEnabled %}
+            {% if endpoint.eabEnabled %}
               <span class="badge valid">required</span>
             {% else %}
               <span class="badge">off</span>
             {% endif %}
           </td>
           <td>
-            <a href="/ui/profiles/{{ profile.name }}/filter">Filter policy</a>
+            <a href="/ui/endpoints/{{ endpoint.name }}/filter">Filter policy</a>
           </td>
         </tr>
       {% else %}

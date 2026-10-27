@@ -6,7 +6,7 @@
     <dt>Row</dt><dd><code>{{ entry.id }}</code></dd>
     <dt>When</dt><dd>{{ entry.createdAt }}</dd>
     <dt>Event</dt><dd><span class="badge {{ entry.outcome }}">{{ entry.event }}</span></dd>
-    <dt>Profile</dt><dd><code>{{ entry.profile }}</code></dd>
+    <dt>Endpoint</dt><dd><code>{{ entry.endpoint }}</code></dd>
     <dt>Actor</dt>
     <dd>{{ entry.actorKind }}{% if entry.actorId %} <code>{{ entry.actorId }}</code>{% endif %}</dd>
     {% if entry.accountId %}

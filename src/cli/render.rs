@@ -22,7 +22,7 @@
 use base64::prelude::*;
 
 use super::window::Window;
-use acme_proxy_admin::admin::ProfileSummary;
+use acme_proxy_admin::admin::EndpointSummary;
 use acme_proxy_admin::admin::ops::JobDetail;
 use acme_proxy_admin::admin::ops::OrderDetail;
 use acme_proxy_admin::admin::ops::UpstreamOrderDetail;
@@ -54,7 +54,7 @@ fn render_client(ip: Option<&String>, ptr: Option<&String>) -> String {
     }
 }
 
-/// One line: `id  profile  status  last_seen_from  contact  created_at`.
+/// One line: `id  endpoint  status  last_seen_from  contact  created_at`.
 ///
 /// The address where the key was last seen takes the column a public-key
 /// fingerprint used to hold: a fingerprint identifies nothing an operator
@@ -64,7 +64,7 @@ pub fn render_account_line(account: &Account, palette: Palette) -> String {
     format!(
         "{}  {:<12}  {}  {:<40}  {}  {}",
         account.id,
-        account.profile,
+        account.endpoint,
         palette.status(&format!("{:<11}", account.status)),
         render_client(
             account.last_seen_ip.as_ref(),
@@ -90,9 +90,9 @@ pub fn render_account_detail_text(account: &Account, palette: Palette) -> String
     // `last_seen_ptr` is thirteen characters and would otherwise be the one
     // label that pushes its value out of line.
     let mut out = format!(
-        "id            {}\nprofile       {}\nstatus        {}\npubkey        {}\ncreated       {}\n",
+        "id            {}\nendpoint      {}\nstatus        {}\npubkey        {}\ncreated       {}\n",
         account.id,
-        account.profile,
+        account.endpoint,
         palette.status(&account.status),
         pubkey_fingerprint(&account.pubkey),
         rfc3339(account.created_at),
@@ -140,7 +140,7 @@ fn paint_event(event: &str, width: usize, palette: Palette) -> String {
     }
 }
 
-/// One line: `id  created_at  event  profile  actor  client  identifiers`.
+/// One line: `id  created_at  event  endpoint  actor  client  identifiers`.
 ///
 /// The client column is [`render_client`]'s three shapes; a row with neither
 /// address nor name is a CLI or relay action, and reads as `-`.
@@ -156,7 +156,7 @@ pub fn render_audit_line(entry: &AuditEntry, palette: Palette) -> String {
         entry.id,
         rfc3339(entry.created_at),
         paint_event(&entry.event, 26, palette),
-        entry.profile,
+        entry.endpoint,
         actor,
         client,
         entry.identifiers.join(","),
@@ -172,12 +172,12 @@ pub fn render_audit_line(entry: &AuditEntry, palette: Palette) -> String {
 #[must_use]
 pub fn render_audit_detail_text(entry: &AuditEntry, palette: Palette) -> String {
     let mut out = format!(
-        "id           {}\ncreated      {}\nevent        {}\noutcome      {}\nprofile      {}\nactor        {}\n",
+        "id           {}\ncreated      {}\nevent        {}\noutcome      {}\nendpoint     {}\nactor        {}\n",
         entry.id,
         rfc3339(entry.created_at),
         paint_event(&entry.event, 0, palette),
         palette.status(&entry.outcome),
-        entry.profile,
+        entry.endpoint,
         match &entry.actor_id {
             Some(id) => format!("{}:{id}", entry.actor_kind),
             None => entry.actor_kind.clone(),
@@ -216,7 +216,7 @@ pub fn render_order_line(order: &Order, palette: Palette) -> String {
     let mut line = format!(
         "{}  {:<12}  {}  {}  {}",
         order.id,
-        order.profile,
+        order.endpoint,
         palette.status(&format!("{:<9}", order.status)),
         identifiers,
         rfc3339(order.created_at)
@@ -237,7 +237,7 @@ pub fn render_order_line(order: &Order, palette: Palette) -> String {
     line
 }
 
-/// One line of `order list --expiring-in`: `order_id  profile  Nd  not_after
+/// One line of `order list --expiring-in`: `order_id  endpoint  Nd  not_after
 /// identifiers`, plus a `replaced-by=` suffix where something has.
 ///
 /// Two things are painted, both semantic. The days-left column, because "act
@@ -264,7 +264,7 @@ pub fn render_expiring_line(entry: &ExpiringEntry, palette: Palette) -> String {
     let mut line = format!(
         "{}  {:<12}  {}  {}  {}",
         order.id,
-        order.profile,
+        order.endpoint,
         days,
         rfc3339(order.cert_not_after.unwrap_or_default()),
         identifiers
@@ -346,7 +346,7 @@ pub fn render_job_detail_text(detail: &JobDetail, palette: Palette) -> String {
     out
 }
 
-/// One line: `order_id  profile  status  local_status  identifiers  updated_at`.
+/// One line: `order_id  endpoint  status  local_status  identifiers  updated_at`.
 #[must_use]
 pub fn render_upstream_order_line(row: &UpstreamOrderRow, palette: Palette) -> String {
     let identifiers = row
@@ -358,7 +358,7 @@ pub fn render_upstream_order_line(row: &UpstreamOrderRow, palette: Palette) -> S
     format!(
         "{}  {:<12}  {}  {:<10}  {}  {}",
         row.order_id,
-        row.profile,
+        row.endpoint,
         palette.status(&format!("{:<10}", row.status)),
         row.local_status,
         identifiers,
@@ -378,7 +378,7 @@ fn render_upstream_order_block(row: &UpstreamOrderRow, palette: Palette) -> Stri
         .collect::<Vec<_>>()
         .join(",");
     out.push_str(&format!("  {:<24} {}\n", "order_id", row.order_id));
-    out.push_str(&format!("  {:<24} {}\n", "profile", row.profile));
+    out.push_str(&format!("  {:<24} {}\n", "endpoint", row.endpoint));
     out.push_str(&format!(
         "  {:<24} {}\n",
         "status",
@@ -496,9 +496,9 @@ pub fn render_order_detail_text(detail: &OrderDetail, palette: Palette) -> Strin
     // rather than a shorter one precisely because `not_after` is a *different*
     // field one line above it (the requested §7.4 window, not the leaf's).
     let mut out = format!(
-        "id             {}\nprofile        {}\naccount_id     {}\nstatus         {}\nidentifiers    {}\ncreated        {}\nexpires        {}\n",
+        "id             {}\nendpoint       {}\naccount_id     {}\nstatus         {}\nidentifiers    {}\ncreated        {}\nexpires        {}\n",
         order.id,
-        order.profile,
+        order.endpoint,
         order.account_id,
         palette.status(&order.status.to_string()),
         order
@@ -514,6 +514,7 @@ pub fn render_order_detail_text(detail: &OrderDetail, palette: Palette) -> Strin
         ("not_before", order.not_before.map(rfc3339)),
         ("not_after", order.not_after.map(rfc3339)),
         ("replaces", order.replaces.clone()),
+        ("profile", order.profile.clone()),
         ("serial", order.cert_serial.clone()),
         // The negative sentinel means the chain would not parse, which is not a
         // date to render — `render_order_json`'s guard, for its reason.
@@ -713,7 +714,7 @@ fn totp_state(user: &AdminUser, palette: Palette) -> String {
 
 /// One line: `name  challenges  eab  directory`.
 ///
-/// `profile list`'s row. The directory URL comes **last** despite being the
+/// `endpoint list`'s row. The directory URL comes **last** despite being the
 /// field an operator most often copies, because it is the only one here with no
 /// bounded vocabulary: a base URL varies by tens of characters, and any column
 /// after it would be ragged. The two flags in front of it are padded and so
@@ -722,22 +723,22 @@ fn totp_state(user: &AdminUser, palette: Palette) -> String {
 /// The bypass state is painted through [`Palette::warn`] because it is the one
 /// field here that is a warning rather than a value: an endpoint that marks a
 /// challenge `valid` without checking anything is an open CA wherever
-/// `[filter]` is empty, and `/ui/profiles` flags it for the same reason.
+/// `[filter]` is empty, and `/ui/endpoints` flags it for the same reason.
 #[must_use]
-pub fn render_profile_line(profile: &ProfileSummary, palette: Palette) -> String {
+pub fn render_endpoint_line(endpoint: &EndpointSummary, palette: Palette) -> String {
     // Padded, then painted -- a format width counts bytes, so the other order
     // counts the escape and collapses the column.
-    let challenges = if profile.challenge_bypass {
+    let challenges = if endpoint.challenge_bypass {
         palette.warn(&format!("{:<9}", "bypassed"))
     } else {
         palette.status(&format!("{:<9}", "validated"))
     };
     format!(
         "{:<20}  challenges={}  eab={:<3}  {}",
-        profile.name,
+        endpoint.name,
         challenges,
-        if profile.eab_enabled { "on" } else { "off" },
-        profile.directory_url(),
+        if endpoint.eab_enabled { "on" } else { "off" },
+        endpoint.directory_url(),
     )
 }
 
@@ -766,7 +767,7 @@ pub fn render_admin_session_line(session: &AdminSession, palette: Palette) -> St
 /// read the table and having read a page of it, and a script should not have to
 /// learn one shape for the API and another for the shell.
 ///
-/// The **only** listing shape the binary answers for table rows — `profile
+/// The **only** listing shape the binary answers for table rows — `endpoint
 /// list`, which lists configuration rather than rows, is the one bare array.
 /// Three listings — `eab
 /// list`, `admin user list`, `admin session list` — used to print a bare array
@@ -931,30 +932,33 @@ mod tests {
         assert!(enabled.contains("last_login     "), "{enabled}");
     }
 
-    /// `profile list`'s row, and the one field on it that is a warning rather
+    /// `endpoint list`'s row, and the one field on it that is a warning rather
     /// than a value.
     #[test]
-    fn the_profile_line_paints_a_bypassing_endpoint_and_nothing_else() {
-        let mut profile = ProfileSummary {
+    fn the_endpoint_line_paints_a_bypassing_endpoint_and_nothing_else() {
+        let mut endpoint = EndpointSummary {
             name: "le".to_string(),
-            base_url: "https://ca.example.com/profile/le".to_string(),
+            base_url: "https://ca.example.com/endpoint/le".to_string(),
             challenge_bypass: false,
             eab_enabled: true,
         };
 
-        let plain = render_profile_line(&profile, Palette::plain());
-        assert!(plain.contains("https://ca.example.com/profile/le/directory"));
+        let plain = render_endpoint_line(&endpoint, Palette::plain());
+        assert!(plain.contains("https://ca.example.com/endpoint/le/directory"));
         assert!(plain.contains("challenges=validated"));
         assert!(plain.contains("eab=on"));
-        assert_eq!(strip_ansi(&render_profile_line(&profile, colour())), plain);
+        assert_eq!(
+            strip_ansi(&render_endpoint_line(&endpoint, colour())),
+            plain
+        );
 
-        profile.challenge_bypass = true;
-        profile.eab_enabled = false;
-        let bypassed = render_profile_line(&profile, Palette::plain());
+        endpoint.challenge_bypass = true;
+        endpoint.eab_enabled = false;
+        let bypassed = render_endpoint_line(&endpoint, Palette::plain());
         assert!(bypassed.contains("challenges=bypassed"));
         assert!(bypassed.contains("eab=off"));
         assert_eq!(
-            strip_ansi(&render_profile_line(&profile, colour())),
+            strip_ansi(&render_endpoint_line(&endpoint, colour())),
             bypassed
         );
     }
@@ -1074,7 +1078,7 @@ mod tests {
             "id           41812",
             "event        certificate_issued",
             "outcome      success",
-            "profile      le",
+            "endpoint     le",
             "actor        acme:acct-1",
             "order        order-1",
             "serial       0a0b",
@@ -1175,7 +1179,7 @@ mod tests {
             text.contains(&format!("id            {}", seen.id)),
             "{text}"
         );
-        assert!(text.contains("profile       default"), "{text}");
+        assert!(text.contains("endpoint      default"), "{text}");
         assert!(text.contains("status        valid"), "{text}");
         assert!(
             text.contains(&pubkey_fingerprint(&seen.pubkey)),
@@ -1310,6 +1314,7 @@ mod tests {
         order.not_before = Some(1700000000);
         order.not_after = Some(1700003600);
         order.replaces = Some("aYhba4dGQEHhs3uEe6CuLN4ByNQ.AIdlQyE".to_string());
+        order.profile = Some("shortlived".to_string());
         order.cert_serial = Some("03a7f1c9".to_string());
         order.cert_not_after = Some(1700007200);
         order.revoked_at = Some(1700010800);
@@ -1328,7 +1333,7 @@ mod tests {
             text.contains(&format!("id             {}", detail.order.id)),
             "{text}"
         );
-        assert!(text.contains("profile        default"), "{text}");
+        assert!(text.contains("endpoint       default"), "{text}");
         assert!(
             text.contains(&format!("account_id     {account}")),
             "{text}"
@@ -1349,6 +1354,7 @@ mod tests {
             text.contains("replaces       aYhba4dGQEHhs3uEe6CuLN4ByNQ.AIdlQyE"),
             "{text}"
         );
+        assert!(text.contains("profile        shortlived"), "{text}");
         assert!(text.contains("serial         03a7f1c9"), "{text}");
         assert!(
             text.contains("cert_not_after 2023-11-15T00:13:20Z"),
@@ -1382,6 +1388,7 @@ mod tests {
             "not_before",
             "not_after",
             "replaces",
+            "profile",
             "serial",
             "cert_not_after",
             "revoked",
@@ -1408,7 +1415,7 @@ mod tests {
         /// `(text label, JSON member)`.
         const FIELDS: &[(&str, &str)] = &[
             ("id", "id"),
-            ("profile", "profile"),
+            ("endpoint", "endpoint"),
             ("account_id", "accountId"),
             ("status", "status"),
             ("identifiers", "identifiers"),
@@ -1417,6 +1424,7 @@ mod tests {
             ("not_before", "notBefore"),
             ("not_after", "notAfter"),
             ("replaces", "replaces"),
+            ("profile", "profile"),
             ("serial", "certSerial"),
             ("cert_not_after", "certNotAfter"),
             ("revoked", "revokedAt"),
@@ -1438,6 +1446,7 @@ mod tests {
         order.not_before = Some(1700000000);
         order.not_after = Some(1700003600);
         order.replaces = Some("aYhba4dGQEHhs3uEe6CuLN4ByNQ.AIdlQyE".to_string());
+        order.profile = Some("shortlived".to_string());
         order.cert_serial = Some("03a7f1c9".to_string());
         order.cert_not_after = Some(1700007200);
         order.revoked_at = Some(1700010800);

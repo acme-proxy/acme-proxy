@@ -17,7 +17,7 @@
   - [TLS Termination](features/tls_termination.md)
 
 # Core Components
-- [Profiles & Routing](core/profiles.md)
+- [Endpoints & Routing](core/endpoints.md)
 - [Signers](signers/index.md)
   - [Local CA](signers/local_ca.md)
     - [Hardware Keys (PKCS#11)](signers/local_ca_hsm.md)
@@ -50,6 +50,7 @@
   - [External Account Binding (EAB)](features/eab.md)
   - [Key Rollover](features/key_change.md)
   - [Renewal Information (ARI)](features/renewal_info.md)
+  - [ACME Profiles](features/acme_profiles.md)
 
 # Operations
 - [Reloading the Configuration](operations/reload.md)

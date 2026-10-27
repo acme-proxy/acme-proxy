@@ -2,7 +2,7 @@
 //!
 //! Four rules the rest of the workspace leans on:
 //!
-//! - **[`Order::search`] is the only listing filter.** Profile, account,
+//! - **[`Order::search`] is the only listing filter.** Endpoint, account,
 //!   status, identifier and certificate serial are all SQL predicates here;
 //!   the CLI, the admin API and the panel page with the same query, so a
 //!   filter cannot mean one thing in one front end and another in the next.
@@ -76,11 +76,11 @@ use acme_proxy_core::identifier::Identifier;
 #[derive(Debug)]
 pub struct Order {
     pub id: Uuid,
-    /// The ACME endpoint (`[profiles.<name>]`) this order was placed at. It
-    /// always matches the owning account's own `profile` — the redundancy is
+    /// The ACME endpoint (`[endpoints.<name>]`) this order was placed at. It
+    /// always matches the owning account's own `endpoint` — the redundancy is
     /// what lets the two lookups that take no account (`find_by_cert_serial`,
     /// for revocation, and ARI) stay scoped to one endpoint.
-    pub profile: String,
+    pub endpoint: String,
     pub account_id: Uuid,
     pub status: OrderStatus,
     pub identifiers: Vec<Identifier>,
@@ -95,6 +95,12 @@ pub struct Order {
     /// `replaces` field, it MUST reflect that field in the response and in
     /// subsequent requests for the corresponding Order object."
     pub replaces: Option<String>,
+    /// The ACME profile (draft-ietf-acme-profiles) this order is issued under:
+    /// the one the client named, the backend's default, or the one a relay
+    /// forces. `None` when the backend offers no profiles, or offers some and
+    /// has no default for an order that named none. Reflected in
+    /// [`Order::to_json`], since the draft has the order object carry it.
+    pub profile: Option<String>,
     pub cert_serial: Option<String>,
     pub cert_pubkey: Option<Vec<u8>>,
     /// The leaf's own notAfter, epoch seconds. `None` on a row finalized before
@@ -121,7 +127,7 @@ pub struct Order {
 /// page across every endpoint".
 #[derive(Debug, Clone, Default)]
 pub struct OrderQuery {
-    pub profile: Option<String>,
+    pub endpoint: Option<String>,
     pub account_id: Option<String>,
     pub status: Option<OrderStatus>,
     /// An order matches when one of its identifiers equals this name exactly
@@ -149,7 +155,7 @@ impl OrderQuery {
     /// them would report a total that does not match the rows returned, which
     /// is the kind of bug a page control shows and nothing else does.
     fn push_predicates(&self, builder: &mut crate::sql::Builder) {
-        // `status` arrives as an `OrderStatus` and `profile` as a `String`, so
+        // `status` arrives as an `OrderStatus` and `endpoint` as a `String`, so
         // each contributes its own `&str` and the pair stays one type. The bind
         // is still a parameter, never interpolated SQL. The returned separator
         // is what the predicates below open with, each through
@@ -158,7 +164,7 @@ impl OrderQuery {
             builder,
             crate::query::WHERE,
             &[
-                ("profile = ", self.profile.as_deref()),
+                ("endpoint = ", self.endpoint.as_deref()),
                 ("status = ", self.status.map(OrderStatus::as_str)),
             ],
         );
@@ -170,7 +176,7 @@ impl OrderQuery {
         //
         // A value that is not an id at all keeps the shape the other two have —
         // it is compared, never executed, and matches nothing. That is what
-        // `search_binds_hostile_filters_as_values` asserts, and `profile` above
+        // `search_binds_hostile_filters_as_values` asserts, and `endpoint` above
         // is still bound raw, so the injection vector it exists for is intact.
         if let Some(account_id) = self.account_id.as_deref() {
             crate::query::next_predicate(builder, &mut separator).push("account_id = ");
@@ -215,7 +221,7 @@ impl OrderQuery {
 
         // The issued leaf's serial. Raw passthrough, exact, bound — the
         // `AuditQuery::cert_serial` shape, and indexed by
-        // `idx_orders_cert_serial (profile, cert_serial)` when a profile is
+        // `idx_orders_cert_serial (endpoint, cert_serial)` when an endpoint is
         // named beside it.
         if let Some(cert_serial) = self.cert_serial.as_deref() {
             crate::query::next_predicate(builder, &mut separator).push("cert_serial = ");
@@ -235,8 +241,8 @@ impl OrderQuery {
 /// design.
 macro_rules! columns {
     () => {
-        "id, profile, account_id, status, identifiers, expires, not_before, not_after, \
-         error, certificate, replaces, cert_serial, cert_pubkey, cert_not_after, \
+        "id, endpoint, account_id, status, identifiers, expires, not_before, not_after, \
+         error, certificate, replaces, profile, cert_serial, cert_pubkey, cert_not_after, \
          revoked_at, revocation_reason, created_at, created_ip, created_ptr"
     };
 }
@@ -300,13 +306,13 @@ pub const UNPARSABLE_NOT_AFTER: i64 = -1;
 /// do not match, which a page control shows and nothing else does.
 ///
 /// A function over a `sql::Builder` rather than the `macro_rules!` this used to
-/// be, because `profile` became optional when the admin surfaces arrived and a
+/// be, because `endpoint` became optional when the admin surfaces arrived and a
 /// `concat!` literal cannot carry a conditional clause. The three predicates
 /// after it are unconditional and each carries its reason on
 /// [`Order::find_expiring`]. `account` narrows to one account's rows — the
 /// digest addressed to an account's own `contact` lists only what it holds.
 fn push_expiring_predicates(
-    profile: Option<&str>,
+    endpoint: Option<&str>,
     account: Option<Uuid>,
     before: i64,
     builder: &mut crate::sql::Builder,
@@ -314,9 +320,9 @@ fn push_expiring_predicates(
     builder.push(" FROM orders WHERE certificate IS NOT NULL AND revoked_at IS NULL");
     builder.push(" AND cert_not_after >= 0 AND cert_not_after <= ");
     builder.push_bind(before);
-    if let Some(profile) = profile {
-        builder.push(" AND profile = ");
-        builder.push_bind(profile.to_string());
+    if let Some(endpoint) = endpoint {
+        builder.push(" AND endpoint = ");
+        builder.push_bind(endpoint.to_string());
     }
     if let Some(account) = account {
         builder.push(" AND account_id = ");
@@ -340,7 +346,7 @@ impl Order {
 
         Ok(Order {
             id: row.try_get("id")?,
-            profile: row.try_get("profile")?,
+            endpoint: row.try_get("endpoint")?,
             account_id: row.try_get("account_id")?,
             status: status::from_column(row.try_get::<String>("status")?.as_str())?,
             identifiers,
@@ -350,6 +356,7 @@ impl Order {
             error,
             certificate: row.try_get("certificate")?,
             replaces: row.try_get("replaces")?,
+            profile: row.try_get("profile")?,
             cert_serial: row.try_get("cert_serial")?,
             cert_pubkey: row.try_get("cert_pubkey")?,
             cert_not_after: row.try_get("cert_not_after")?,
@@ -364,7 +371,7 @@ impl Order {
     /// Builds a new order in the `pending` state. Pure — nothing is persisted
     /// until [`Order::insert`] runs.
     pub fn new(
-        profile: &str,
+        endpoint: &str,
         account_id: Uuid,
         identifiers: Vec<Identifier>,
         expires: i64,
@@ -373,7 +380,7 @@ impl Order {
     ) -> Order {
         Order {
             id: crate::id::mint(),
-            profile: profile.to_string(),
+            endpoint: endpoint.to_string(),
             account_id,
             status: OrderStatus::Pending,
             identifiers,
@@ -385,6 +392,9 @@ impl Order {
             // Set by `post_new_order` between here and `insert`, when the
             // client sent one and it passed RFC 9773 §5's checks.
             replaces: None,
+            // Set by `post_new_order` between here and `insert`, once the
+            // request's profile is resolved against the backend's offer.
+            profile: None,
             cert_serial: None,
             cert_pubkey: None,
             cert_not_after: None,
@@ -428,13 +438,13 @@ impl Order {
         let identifiers_json = serde_json::to_string(&self.identifiers)
             .map_err(|e| sqlx::Error::Encode(Box::new(e)))?;
 
-        debug!(event = "db_order_create_started", outcome = "progress", order_id = ?self.id, profile = %self.profile, account_id = ?self.account_id);
+        debug!(event = "db_order_create_started", outcome = "progress", order_id = ?self.id, endpoint = %self.endpoint, account_id = ?self.account_id);
         crate::sql::query(
-            "INSERT INTO orders (id, profile, account_id, status, identifiers, expires, not_before, not_after, error, certificate, replaces, created_at, created_ip, created_ptr) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?);",
+            "INSERT INTO orders (id, endpoint, account_id, status, identifiers, expires, not_before, not_after, error, certificate, replaces, profile, created_at, created_ip, created_ptr) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?);",
         )
         .bind(self.id)
-        .bind(&self.profile)
+        .bind(&self.endpoint)
         .bind(self.account_id)
         .bind(self.status.as_str())
         .bind(identifiers_json)
@@ -442,6 +452,7 @@ impl Order {
         .bind(self.not_before)
         .bind(self.not_after)
         .bind(&self.replaces)
+        .bind(&self.profile)
         .bind(self.created_at)
         .bind(&self.created_ip)
         .bind(&self.created_ptr)
@@ -455,7 +466,7 @@ impl Order {
     /// Creates a new order in the `pending` state (its authorizations are created
     /// separately by the caller) and returns it.
     pub async fn create(
-        profile: &str,
+        endpoint: &str,
         account_id: Uuid,
         identifiers: Vec<Identifier>,
         expires: i64,
@@ -464,7 +475,7 @@ impl Order {
         database: &Database,
     ) -> Result<Order, sqlx::Error> {
         let order = Order::new(
-            profile,
+            endpoint,
             account_id,
             identifiers,
             expires,
@@ -475,7 +486,7 @@ impl Order {
         Ok(order)
     }
 
-    /// Looks an order up by id, in any profile. An id that does not parse as
+    /// Looks an order up by id, in any endpoint. An id that does not parse as
     /// one is `None`, like an unknown one: it came from a URL or a command line.
     pub async fn find_by_id(id: &str, database: &Database) -> Result<Option<Order>, sqlx::Error> {
         debug!(event = "db_order_find_by_id_started", outcome = "progress", order_id = ?id);
@@ -529,7 +540,7 @@ impl Order {
     /// error.
     ///
     /// `valid` orders are kept whatever their `expires`, since the order
-    /// object's expiry is housekeeping (`order.validity_seconds`) and the
+    /// object's expiry is housekeeping (`order.validity`) and the
     /// certificate it points at outlives it — that URL still works.
     pub async fn find_active_by_account(
         account_id: Uuid,
@@ -571,7 +582,7 @@ impl Order {
     ) -> Result<(Vec<Order>, i64), sqlx::Error> {
         debug!(event = "db_order_search_started",
                outcome = "progress",
-               profile = ?query.profile,
+               endpoint = ?query.endpoint,
                account_id = ?query.account_id,
                status = ?query.status,
                identifier = ?query.identifier,
@@ -606,7 +617,7 @@ impl Order {
         Ok((orders, total))
     }
 
-    /// Deletes this profile's orders that expired before `cutoff`, returning
+    /// Deletes this endpoint's orders that expired before `cutoff`, returning
     /// how many went. The `authorizations` and `challenges` beneath them go
     /// with the row, through the schema's `ON DELETE CASCADE`.
     ///
@@ -619,25 +630,25 @@ impl Order {
     /// and a `pending`/`ready`/`processing` order past its own `expires` is
     /// refused on read by every handler that loads one.
     ///
-    /// Scoped to one profile because `order.retention_days` is a per-profile
+    /// Scoped to one endpoint because `order.retention` is a per-endpoint
     /// key: two endpoints in one process may reasonably keep their history for
     /// different lengths of time.
     pub async fn cleanup(
-        profile: &str,
+        endpoint: &str,
         cutoff: i64,
         database: &Database,
     ) -> Result<u64, sqlx::Error> {
-        debug!(event = "db_order_cleanup_started", outcome = "progress", profile = %profile, cutoff = cutoff);
+        debug!(event = "db_order_cleanup_started", outcome = "progress", endpoint = %endpoint, cutoff = cutoff);
         let removed = crate::sql::query(
-            "DELETE FROM orders WHERE profile = ? AND status != 'valid' AND expires < ?;",
+            "DELETE FROM orders WHERE endpoint = ? AND status != 'valid' AND expires < ?;",
         )
-        .bind(profile)
+        .bind(endpoint)
         .bind(cutoff)
         .execute(database)
         .await?
         .rows_affected();
 
-        debug!(event = "db_order_cleanup_completed", outcome = "success", profile = %profile, rows_removed = removed);
+        debug!(event = "db_order_cleanup_completed", outcome = "success", endpoint = %endpoint, rows_removed = removed);
         Ok(removed)
     }
 
@@ -774,23 +785,23 @@ impl Order {
     /// alone rather than to report as expiring in 1970. They are exactly the
     /// partial index's own predicate.
     ///
-    /// `profile` is an `Option` because the panel lists every endpoint by
+    /// `endpoint` is an `Option` because the panel lists every endpoint by
     /// default, like every other admin listing, where the digest asks one
-    /// profile at a time. The two forms cost different things, and the
+    /// endpoint at a time. The two forms cost different things, and the
     /// difference is the index's column order:
     ///
-    /// - `Some` is `SEARCH … USING INDEX idx_orders_cert_not_after (profile=?
+    /// - `Some` is `SEARCH … USING INDEX idx_orders_cert_not_after (endpoint=?
     ///   AND cert_not_after>? AND cert_not_after<?)` — a range seek on both
     ///   columns, and byte for byte the plan the digest's original query got.
     /// - `None` is `SCAN … USING INDEX idx_orders_cert_not_after`: the partial
     ///   predicate still matches, so the index is still what is read, but with
     ///   no leading-column equality there is nothing to seek to, and the index
-    ///   is ordered by `cert_not_after` only *within* a profile — so the
+    ///   is ordered by `cert_not_after` only *within* an endpoint — so the
     ///   ordering below falls to a temp b-tree over the whole result rather
     ///   than over its last term alone.
     ///
     /// That is the price of the unscoped view, and it is stated here rather
-    /// than left to be rediscovered from a query plan. A profile-less index on
+    /// than left to be rediscovered from a query plan. An endpoint-less index on
     /// `cert_not_after` would buy it back, and is not worth a second index on
     /// a table this one already covers until a deployment says otherwise.
     ///
@@ -800,7 +811,7 @@ impl Order {
     /// a whole-second expiry, and a stable order is what stops one of them
     /// being dropped between the page and the count.
     pub async fn find_expiring(
-        profile: Option<&str>,
+        endpoint: Option<&str>,
         account: Option<Uuid>,
         before: i64,
         limit: i64,
@@ -810,14 +821,14 @@ impl Order {
         debug!(
             event = "db_order_find_expiring_started",
             outcome = "progress",
-            profile = ?profile,
+            endpoint = ?endpoint,
             account_id = ?account,
             before,
             limit,
             offset
         );
         let mut page = crate::sql::Builder::new(database.dialect(), concat!("SELECT ", columns!()));
-        push_expiring_predicates(profile, account, before, &mut page);
+        push_expiring_predicates(endpoint, account, before, &mut page);
         page.push(" ORDER BY cert_not_after ASC, id ASC LIMIT ");
         page.push_bind(limit);
         page.push(" OFFSET ");
@@ -830,26 +841,26 @@ impl Order {
             .collect::<Result<_, _>>()?;
 
         let mut count = crate::sql::Builder::new(database.dialect(), "SELECT COUNT(*)");
-        push_expiring_predicates(profile, account, before, &mut count);
+        push_expiring_predicates(endpoint, account, before, &mut count);
         let total: i64 = count.build().fetch_one(database).await?.try_get::<i64>(0)?;
 
         Ok((orders, total))
     }
 
     /// The accounts holding at least one certificate in [`Order::find_expiring`]'s
-    /// window on `profile`, each once, in id order.
+    /// window on `endpoint`, each once, in id order.
     ///
     /// What the digest addressed to an account's own `contact` iterates: one
     /// message per account, so it needs the accounts before the rows. The same
     /// predicates as the listing, through the same function, so an account is
     /// named here exactly when a scoped `find_expiring` would answer rows for it.
     pub async fn expiring_accounts(
-        profile: &str,
+        endpoint: &str,
         before: i64,
         database: &Database,
     ) -> Result<Vec<Uuid>, sqlx::Error> {
         let mut query = crate::sql::Builder::new(database.dialect(), "SELECT DISTINCT account_id");
-        push_expiring_predicates(Some(profile), None, before, &mut query);
+        push_expiring_predicates(Some(endpoint), None, before, &mut query);
         query.push(" ORDER BY account_id ASC");
         let rows = query.build().fetch_all(database).await?;
         rows.into_iter()
@@ -857,7 +868,7 @@ impl Order {
             .collect()
     }
 
-    /// The issued orders on `profile` whose `cert_not_after` has never been
+    /// The issued orders on `endpoint` whose `cert_not_after` has never been
     /// derived — rows finalized before the column existed. At most `limit` per
     /// call, since this parses an X.509 chain per row and the digest that calls
     /// it is not the only thing the runner has to do.
@@ -866,15 +877,15 @@ impl Order {
     /// the PEM and nothing else, and a digest running against a long-lived
     /// deployment would otherwise inflate every row it is about to discard.
     pub async fn find_unstamped(
-        profile: &str,
+        endpoint: &str,
         limit: i64,
         database: &Database,
     ) -> Result<Vec<(Uuid, String)>, sqlx::Error> {
         let rows = crate::sql::query(
-            "SELECT id, certificate FROM orders WHERE profile = ? \
+            "SELECT id, certificate FROM orders WHERE endpoint = ? \
              AND certificate IS NOT NULL AND cert_not_after IS NULL LIMIT ?;",
         )
-        .bind(profile)
+        .bind(endpoint)
         .bind(limit)
         .fetch_all(database)
         .await?;
@@ -912,21 +923,21 @@ impl Order {
     /// byte-for-byte (a random-serial collision, or a crafted certificate
     /// reusing a real serial, are not ruled out by the serial alone).
     ///
-    /// Scoped to `profile`: revocation and ARI carry no account, so the
+    /// Scoped to `endpoint`: revocation and ARI carry no account, so the
     /// endpoint the request arrived at is the only thing that keeps one
-    /// profile from answering for — or revoking — another's certificate.
+    /// endpoint from answering for — or revoking — another's certificate.
     pub async fn find_by_cert_serial(
-        profile: &str,
+        endpoint: &str,
         serial: &str,
         database: &Database,
     ) -> Result<Option<Order>, sqlx::Error> {
-        debug!(event = "db_order_find_by_cert_serial_started", outcome = "progress", profile = %profile, cert_serial = ?serial);
+        debug!(event = "db_order_find_by_cert_serial_started", outcome = "progress", endpoint = %endpoint, cert_serial = ?serial);
         let row = crate::sql::query(concat!(
             "SELECT ",
             columns!(),
-            " FROM orders WHERE profile = ? AND cert_serial = ?;"
+            " FROM orders WHERE endpoint = ? AND cert_serial = ?;"
         ))
-        .bind(profile)
+        .bind(endpoint)
         .bind(serial)
         .fetch_optional(database)
         .await?;
@@ -946,20 +957,20 @@ impl Order {
     ///
     /// The `invalid` exclusion is what makes a retry work: an order that failed
     /// validation never produced a replacement, so it must not hold the
-    /// predecessor hostage. Scoped by profile like every other request-path
+    /// predecessor hostage. Scoped by endpoint like every other request-path
     /// lookup — a certID is only meaningful at the endpoint that issued it.
     pub async fn find_by_replaces(
-        profile: &str,
+        endpoint: &str,
         cert_id: &str,
         database: &Database,
     ) -> Result<Option<Order>, sqlx::Error> {
-        debug!(event = "db_order_find_by_replaces_started", outcome = "progress", profile = %profile, replaces = %cert_id);
+        debug!(event = "db_order_find_by_replaces_started", outcome = "progress", endpoint = %endpoint, replaces = %cert_id);
         let row = crate::sql::query(concat!(
             "SELECT ",
             columns!(),
-            " FROM orders WHERE profile = ? AND replaces = ? AND status != 'invalid' LIMIT 1;"
+            " FROM orders WHERE endpoint = ? AND replaces = ? AND status != 'invalid' LIMIT 1;"
         ))
-        .bind(profile)
+        .bind(endpoint)
         .bind(cert_id)
         .fetch_optional(database)
         .await?;
@@ -1254,6 +1265,11 @@ impl Order {
         // rendered here, not just echoed once on the 201.
         if let Some(ref replaces) = self.replaces {
             object.insert("replaces".to_string(), Value::String(replaces.clone()));
+        }
+        // draft-ietf-acme-profiles §4: the order object names the profile it
+        // is issued under — absent, not empty, when it has none.
+        if let Some(ref profile) = self.profile {
+            object.insert("profile".to_string(), Value::String(profile.clone()));
         }
         Value::Object(object)
     }
@@ -1861,12 +1877,12 @@ mod tests {
         }
     }
 
-    /// Seeds `count` orders under `profile`, each backdated one second further
+    /// Seeds `count` orders under `endpoint`, each backdated one second further
     /// than the last so `created_at DESC` has a deterministic answer without
     /// relying on the UUID tiebreak.
     async fn seed_orders(
         db: &Arc<Database>,
-        profile: &str,
+        endpoint: &str,
         account_id: Uuid,
         count: usize,
     ) -> Vec<String> {
@@ -1874,7 +1890,7 @@ mod tests {
         let mut ids = Vec::new();
         for index in 0..count {
             let order = Order::create(
-                profile,
+                endpoint,
                 account_id,
                 vec![Identifier::dns(format!("host-{index}.example.com"))],
                 base + 3600,
@@ -1973,7 +1989,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn search_filters_by_profile_account_and_status_together() {
+    async fn search_filters_by_endpoint_account_and_status_together() {
         let db = Arc::new(Database::connect_for_test().await.unwrap());
         let acct = account_id(&db).await;
         let (other_account, _) = crate::account::Account::find_or_create(
@@ -2022,7 +2038,7 @@ mod tests {
 
         // All three at once, and the count must agree with the rows.
         let combined = OrderQuery {
-            profile: Some("default".to_string()),
+            endpoint: Some("default".to_string()),
             account_id: Some(acct.clone().to_string()),
             status: Some(OrderStatus::Pending),
             ..window(50, 0)
@@ -2033,7 +2049,7 @@ mod tests {
 
         // A filter matching nothing is empty, not an error.
         let none = OrderQuery {
-            profile: Some("no-such-profile".to_string()),
+            endpoint: Some("no-such-endpoint".to_string()),
             ..window(50, 0)
         };
         let (rows, total) = Order::search(&none, &db).await.unwrap();
@@ -2042,19 +2058,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn search_scopes_by_profile() {
+    async fn search_scopes_by_endpoint() {
         let db = Arc::new(Database::connect_for_test().await.unwrap());
         let acct = account_id(&db).await;
         seed_orders(&db, "default", acct, 2).await;
         seed_orders(&db, "other", acct, 3).await;
 
         let scoped = OrderQuery {
-            profile: Some("other".to_string()),
+            endpoint: Some("other".to_string()),
             ..window(50, 0)
         };
         let (rows, total) = Order::search(&scoped, &db).await.unwrap();
         assert_eq!(total, 3);
-        assert!(rows.iter().all(|o| o.profile == "other"));
+        assert!(rows.iter().all(|o| o.endpoint == "other"));
     }
 
     /// A value that would be SQL if it were interpolated instead of bound.
@@ -2062,7 +2078,7 @@ mod tests {
     /// `status` used to be the vector here, and is no longer expressible: it is
     /// an [`OrderStatus`], so a hostile value cannot reach this layer at all —
     /// `Order::search` never sees one, because `--status` and `?status=` refuse
-    /// it by name first. `profile`, `account_id`, `identifier`,
+    /// it by name first. `endpoint`, `account_id`, `identifier`,
     /// `identifier_contains` and `cert_serial` are all free strings and all go
     /// through `push_bind`, so the property is asserted on those.
     #[tokio::test]
@@ -2072,11 +2088,11 @@ mod tests {
         seed_orders(&db, "default", acct, 2).await;
 
         for hostile in ["' OR 1=1 --", "default'; DROP TABLE orders; --"] {
-            let by_profile = OrderQuery {
-                profile: Some(hostile.to_string()),
+            let by_endpoint = OrderQuery {
+                endpoint: Some(hostile.to_string()),
                 ..window(50, 0)
             };
-            let (rows, total) = Order::search(&by_profile, &db).await.unwrap();
+            let (rows, total) = Order::search(&by_endpoint, &db).await.unwrap();
             assert!(rows.is_empty(), "the value must be compared, not executed");
             assert_eq!(total, 0);
 
@@ -2113,18 +2129,18 @@ mod tests {
         assert_eq!(total, 2);
     }
 
-    /// Seeds one order per name, each on `profile`, and returns their ids as
+    /// Seeds one order per name, each on `endpoint`, and returns their ids as
     /// strings newest-first — the shape `search` returns.
     async fn seed_named(
         db: &Arc<Database>,
-        profile: &str,
+        endpoint: &str,
         account_id: Uuid,
         names: &[&str],
     ) -> Vec<String> {
         let mut ids = Vec::new();
         for name in names {
             let order = Order::create(
-                profile,
+                endpoint,
                 account_id,
                 vec![Identifier::dns(*name)],
                 now_secs() + 3600,
@@ -2303,13 +2319,13 @@ mod tests {
     /// [`expiring_order`] on a named endpoint, for the cases about scoping.
     async fn expiring_order_on(
         db: &Database,
-        profile: &str,
+        endpoint: &str,
         account: uuid::Uuid,
         names: &[&str],
         not_after: Option<i64>,
     ) -> Order {
         let mut order = Order::create(
-            profile,
+            endpoint,
             account,
             names.iter().map(|name| Identifier::dns(*name)).collect(),
             now_secs() + 3600,
@@ -2413,7 +2429,7 @@ mod tests {
     /// One endpoint never reports another's certificates — `find_by_cert_serial`'s
     /// rule, and for the same reason.
     #[tokio::test]
-    async fn find_expiring_scopes_by_profile() {
+    async fn find_expiring_scopes_by_endpoint() {
         let db = Arc::new(Database::connect_for_test().await.unwrap());
         let acct = account_id(&db).await;
         let now = now_secs();
@@ -2456,7 +2472,7 @@ mod tests {
         let theirs = expiring_order(&db, second.id, &["c.example.com"], Some(now + DAY)).await;
         // Outside the window, so `idle` holds nothing that is expiring.
         expiring_order(&db, idle.id, &["d.example.com"], Some(now + 60 * DAY)).await;
-        // Another endpoint's holder is not this profile's.
+        // Another endpoint's holder is not this endpoint's.
         expiring_order_on(&db, "other", idle.id, &["e.example.com"], Some(now + DAY)).await;
 
         let mut expected = vec![first, second.id];
@@ -2475,11 +2491,11 @@ mod tests {
         assert_eq!(total, 1, "the count is narrowed by the same predicate");
     }
 
-    /// The panel's default view: no profile, so every endpoint at once. The
-    /// digest never asks this — it iterates its configured profiles — but the
+    /// The panel's default view: no endpoint, so every endpoint at once. The
+    /// digest never asks this — it iterates its configured endpoints — but the
     /// admin surfaces open on it.
     #[tokio::test]
-    async fn find_expiring_unscoped_spans_every_profile() {
+    async fn find_expiring_unscoped_spans_every_endpoint() {
         let db = Arc::new(Database::connect_for_test().await.unwrap());
         let acct = account_id(&db).await;
         let now = now_secs();

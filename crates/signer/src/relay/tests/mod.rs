@@ -13,7 +13,7 @@
 //! - [`lifecycle`] — startup, provisioning, `issue`/relay/settle, revoke, recovery
 //! - [`eab`] — the upstream credential, both ways of supplying it
 //! - [`dns01_strategy`] / [`http01_strategy`] — the two answering strategies
-//! - [`multi_profile`] — several relay profiles, and the one handler over them
+//! - [`multi_endpoint`] — several relay endpoints, and the one handler over them
 //! - [`renewal`] — RFC 9773 windows, and the `UpstreamError` mapping
 //!
 //! Since the relay became a [`acme_proxy_jobs::jobs`] handler, `issue` **enqueues** rather
@@ -26,7 +26,8 @@ mod dns01_strategy;
 mod eab;
 mod http01_strategy;
 mod lifecycle;
-mod multi_profile;
+mod multi_endpoint;
+mod profiles;
 mod renewal;
 
 /// The job configuration the tests run under: everything fast, retries off.
@@ -37,12 +38,12 @@ mod renewal;
 /// the two tests that are about it, not out of by the rest.
 fn test_jobs_config() -> acme_proxy_core::config::JobsConfig {
     acme_proxy_core::config::JobsConfig {
-        poll_interval_ms: 5,
+        poll_interval: acme_proxy_core::config::ConfigDuration::from_millis(5),
         max_attempts: 1,
-        retry_base_seconds: 0,
-        retry_max_seconds: 0,
-        lease_seconds: 5,
-        retention_days: 0,
+        retry_base: acme_proxy_core::config::ConfigDuration::from_secs(0),
+        retry_max: acme_proxy_core::config::ConfigDuration::from_secs(0),
+        lease: acme_proxy_core::config::ConfigDuration::from_secs(5),
+        retention: acme_proxy_core::config::ConfigDuration::ZERO,
         ..acme_proxy_core::config::JobsConfig::default()
     }
 }
@@ -83,9 +84,9 @@ impl TestRunner {
         Self::start_with(queue, signer, test_jobs_config())
     }
 
-    /// The profile every fixture here places its orders under, and therefore
+    /// The endpoint every fixture here places its orders under, and therefore
     /// the one the handler has to be told this signer relays for.
-    const DEFAULT_PROFILES: &'static [&'static str] = &["default"];
+    const DEFAULT_ENDPOINTS: &'static [&'static str] = &["default"];
 
     /// The runner, plus the [`NotifyJob`] that actually delivers what `settle`
     /// queues. Only the notification test needs it: everywhere else the relay's
@@ -93,10 +94,16 @@ impl TestRunner {
     fn start_notifying(
         queue: acme_proxy_jobs::jobs::JobQueue,
         signer: &RelaySigner,
-        profiles: &[&str],
+        endpoints: &[&str],
         notifiers: acme_proxy_jobs::notify::Notifiers,
     ) -> Self {
-        Self::start_inner(queue, signer, profiles, test_jobs_config(), Some(notifiers))
+        Self::start_inner(
+            queue,
+            signer,
+            endpoints,
+            test_jobs_config(),
+            Some(notifiers),
+        )
     }
 
     fn start_with(
@@ -104,19 +111,19 @@ impl TestRunner {
         signer: &RelaySigner,
         config: acme_proxy_core::config::JobsConfig,
     ) -> Self {
-        Self::start_inner(queue, signer, Self::DEFAULT_PROFILES, config, None)
+        Self::start_inner(queue, signer, Self::DEFAULT_ENDPOINTS, config, None)
     }
 
     fn start_inner(
         queue: acme_proxy_jobs::jobs::JobQueue,
         signer: &RelaySigner,
-        profiles: &[&str],
+        endpoints: &[&str],
         config: acme_proxy_core::config::JobsConfig,
         notifiers: Option<acme_proxy_jobs::notify::Notifiers>,
     ) -> Self {
         let mut registry = acme_proxy_jobs::jobs::JobRegistry::new();
         registry
-            .register(Arc::new(relay_handler(signer, profiles)))
+            .register(Arc::new(relay_handler(signer, endpoints)))
             .unwrap();
         if let Some(notifiers) = notifiers {
             registry
@@ -135,7 +142,7 @@ impl Drop for TestRunner {
     }
 }
 
-/// The shared resolver `server::profile::build_all` supplies at startup.
+/// The shared resolver `server::endpoint::build_all` supplies at startup.
 fn test_resolver() -> Arc<dyn acme_proxy_net::dns::Resolver> {
     Arc::new(acme_proxy_net::dns::HickoryResolver::from_system_uncached().unwrap())
 }
@@ -188,8 +195,8 @@ fn config(upstream: &Upstream, dir: &TempDir) -> RelayConfig {
         account_key_path: key_path(dir),
         // Fast polling: the fake upstream answers instantly, so the
         // interval only governs how long a test waits for nothing.
-        poll_interval_ms: 5,
-        poll_timeout_secs: 5,
+        poll_interval: acme_proxy_core::config::ConfigDuration::from_millis(5),
+        poll_timeout: acme_proxy_core::config::ConfigDuration::from_secs(5),
         ..RelayConfig::default()
     }
 }
@@ -236,7 +243,7 @@ struct StubTokens {
 impl StubTokens {
     /// The tokens this store was asked to publish, as `(token, key auth)`.
     ///
-    /// Which store saw a publish is how [`multi_profile`] tells two relay
+    /// Which store saw a publish is how [`multi_endpoint`] tells two relay
     /// backends apart: a row routed to the wrong one leaves this empty.
     fn published(&self) -> Vec<(String, String)> {
         self.published.lock().unwrap().clone()
@@ -271,7 +278,7 @@ impl http01::TokenStore for StubTokens {
 
 /// The twin of `with_updater`, for the `http01` strategy.
 ///
-/// Shared by [`http01_strategy`] and [`multi_profile`] — hoisted here when the
+/// Shared by [`http01_strategy`] and [`multi_endpoint`] — hoisted here when the
 /// second consumer arrived, this file being where the fixtures every section
 /// needs live.
 fn with_tokens(signer: RelaySigner, tokens: Arc<StubTokens>) -> RelaySigner {
@@ -282,24 +289,24 @@ fn with_tokens(signer: RelaySigner, tokens: Arc<StubTokens>) -> RelaySigner {
     }))
 }
 
-/// One signer as the process-wide handler holds it: mounted under the profiles
+/// One signer as the process-wide handler holds it: mounted under the endpoints
 /// this fixture places its orders on.
 ///
 /// The handler is no longer the backend's own — it dispatches per row from the
-/// profile the payload names — so every fixture has to say which profiles the
+/// endpoint the payload names — so every fixture has to say which endpoints the
 /// signer under test answers for, exactly as
-/// `server::generation::build_generation` does from the live profile list.
-fn relay_handler(signer: &RelaySigner, profiles: &[&str]) -> flow::RelayJob {
+/// `server::generation::build_generation` does from the live endpoint list.
+fn relay_handler(signer: &RelaySigner, endpoints: &[&str]) -> flow::RelayJob {
     // The pool comes off the backend here where
     // `server::generation::build_generation` hands over the process's own:
     // every relay shares it, so the two are the same handle either way.
     flow::RelayJob::new(
         signer.0.database.clone(),
-        profiles
+        endpoints
             .iter()
-            .map(|profile| {
+            .map(|endpoint| {
                 (
-                    (*profile).to_string(),
+                    (*endpoint).to_string(),
                     signer
                         .relay_state()
                         .expect("a relay backend always has state to hand over"),
@@ -310,7 +317,7 @@ fn relay_handler(signer: &RelaySigner, profiles: &[&str]) -> flow::RelayJob {
 }
 
 /// Records every event it receives, so a test can assert `settle()`
-/// dispatched to the right profile's dispatcher — and only that one.
+/// dispatched to the right endpoint's dispatcher — and only that one.
 struct RecordingNotifyBackend {
     events: std::sync::Mutex<Vec<NotifyEvent>>,
 }
@@ -359,11 +366,11 @@ fn recording_slot(recorder: Arc<RecordingNotifyBackend>) -> acme_proxy_jobs::not
     acme_proxy_jobs::notify::BackendSlot::new("recording", recorder, &every)
 }
 
-/// Persists a `ready` order under `profile`, for the profile-scoped
+/// Persists a `ready` order under `endpoint`, for the endpoint-scoped
 /// notification test — [`ready_order`] hardcodes `"default"`.
-async fn ready_order_for(profile: &str, database: Arc<Database>) -> Order {
+async fn ready_order_for(endpoint: &str, database: Arc<Database>) -> Order {
     let (account, _) = Account::find_or_create(
-        profile,
+        endpoint,
         &acme_proxy_core::random::random_bytes::<16>(),
         Vec::new(),
         &ClientContext::default(),
@@ -372,7 +379,7 @@ async fn ready_order_for(profile: &str, database: Arc<Database>) -> Order {
     .await
     .unwrap();
     let mut order = Order::create(
-        profile,
+        endpoint,
         account.id,
         vec![Identifier::dns("example.com")],
         now_secs() + 3600,
@@ -410,12 +417,7 @@ async fn real_chain() -> String {
     let params = rcgen::CertificateParams::new(vec!["example.com".to_string()]).unwrap();
     let csr = params.serialize_request(&key_pair).unwrap();
     match ca
-        .issue(
-            "ord-x",
-            csr.der(),
-            &identifiers(),
-            RequestedValidity::default(),
-        )
+        .issue("ord-x", csr.der(), &identifiers(), OrderRequest::default())
         .await
     {
         Ok(IssueOutcome::Issued(chain)) => chain,

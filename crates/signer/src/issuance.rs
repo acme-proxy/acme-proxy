@@ -70,7 +70,7 @@ pub async fn record_issuance(
 /// synchronous path, whatever the relay parked on `upstream_orders` on the
 /// deferred one. `client_ip` is the notification's own rendering of that
 /// address, `None` where no request is in scope. `notify` is `None` when the
-/// order's profile has no dispatcher in this process.
+/// order's endpoint has no dispatcher in this process.
 ///
 /// `requested_at` is when the finalize was accepted, in Unix seconds: the
 /// `created_at` of the job the caller is running, which the finalize request
@@ -90,7 +90,7 @@ pub async fn announce_issuance(
         .record(
             acme_proxy_core::audit::AuditRecord::new(
                 acme_proxy_core::audit::AuditEvent::CertificateIssued,
-                &order.profile,
+                &order.endpoint,
                 actor,
             )
             .with_order(order.id, order.account_id, &order.identifiers)
@@ -100,14 +100,14 @@ pub async fn announce_issuance(
         .await;
     let elapsed = acme_proxy_store::nonce::now_secs().saturating_sub(requested_at);
     audit.observe_issuance(
-        &order.profile,
+        &order.endpoint,
         std::time::Duration::from_secs(u64::try_from(elapsed).unwrap_or(0)),
     );
     if let Some(dispatcher) = notify {
         dispatcher
             .dispatch(NotifyEvent::CertificateIssued(
                 acme_proxy_jobs::notify::CertificateIssuedData {
-                    profile: order.profile.clone(),
+                    endpoint: order.endpoint.clone(),
                     order_id: order.id.to_string(),
                     account_id: order.account_id.to_string(),
                     cert_serial: serial.to_string(),
@@ -134,7 +134,7 @@ pub fn issue_failed_record(
 ) -> acme_proxy_core::audit::AuditRecord {
     acme_proxy_core::audit::AuditRecord::new(
         acme_proxy_core::audit::AuditEvent::CertificateIssueFailed,
-        &order.profile,
+        &order.endpoint,
         actor,
     )
     .with_order(order.id, order.account_id, &order.identifiers)

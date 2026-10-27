@@ -8,12 +8,13 @@
 pub mod admin_auth;
 pub mod audit;
 pub mod challenge;
+pub mod duration;
+pub mod endpoint;
 pub mod filter;
 pub mod ipam;
 pub mod jobs;
 pub mod metrics;
 pub mod notify;
-pub mod profile;
 pub mod proxy;
 pub mod server;
 pub mod signer;
@@ -21,12 +22,13 @@ pub mod signer;
 pub use admin_auth::*;
 pub use audit::*;
 pub use challenge::*;
+pub use duration::ConfigDuration;
+pub use endpoint::*;
 pub use filter::*;
 pub use ipam::*;
 pub use jobs::*;
 pub use metrics::*;
 pub use notify::*;
-pub use profile::*;
 pub use proxy::*;
 pub use server::*;
 pub use signer::*;
@@ -37,10 +39,10 @@ pub use signer::*;
 /// The environment can only carry a string, so `ACME_PROXY_FILTER__RULES=a,b`
 /// arrives here as `"a,b"` and is split on `,` (untrimmed, so an element keeps
 /// its spaces). Splitting here, at the type, rather than in the environment
-/// source is what lets a list inside a profile or inside an operator-named
+/// source is what lets a list inside an endpoint or inside an operator-named
 /// table (`[filter.check.<name>]`, `[notify.custom.<name>]`) work with no
 /// registration: the `config` crate can only split keys it was told about by
-/// their full literal path, and a profile's or an entry's name is known only
+/// their full literal path, and an endpoint's or an entry's name is known only
 /// at runtime. An unregistered key used to be dropped or refused as a type
 /// error; there is now nothing to register.
 ///

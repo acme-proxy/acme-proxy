@@ -92,8 +92,8 @@ The list is derived from your own configuration, not fixed:
 | Always | `acme`, `proxy` |
 | The operator's username | Split on anything that is not a letter or a digit |
 | `server.base_url`, `admin.base_url` | The **host** only, split on `.` and `-` |
-| `[signer.local_ca.subject]` — global and each profile's own | `common_name`, `organization`, `organizational_unit`, `state`, `locality`, each split into words |
-| Each `[profiles.<name>]` name | The name, which appears in every `kid` and order URL that endpoint issues |
+| `[signer.local_ca.subject]` — global and each endpoint's own | `common_name`, `organization`, `organizational_unit`, `state`, `locality`, each split into words |
+| Each `[endpoints.<name>]` name | The name, which appears in every `kid` and order URL that endpoint issues |
 
 So a CA at `https://ca.example.com` with a CommonName of "Example Corp Issuing
 CA", managed by `operator`, refuses any password containing `acme`, `proxy`,
@@ -108,7 +108,7 @@ Two limits are deliberate:
 - **`country` is not read**, being two characters and so below the floor
   whatever it holds.
 
-If no profile resolves — which is every `admin user create` run against a
+If no endpoint resolves — which is every `admin user create` run against a
 configuration that has none yet — the rest of the list still applies. A missing
 section is never a reason to refuse a password change.
 
@@ -153,7 +153,7 @@ stateDiagram-v2
     [*] --> anonymous
     anonymous --> anonymous: wrong password<br/>(counts against login_max_attempts)
     anonymous --> locked_out: limiter tripped, by peer address
-    locked_out --> anonymous: login_window_seconds elapses
+    locked_out --> anonymous: login_window elapses
 
     anonymous --> active: password ok, no factor enrolled<br/>and require_mfa is off
     anonymous --> pending_mfa: password ok, factor enrolled
@@ -283,7 +283,7 @@ WARN event="admin_mfa_enrolment_pending" count=2
 
 A half-authenticated session lives **five minutes** and no longer — it is a
 password that has been accepted and nothing more. Code attempts share the login
-rate limiter (`admin.login_max_attempts` per `admin.login_window_seconds`, per
+rate limiter (`admin.login_max_attempts` per `admin.login_window`, per
 address), so five wrong codes also lock the password out from that address: one
 address, one budget. A code accepted once cannot be replayed inside its own
 thirty-second window.
@@ -533,8 +533,8 @@ Two deadlines apply, and whichever comes first wins:
 
 | Key | Default | |
 |---|---|---|
-| `admin.session_ttl_seconds` | `43200` (12 h) | absolute; never extended |
-| `admin.session_idle_timeout_seconds` | `3600` (1 h) | advanced on use |
+| `admin.session_ttl` | `43200` (12 h) | absolute; never extended |
+| `admin.session_idle_timeout` | `3600` (1 h) | advanced on use |
 
 The idle deadline is advanced at most once a minute, so a page polling every few
 seconds is not a stream of database writes.

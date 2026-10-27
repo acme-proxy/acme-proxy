@@ -32,7 +32,7 @@ decision from you are marked **decide**.
       to get subtly wrong than a list.
       → [CLI](../operations/cli.md#access-policy)
 - [ ] **`/crl` and `/ca.pem` are still reachable** if any check is
-      address-based. Both are served by the profile router, so an allowlist
+      address-based. Both are served by the endpoint router, so an allowlist
       covers them too — and neither the relying parties that fetch the CRL nor
       the hosts that have yet to install the root are the ACME clients you
       allowlisted.
@@ -143,7 +143,7 @@ Skip this section entirely if `admin.enabled` is `false`, which is the default.
 - [ ] **Backups copy the WAL.** `sqlite.db` alone is missing every recent write;
       use `.backup`, or take all three files.
       → [Backup & Restore](../operations/backup.md)
-- [ ] **decide — `audit.retention_days`.** `0`, the default, keeps everything
+- [ ] **decide — `audit.retention`.** `0`, the default, keeps everything
   for
       ever, which is the right default for a trail whose value is that it is
       complete.

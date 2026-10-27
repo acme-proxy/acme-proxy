@@ -154,7 +154,7 @@ mod tests {
 
     /// The whole point: past the limit a request is *refused*, not parked.
     ///
-    /// `admission_wait_ms = 0` so the second request does not wait for the
+    /// `admission_wait = "0s"` so the second request does not wait for the
     /// first, which is what makes this deterministic rather than a race.
     #[tokio::test]
     async fn a_request_past_the_limit_is_shed_rather_than_queued() {
@@ -195,7 +195,7 @@ mod tests {
         assert_eq!(first.await.unwrap().status(), StatusCode::OK);
     }
 
-    /// A burst shorter than `admission_wait_ms` is absorbed rather than refused
+    /// A burst shorter than `admission_wait` is absorbed rather than refused
     /// — the difference between this and a bare load-shedder.
     #[tokio::test]
     async fn a_short_burst_waits_for_a_slot_instead_of_being_refused() {

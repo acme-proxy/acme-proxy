@@ -70,10 +70,10 @@ Prometheus for as long as it retains them. The same reason every unmatched
 request collapses into a single `<unmatched>` series rather than one per path a
 scanner tries.
 
-**The pool panels must not be filtered by `$profile`.** Everything else on the
-dashboard is scoped to the profile variable, so reaching for it on the two
+**The pool panels must not be filtered by `$endpoint`.** Everything else on the
+dashboard is scoped to the endpoint variable, so reaching for it on the two
 database panels is the natural next edit — but
-`acme_proxy_database_pool_connections` is process-wide and carries no `profile`
+`acme_proxy_database_pool_connections` is process-wide and carries no `endpoint`
 label at all. Filtering it matches nothing, and the panel goes blank with no
 error to explain why. A test in the repository (`tests/grafana_dashboard.rs`)
 fails if the shipped dashboard ever grows that filter.

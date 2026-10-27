@@ -44,7 +44,7 @@ byte comparison is the safety net.
 
 ### Responses
 
-- **`200 OK`** — revoked. For a `local_ca` profile the order reads revoked at
+- **`200 OK`** — revoked. For a `local_ca` endpoint the order reads revoked at
   once and the CRL follows as soon as the worker has signed it.
 - **`503 serverInternal` + `Retry-After`** — `relay` or `custom` only: the
   revocation was queued for the worker and had not completed by the request's
@@ -124,7 +124,7 @@ server's worker.
   the order revoked in one transaction, then queues a
   `local_ca_crl_regenerate` job and prints its id. The order reads revoked at
   once. The server's job runner signs the new CRL, usually within
-  `jobs.poll_interval_ms`, and with no server running the CRL catches up when
+  `jobs.poll_interval`, and with no server running the CRL catches up when
   one starts. A CA that no server has started with yet is refused: its
   revocation state is imported the first time a server meets it.
 - **`relay` / `custom`:** revoking means asking the upstream CA or running the
@@ -139,7 +139,7 @@ See [Admin CLI](cli.md).
 ## `GET /crl`
 
 With the `local_ca` backend, the CRL (RFC 5280) is served unauthenticated at
-`{base_url}/profile/<name>/crl`, with content type `application/pkix-crl`.
+`{base_url}/endpoint/<name>/crl`, with content type `application/pkix-crl`.
 
 - It is **routed but deliberately not advertised** in the ACME directory. A CRL
   is CA infrastructure, not an ACME resource, so it has no directory entry.
@@ -239,7 +239,7 @@ Two things follow from a URL being signed into a certificate:
   which is why the value is yours to choose rather than something derived from
   `server.base_url`.
 - **The URL above is not automatically a good answer.** `/crl` is served by the
-  profile router, so it sits behind that profile's filter policy; an
+  endpoint router, so it sits behind that endpoint's filter policy; an
   address-based rule will refuse it to relying parties outside the allowlist.
   Either add a `path` check permitting `/crl` (see [The `path`
   check](../filters/path.md)) or publish a copy of `crl_path` somewhere

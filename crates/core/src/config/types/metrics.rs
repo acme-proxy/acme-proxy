@@ -1,6 +1,6 @@
 //! `[metrics]` — the Prometheus exposition endpoint.
 //!
-//! Process-wide: no profile can override it. Each key, its default and its
+//! Process-wide: no endpoint can override it. Each key, its default and its
 //! environment variable are documented once, in the book's
 //! `configuration/reference.md` under `[metrics]`.
 
@@ -18,10 +18,10 @@ use serde::Deserialize;
 /// explicit auth exemption on a listener whose rule is that every route but
 /// sign-in needs a session, plus coupling metrics to the panel being enabled.
 ///
-/// Process-wide, so deliberately absent from `PROFILE_SECTIONS`: there is one
+/// Process-wide, so deliberately absent from `ENDPOINT_SECTIONS`: there is one
 /// counter set for the process, and the endpoint is a *dimension* of it rather
-/// than something each endpoint configures for itself. A per-profile switch
-/// would mean a scrape whose totals silently omitted whichever profiles had it
+/// than something each endpoint configures for itself. A per-endpoint switch
+/// would mean a scrape whose totals silently omitted whichever endpoints had it
 /// off.
 ///
 /// There is deliberately no `path` key. `/metrics` is the convention every

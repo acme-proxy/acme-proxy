@@ -19,7 +19,7 @@ use common::{
     test_app_with_challenges,
 };
 
-const NEW_ACCOUNT_URL: &str = "http://localhost:3000/profile/default/newAccount";
+const NEW_ACCOUNT_URL: &str = "http://localhost:3000/endpoint/default/newAccount";
 const DEFAULT_BASE: &str = common::BASE;
 
 fn eab_enabled_config() -> Config {
@@ -129,7 +129,7 @@ async fn valid_eab_creates_account_and_records_kid() {
         location.rsplit('/').next().unwrap().to_string()
     };
 
-    let account = Account::find_by_id(common::PROFILE, &account_id, &db)
+    let account = Account::find_by_id(common::ENDPOINT, &account_id, &db)
         .await
         .unwrap()
         .unwrap();
@@ -224,7 +224,7 @@ async fn url_mismatch_is_rejected() {
     let eab = build_eab(
         &key.kid.to_string(),
         &key.secret,
-        "http://localhost:3000/profile/default/somewhereElse",
+        "http://localhost:3000/endpoint/default/somewhereElse",
         &signer.jwk(),
     );
     let body = signer.sign(

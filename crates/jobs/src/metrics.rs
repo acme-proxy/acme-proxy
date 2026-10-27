@@ -33,7 +33,7 @@
 //! that outlives the request that caused it. A histogram multiplies that by its
 //! bucket count, which is why neither histogram carries `status` or `reason`.
 //!
-//! - `profile` is a configured profile name, or `none` for the root routes.
+//! - `endpoint` is a configured endpoint name, or `none` for the root routes.
 //! - `route` is the **matched route pattern** (`/order/{id}`), never the request
 //!   URI (`/order/9f3c…`), which would be one series per order ever finalized.
 //!   A request that matched nothing at all is [`ROUTE_UNMATCHED`], so a scanner
@@ -77,12 +77,12 @@ use acme_proxy_store::db::Database;
 /// attacker-chosen, so using it would be an unbounded label.
 pub const ROUTE_UNMATCHED: &str = "<unmatched>";
 
-/// The `profile` label of a request served by the root router.
+/// The `endpoint` label of a request served by the root router.
 ///
 /// `/health`, `/metrics` itself, the redirect and the `http-01` responder
 /// belong to no endpoint. Spelled explicitly rather than left empty so a query
-/// can say `profile="none"` and mean it.
-pub const PROFILE_NONE: &str = "none";
+/// can say `endpoint="none"` and mean it.
+pub const ENDPOINT_NONE: &str = "none";
 
 /// The media type of [`Metrics::render`]'s output, version parameter included:
 /// a collector reading `text/plain` with no `version` falls back to guessing.
@@ -109,25 +109,25 @@ const ISSUE_SECONDS: [f64; 11] = [
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct RequestLabels {
-    profile: String,
+    endpoint: String,
     route: String,
     status: u16,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct RouteLabels {
-    profile: String,
+    endpoint: String,
     route: String,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
-struct ProfileLabels {
-    profile: String,
+struct EndpointLabels {
+    endpoint: String,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct FailureLabels {
-    profile: String,
+    endpoint: String,
     reason: String,
 }
 
@@ -148,9 +148,9 @@ fn issue_histogram() -> Histogram {
 pub struct Metrics {
     requests: Family<RequestLabels, Counter>,
     request_duration: HistogramFamily<RouteLabels>,
-    certificates_issued: Family<ProfileLabels, Counter>,
+    certificates_issued: Family<EndpointLabels, Counter>,
     certificate_issue_failures: Family<FailureLabels, Counter>,
-    certificate_issue_duration: HistogramFamily<ProfileLabels>,
+    certificate_issue_duration: HistogramFamily<EndpointLabels>,
     /// Read at scrape time rather than tracked: `sqlx` already knows, and a
     /// gauge this crate maintained itself could only ever be a worse copy.
     database: Arc<Database>,
@@ -196,18 +196,18 @@ impl Metrics {
     ///
     /// `route` must already be a matched pattern or [`ROUTE_UNMATCHED`]; see the
     /// cardinality note on this module.
-    pub fn record_request(&self, profile: &str, route: &str, status: u16, elapsed: Duration) {
-        let profile = escape_label(profile);
+    pub fn record_request(&self, endpoint: &str, route: &str, status: u16, elapsed: Duration) {
+        let endpoint = escape_label(endpoint);
         let route = escape_label(route);
         self.request_duration
             .get_or_create(&RouteLabels {
-                profile: profile.clone(),
+                endpoint: endpoint.clone(),
                 route: route.clone(),
             })
             .observe(elapsed.as_secs_f64());
         self.requests
             .get_or_create(&RequestLabels {
-                profile,
+                endpoint,
                 route,
                 status,
             })
@@ -227,15 +227,15 @@ impl Metrics {
         match record.event {
             AuditEvent::CertificateIssued => {
                 self.certificates_issued
-                    .get_or_create(&ProfileLabels {
-                        profile: escape_label(&record.profile),
+                    .get_or_create(&EndpointLabels {
+                        endpoint: escape_label(&record.endpoint),
                     })
                     .inc();
             }
             AuditEvent::CertificateIssueFailed => {
                 self.certificate_issue_failures
                     .get_or_create(&FailureLabels {
-                        profile: escape_label(&record.profile),
+                        endpoint: escape_label(&record.endpoint),
                         // An ACME problem type this crate chose (`badCSR`,
                         // `serverInternal`), not text from the request.
                         reason: escape_label(record.reason.as_deref().unwrap_or("unknown")),
@@ -251,10 +251,10 @@ impl Metrics {
     ///
     /// Not driven off the audit record like the counters, because the record
     /// carries no duration and should not grow one for this.
-    pub fn observe_issuance(&self, profile: &str, elapsed: Duration) {
+    pub fn observe_issuance(&self, endpoint: &str, elapsed: Duration) {
         self.certificate_issue_duration
-            .get_or_create(&ProfileLabels {
-                profile: escape_label(profile),
+            .get_or_create(&EndpointLabels {
+                endpoint: escape_label(endpoint),
             })
             .observe(elapsed.as_secs_f64());
     }
@@ -389,27 +389,27 @@ fn escape_label(value: &str) -> String {
     out
 }
 
-/// Splits a matched route pattern into its `(profile, route)` labels.
+/// Splits a matched route pattern into its `(endpoint, route)` labels.
 ///
 /// A nested router reports the whole pattern, prefix and all
-/// (`/profile/le/order/{id}`), so this is what turns one string into the two
+/// (`/endpoint/le/order/{id}`), so this is what turns one string into the two
 /// dimensions a query wants: "how many 500s did `le` serve" and "how many 500s
 /// did `/newOrder` serve anywhere". The split is unambiguous because
-/// [`PROFILE_PREFIX`](acme_proxy_core::routes::PROFILE_PREFIX) is reserved and a profile
+/// [`ENDPOINT_PREFIX`](acme_proxy_core::routes::ENDPOINT_PREFIX) is reserved and an endpoint
 /// name matches `^[a-z0-9-]+$`, so the second segment can never itself contain
 /// a slash.
 #[must_use]
 pub fn split_matched_path(matched: Option<&str>) -> (String, String) {
     let Some(matched) = matched else {
-        return (PROFILE_NONE.to_string(), ROUTE_UNMATCHED.to_string());
+        return (ENDPOINT_NONE.to_string(), ROUTE_UNMATCHED.to_string());
     };
-    let prefix = format!("{}/", acme_proxy_core::routes::PROFILE_PREFIX);
+    let prefix = format!("{}/", acme_proxy_core::routes::ENDPOINT_PREFIX);
     let Some(rest) = matched.strip_prefix(&prefix) else {
-        return (PROFILE_NONE.to_string(), matched.to_string());
+        return (ENDPOINT_NONE.to_string(), matched.to_string());
     };
     match rest.split_once('/') {
-        Some((profile, route)) => (profile.to_string(), format!("/{route}")),
-        // `/profile/le` with nothing after it routes nowhere today, but a
+        Some((endpoint, route)) => (endpoint.to_string(), format!("/{route}")),
+        // `/endpoint/le` with nothing after it routes nowhere today, but a
         // pattern this cannot split must still yield two bounded labels.
         None => (rest.to_string(), "/".to_string()),
     }
@@ -444,10 +444,10 @@ mod tests {
         // keep it, so a query is written exactly as before.
         assert!(rendered.contains("# TYPE acme_proxy_requests counter\n"));
         assert!(rendered.contains(
-            "acme_proxy_requests_total{role=\"acme,admin,worker\",profile=\"le\",route=\"/newOrder\",status=\"201\"} 2\n"
+            "acme_proxy_requests_total{role=\"acme,admin,worker\",endpoint=\"le\",route=\"/newOrder\",status=\"201\"} 2\n"
         ));
         assert!(rendered.contains(
-            "acme_proxy_requests_total{role=\"acme,admin,worker\",profile=\"le\",route=\"/newOrder\",status=\"400\"} 1\n"
+            "acme_proxy_requests_total{role=\"acme,admin,worker\",endpoint=\"le\",route=\"/newOrder\",status=\"400\"} 1\n"
         ));
     }
 
@@ -545,10 +545,10 @@ mod tests {
         let rendered = metrics.render();
 
         assert!(rendered.contains(
-            "acme_proxy_certificates_issued_total{role=\"acme,admin,worker\",profile=\"le\"} 1\n"
+            "acme_proxy_certificates_issued_total{role=\"acme,admin,worker\",endpoint=\"le\"} 1\n"
         ));
         assert!(rendered.contains(
-            "acme_proxy_certificate_issue_failures_total{role=\"acme,admin,worker\",profile=\"le\",reason=\"badCSR\"} 1\n"
+            "acme_proxy_certificate_issue_failures_total{role=\"acme,admin,worker\",endpoint=\"le\",reason=\"badCSR\"} 1\n"
         ));
         assert!(!rendered.contains("revoked"));
     }
@@ -566,7 +566,7 @@ mod tests {
         ));
 
         assert!(metrics.render().contains(
-            "acme_proxy_certificate_issue_failures_total{role=\"acme,admin,worker\",profile=\"le\",reason=\"unknown\"} 1\n"
+            "acme_proxy_certificate_issue_failures_total{role=\"acme,admin,worker\",endpoint=\"le\",reason=\"unknown\"} 1\n"
         ));
     }
 
@@ -583,28 +583,28 @@ mod tests {
         assert!(rendered.contains("# TYPE acme_proxy_request_duration_seconds histogram\n"));
         assert!(rendered.contains("# UNIT acme_proxy_request_duration_seconds seconds\n"));
         assert!(rendered.contains(
-            "acme_proxy_request_duration_seconds_bucket{role=\"acme,admin,worker\",le=\"0.01\",profile=\"le\",route=\"/newOrder\"} 0\n"
+            "acme_proxy_request_duration_seconds_bucket{role=\"acme,admin,worker\",le=\"0.01\",endpoint=\"le\",route=\"/newOrder\"} 0\n"
         ));
         assert!(rendered.contains(
-            "acme_proxy_request_duration_seconds_bucket{role=\"acme,admin,worker\",le=\"0.025\",profile=\"le\",route=\"/newOrder\"} 1\n"
+            "acme_proxy_request_duration_seconds_bucket{role=\"acme,admin,worker\",le=\"0.025\",endpoint=\"le\",route=\"/newOrder\"} 1\n"
         ));
         assert!(rendered.contains(
-            "acme_proxy_request_duration_seconds_count{role=\"acme,admin,worker\",profile=\"le\",route=\"/newOrder\"} 1\n"
+            "acme_proxy_request_duration_seconds_count{role=\"acme,admin,worker\",endpoint=\"le\",route=\"/newOrder\"} 1\n"
         ));
         // No `status` on the histogram: it would multiply every bucket.
-        assert!(!rendered.contains("acme_proxy_request_duration_seconds_bucket{role=\"acme,admin,worker\",le=\"0.01\",profile=\"le\",route=\"/newOrder\",status="));
+        assert!(!rendered.contains("acme_proxy_request_duration_seconds_bucket{role=\"acme,admin,worker\",le=\"0.01\",endpoint=\"le\",route=\"/newOrder\",status="));
 
         assert!(rendered.contains(
-            "acme_proxy_certificate_issue_duration_seconds_bucket{role=\"acme,admin,worker\",le=\"2.0\",profile=\"le\"} 0\n"
+            "acme_proxy_certificate_issue_duration_seconds_bucket{role=\"acme,admin,worker\",le=\"2.0\",endpoint=\"le\"} 0\n"
         ));
         assert!(rendered.contains(
-            "acme_proxy_certificate_issue_duration_seconds_bucket{role=\"acme,admin,worker\",le=\"5.0\",profile=\"le\"} 1\n"
+            "acme_proxy_certificate_issue_duration_seconds_bucket{role=\"acme,admin,worker\",le=\"5.0\",endpoint=\"le\"} 1\n"
         ));
         assert!(rendered.contains(
-            "acme_proxy_certificate_issue_duration_seconds_bucket{role=\"acme,admin,worker\",le=\"+Inf\",profile=\"le\"} 1\n"
+            "acme_proxy_certificate_issue_duration_seconds_bucket{role=\"acme,admin,worker\",le=\"+Inf\",endpoint=\"le\"} 1\n"
         ));
         assert!(rendered.contains(
-            "acme_proxy_certificate_issue_duration_seconds_sum{role=\"acme,admin,worker\",profile=\"le\"} 3.0\n"
+            "acme_proxy_certificate_issue_duration_seconds_sum{role=\"acme,admin,worker\",endpoint=\"le\"} 3.0\n"
         ));
     }
 
@@ -651,22 +651,22 @@ mod tests {
     }
 
     /// The nested-router split, which is what keeps `route` comparable across
-    /// endpoints instead of one series per profile per route.
+    /// endpoints instead of one series per endpoint per route.
     #[test]
-    fn a_matched_path_splits_into_a_profile_and_a_route() {
+    fn a_matched_path_splits_into_a_endpoint_and_a_route() {
         for (matched, expected) in [
-            (Some("/profile/le/order/{id}"), ("le", "/order/{id}")),
-            (Some("/profile/staging/newOrder"), ("staging", "/newOrder")),
+            (Some("/endpoint/le/order/{id}"), ("le", "/order/{id}")),
+            (Some("/endpoint/staging/newOrder"), ("staging", "/newOrder")),
             // Root routes belong to no endpoint.
-            (Some("/health"), (PROFILE_NONE, "/health")),
-            (Some("/"), (PROFILE_NONE, "/")),
+            (Some("/health"), (ENDPOINT_NONE, "/health")),
+            (Some("/"), (ENDPOINT_NONE, "/")),
             // A path that matched nothing is attacker-chosen and must collapse
             // to one series.
-            (None, (PROFILE_NONE, ROUTE_UNMATCHED)),
+            (None, (ENDPOINT_NONE, ROUTE_UNMATCHED)),
         ] {
-            let (profile, route) = split_matched_path(matched);
+            let (endpoint, route) = split_matched_path(matched);
             assert_eq!(
-                (profile.as_str(), route.as_str()),
+                (endpoint.as_str(), route.as_str()),
                 expected,
                 "for {matched:?}"
             );

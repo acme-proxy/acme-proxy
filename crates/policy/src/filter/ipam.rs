@@ -61,7 +61,7 @@ pub struct IpamFilter {
 }
 
 impl IpamFilter {
-    /// Wraps the profile's configured inventory.
+    /// Wraps the endpoint's configured inventory.
     #[must_use]
     pub fn new(ipam: Arc<IpamRegistry>) -> Self {
         Self { ipam }

@@ -137,6 +137,6 @@ Teams and Google Chat all accept, so those four need a `url` and nothing else.
 
 Lifecycle events this entry reacts to.
 
-**`timeout_ms`** (`Integer`) — *Default: `5000` | Env: `ACME_PROXY_NOTIFY__WEBHOOK__<NAME>__TIMEOUT_MS`*
+**`timeout`** (`Duration`) — *Default: `"5s"` | Env: `ACME_PROXY_NOTIFY__WEBHOOK__<NAME>__TIMEOUT`*
 
 Budget for one delivery attempt, connect and handshake included.

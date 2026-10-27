@@ -36,9 +36,9 @@ pub struct CreateForm {
     #[serde(default)]
     pub label: String,
     /// Empty means the credential is valid at every endpoint — the `NULL` the
-    /// column stores, not a profile named "".
+    /// column stores, not an endpoint named "".
     #[serde(default)]
-    pub profile: String,
+    pub endpoint: String,
 }
 
 /// `GET /ui/eab?limit=&offset=`
@@ -64,8 +64,8 @@ pub async fn list_eab(
         pager(page, total, "/ui/eab", &[], "#eab-table"),
     );
     context.insert(
-        "profiles".to_string(),
-        Value::Array(crate::webadmin::handlers::misc::profile_rows(&state)),
+        "endpoints".to_string(),
+        Value::Array(crate::webadmin::handlers::misc::endpoint_rows(&state)),
     );
 
     respond(
@@ -115,7 +115,7 @@ pub async fn create_eab(
         &state,
         &Caller::ui(&session.auth, &request_context),
         non_empty(&form.label),
-        non_empty(&form.profile),
+        non_empty(&form.endpoint),
         "leave it unset",
     )
     .await?;

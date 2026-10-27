@@ -14,7 +14,7 @@
         <tr>
           <th>Key ID</th>
           <th>Label</th>
-          <th>Profile</th>
+          <th>Endpoint</th>
           <th>Status</th>
           <th>Created</th>
         </tr>
@@ -31,10 +31,10 @@
               {%- endif -%}
             </td>
             <td>
-              {%- if eab.profile -%}
-                <code>{{ eab.profile }}</code>
+              {%- if eab.endpoint -%}
+                <code>{{ eab.endpoint }}</code>
               {%- else -%}
-                <span class="muted">every profile</span>
+                <span class="muted">every endpoint</span>
               {%- endif -%}
             </td>
             <td><span class="badge {{ eab.status }}">{{ eab.status }}</span></td>

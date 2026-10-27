@@ -38,7 +38,7 @@ order and putting it in the CSR. See
 | Secret | Compromise gets an attacker | Stored |
 | --- | --- | --- |
 | The CA private key (`signer.local_ca.key_path`) | The ability to mint any certificate your fleet trusts, silently, for as long as the CA is trusted. There is no audit row for a signature made outside this server. | On disk at `0600`, created with `create_new` rather than chmod'ed after the fact. Can live in a [PKCS#11 token](../signers/local_ca_hsm.md) instead. |
-| An EAB HMAC secret | The ability to register accounts at that profile, subject to every other gate. Revocable without a restart. | Retrievable bytes — HMAC verification needs the same secret back each time. See [Database Schema](../dev/database.md#secrets-are-stored-three-different-ways-on-purpose). |
+| An EAB HMAC secret | The ability to register accounts at that endpoint, subject to every other gate. Revocable without a restart. | Retrievable bytes — HMAC verification needs the same secret back each time. See [Database Schema](../dev/database.md#secrets-are-stored-three-different-ways-on-purpose). |
 | The upstream ACME account key (`signer.relay.account_key_path`) | Control of *your* account at the upstream CA, including revoking what it issued. | On disk at `0600`, beside a `.kid` sidecar naming the account. |
 | An RFC 2136 TSIG key | The ability to write records in the zone it is scoped to. This is the credential the relay exists to **not** distribute. | Configuration, or `ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__TSIG_KEY_SECRET`. |
 | A web admin password | Nothing on its own once a second factor is enrolled. Otherwise: an operator session. | One-way KDF, unreadable. |
@@ -112,7 +112,7 @@ Two properties make it evidence rather than logging:
   [Database Schema](../dev/database.md#the-audit-trail-has-no-foreign-keys-deliberately).
 - **Nothing in the web admin can erase it.** The panel's audit surface is
   read-only; pruning is `audit cleanup` on the host, or the
-  `audit.retention_days` sweep. A stolen session that could erase the trail
+  `audit.retention` sweep. A stolen session that could erase the trail
   would make the trail prove nothing.
 
 See [Audit Trail](../operations/audit.md).
@@ -144,7 +144,7 @@ after them because no client can steer it:
   Every connection is TLS verified against the public roots plus `ca_cert_path`
   (plain `http://` and `ldap://` are refused off loopback), a discovery
   document's endpoints must be `https`, no redirect is followed, and each call
-  has the provider's `timeout_ms`.
+  has the provider's `timeout`.
 
 ## What is out of scope
 

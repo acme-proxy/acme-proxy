@@ -1,4 +1,4 @@
-//! What one configuration generation hands its profiles ([`GenerationParts`]),
+//! What one configuration generation hands its endpoints ([`GenerationParts`]),
 //! and what outlives it ([`Assembly`]). What it dials through is
 //! [`acme_proxy_net::egress::Egress`].
 
@@ -12,10 +12,10 @@ use acme_proxy_net::egress::Egress;
 use acme_proxy_signer as signer;
 use acme_proxy_store::db::Database;
 
-/// The three things one configuration generation contributes to its profiles,
+/// The three things one configuration generation contributes to its endpoints,
 /// built before any of them is published.
 ///
-/// A struct because [`profile::build_all_with`](super::profile::build_all_with)
+/// A struct because [`endpoint::build_all_with`](super::endpoint::build_all_with)
 /// would otherwise take three same-shaped values positionally, and because the
 /// three are built together and must be published together —
 /// `server::generation::publish_reload` swaps the notifier map and the signer
@@ -25,13 +25,13 @@ pub struct GenerationParts {
     pub dispatchers: notify::DispatcherMap,
     /// The backends, which the job handlers sign and revoke through.
     pub signers: signer::SignerSet,
-    /// Their read sides, which the profiles serve from.
+    /// Their read sides, which the endpoints serve from.
     pub infos: signer::SignerSet<dyn signer::SignerInfo>,
 }
 
 /// What survives a configuration reload.
 ///
-/// Every generation rebuilds its profiles, its routers, its job registry, its
+/// Every generation rebuilds its endpoints, its routers, its job registry, its
 /// egress clients and any signer backend whose configuration moved. The things
 /// here are built once for the life of the process and handed to each generation
 /// instead — and after three rounds of moving things *off* this list, everything
@@ -49,7 +49,7 @@ pub struct GenerationParts {
 ///   reload can reuse a backend whose configuration did not move (see
 ///   [`signer::build_backends`]); `infos` the same for their read sides. Behind
 ///   a `Mutex` because each is written once per generation; nothing reads
-///   either to serve a request, since a `Profile` holds its own read side.
+///   either to serve a request, since an `Endpoint` holds its own read side.
 /// - `roles` decides whether there are backends at all: only a process running
 ///   the `worker` role builds one, so the others never read a CA key, log in to
 ///   a token or contact a relay's upstream — not at startup, not on reload.
@@ -77,12 +77,12 @@ impl Assembly {
     ///
     /// Those come back rather than being kept here because they are *not*
     /// long-lived: the caller hands them to
-    /// [`profile::build_all_with`](super::profile::build_all_with) and then
+    /// [`endpoint::build_all_with`](super::endpoint::build_all_with) and then
     /// forgets them, and every later generation builds its own through
     /// [`build_parts`](Self::build_parts).
     pub fn new(
         roles: super::RoleSet,
-        resolved: &[config::ProfileConfig],
+        resolved: &[config::EndpointConfig],
         database: Arc<Database>,
         jobs: acme_proxy_jobs::jobs::JobQueue,
         config: &Config,
@@ -129,7 +129,7 @@ impl Assembly {
     /// `server::supervisor::supervise_reloads` runs this on a blocking thread.
     pub fn build_parts(
         &self,
-        resolved: &[config::ProfileConfig],
+        resolved: &[config::EndpointConfig],
         config: &Config,
     ) -> anyhow::Result<GenerationParts> {
         // Resolved before anything can dial: a proxy URL that cannot be
@@ -137,14 +137,14 @@ impl Assembly {
         // a real network call on its very first startup.
         let egress = Arc::new(Egress::from_config(config)?);
         // Built before the signer backends: the `relay` backend's background
-        // completion task has no `Profile`/`AppState` to reach a notifier
+        // completion task has no `Endpoint`/`AppState` to reach a notifier
         // through (it outlives any single request, the same reason it is handed
-        // `database`), so it is instead handed the whole `profile name ->
-        // dispatcher` map and looks up the right one by `Order.profile` once an
+        // `database`), so it is instead handed the whole `endpoint name ->
+        // dispatcher` map and looks up the right one by `Order.endpoint` once an
         // issuance settles.
         let mut dispatchers = notify::build_registry(resolved, egress.outbound(), &self.jobs)?;
         // The process-wide web-admin security dispatcher, registered under a
-        // reserved key that no profile name can collide with. Built only when
+        // reserved key that no endpoint name can collide with. Built only when
         // the panel is on; `NotifyJob` routes a `notify_deliver` row naming it
         // here with no special case, and a reload republishes it in this same
         // map.
@@ -212,7 +212,7 @@ impl Assembly {
     /// whatever the generation before it held.
     ///
     /// That drop is the point at which a backend nobody references any more —
-    /// an unmounted profile's, or the instance a `[signer]` edit replaced — is
+    /// an unmounted endpoint's, or the instance a `[signer]` edit replaced — is
     /// finally released. Deliberately after its replacement was built and has
     /// adopted its state, never before.
     pub fn publish_signers(

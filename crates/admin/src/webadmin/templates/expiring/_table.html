@@ -16,7 +16,7 @@
       <thead>
         <tr>
           <th>Order</th>
-          <th>Profile</th>
+          <th>Endpoint</th>
           <th>Identifiers</th>
           <th>Expires</th>
           <th>In</th>
@@ -28,7 +28,7 @@
         {% for cert in page.items %}
           <tr>
             <td><a href="/ui/orders/{{ cert.orderId }}"><code>{{ cert.orderId }}</code></a></td>
-            <td><code>{{ cert.profile }}</code></td>
+            <td><code>{{ cert.endpoint }}</code></td>
             <td class="wrap-anywhere">
               {%- for identifier in cert.identifiers -%}
                 {% if not loop.first %}, {% endif %}{{ identifier }}
